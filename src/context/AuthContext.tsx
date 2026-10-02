@@ -829,14 +829,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     pollCentralServer();
-    // Poll every 3 seconds for live member signups
-    const pollInterval = setInterval(pollCentralServer, 3000);
+    // Smart Polling: 20 seconds for admin, 60 seconds for normal user to preserve Supabase free quota
+    const isUserAdmin = currentUser?.role === 'admin';
+    const pollTime = isUserAdmin ? 20000 : 60000;
+    const pollInterval = setInterval(pollCentralServer, pollTime);
+
+    // Immediate refresh on tab focus
+    const handleTabFocus = () => {
+      pollCentralServer();
+    };
+    window.addEventListener('focus', handleTabFocus);
 
     return () => {
       isMounted = false;
       clearInterval(pollInterval);
+      window.removeEventListener('focus', handleTabFocus);
     };
-  }, [currentUser?.id, currentUser?.plan, currentUser?.credits]);
+  }, [currentUser?.id, currentUser?.plan, currentUser?.credits, currentUser?.role]);
 
   // Cross-tab broadcast channel for instant multi-tab presence & single-session sync
   useEffect(() => {
@@ -996,7 +1005,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     heartbeat();
-    const interval = setInterval(heartbeat, 3000);
+    // Optimized heartbeat: Every 30 seconds (or immediately on user activity/tab focus)
+    const interval = setInterval(heartbeat, 30000);
 
     const onUserActivity = () => {
       (window as any)._lastSupaSessionCheck = 0; // Force immediate check on tab focus/activity
