@@ -1,0 +1,6 @@
+{
+  "name": "Flow - AI Video Creation & Storytelling Platform",
+  "description": "Where the next wave of storytelling happens. AI video creation platform with Nano Banana 2, user tiers, and admin controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

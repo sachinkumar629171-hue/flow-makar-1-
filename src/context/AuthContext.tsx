@@ -1,0 +1,2601 @@
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { User, PlanType, Generation, ShowcaseVideo, ExtensionConfig, PlanExtensionsConfig, TutorialConfig, HeroConfig, Reseller, PromptConfig } from '../types';
+import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIAL_SHOWCASE, INITIAL_RESELLERS } from '../data/initialData';
+import { apiUrl } from '../config/api';
+import { getSupabase } from '../lib/supabase';
+import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
+
+interface AuthContextType {
+  currentUser: User | null;
+  users: User[];
+  resellers: Reseller[];
+  currentReseller: Reseller | null;
+  generations: Generation[];
+  showcaseVideos: ShowcaseVideo[];
+  extensionConfig: ExtensionConfig;
+  planExtensions: PlanExtensionsConfig;
+  tutorialConfig: TutorialConfig;
+  heroConfig: HeroConfig;
+  isAdmin: boolean;
+  login: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
+  resellerLogin: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
+  loginAsReseller: (reseller: Reseller) => void;
+  logoutReseller: () => void;
+  createReseller: (data: {
+    portalName: string;
+    email: string;
+    password: string;
+    userLimit: number;
+    daysLeft: number;
+    notes?: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  updateReseller: (resellerId: string, data: Partial<Reseller>) => void;
+  deleteReseller: (resellerId: string) => void;
+  addUserByReseller: (
+    resellerId: string,
+    userData: {
+      name: string;
+      email: string;
+      password?: string;
+      plan: PlanType;
+      credits: number;
+      daysLeft: number;
+    }
+  ) => Promise<{ success: boolean; error?: string }>;
+  rotateUserCredentials: (userId: string) => { email: string; password?: string } | null;
+  renewResellerUser: (userId: string, days?: number) => void;
+  reloadResellerUserCredits: (userId: string) => void;
+  signup: (data: {
+    name: string;
+    email: string;
+    password?: string;
+    whatsapp?: string;
+    telegram?: string;
+    referralCode?: string;
+  }) => Promise<{ success: boolean; error?: string }>;
+  adminCreateUser: (data: {
+    name: string;
+    email: string;
+    password?: string;
+    whatsapp?: string;
+    telegram?: string;
+    plan?: PlanType;
+    credits?: number;
+    planDaysLeft?: number;
+    canEditPrompts?: boolean;
+    extensionAccess?: boolean;
+  }) => Promise<{ success: boolean; error?: string }>;
+  logout: () => void;
+  updateUserPlan: (userId: string, newPlan: PlanType, days?: number) => void;
+  updateUserCredits: (userId: string, newCredits: number, newMax?: number) => void;
+  updateUserDetails: (
+    userId: string,
+    data: {
+      name?: string;
+      password?: string;
+      plan?: PlanType;
+      credits?: number;
+      maxCredits?: number;
+      planDaysLeft?: number;
+      status?: 'active' | 'suspended';
+      email?: string;
+      extensionAccess?: boolean;
+    }
+  ) => void;
+  updateUserEmail: (userId: string, newEmail: string) => Promise<{ success: boolean; error?: string }>;
+  deleteUser: (userId: string) => void;
+  addGeneration: (gen: Omit<Generation, 'id' | 'createdAt'>) => Promise<Generation>;
+  deductCredits: (amount: number) => boolean;
+  updateProfile: (data: Partial<User>) => void;
+  requestUpgrade: () => void;
+  updateExtensionConfig: (config: Partial<ExtensionConfig>) => void;
+  updatePlanExtensionConfig: (plan: PlanType, config: Partial<ExtensionConfig>) => void;
+  updateTutorialConfig: (config: Partial<TutorialConfig>) => void;
+  updateHeroConfig: (config: Partial<HeroConfig>) => void;
+  updatePromptConfig: (config: Partial<PromptConfig>) => void;
+  promptConfig: PromptConfig;
+  sessionTerminatedNotice: boolean;
+  dismissSessionTerminatedNotice: () => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+const USERS_STORAGE_KEY = 'flow_users_v3';
+const RESELLERS_STORAGE_KEY = 'flow_resellers_v3';
+const CURRENT_USER_KEY = 'flow_current_user_v3';
+const CURRENT_RESELLER_KEY = 'flow_current_reseller_v3';
+const GENERATIONS_STORAGE_KEY = 'flow_generations_v3';
+const PLAN_EXTENSIONS_STORAGE_KEY = 'flow_plan_extensions_v3';
+const TUTORIAL_STORAGE_KEY = 'flow_tutorial_config_v3';
+const HERO_STORAGE_KEY = 'flow_hero_config_v3';
+const PROMPT_CONFIG_STORAGE_KEY = 'flow_prompt_config_v3';
+
+const DEFAULT_PLAN_EXTENSIONS: PlanExtensionsConfig = {
+  basic: {
+    name: 'Flow Basic Chrome Extension',
+    version: '1.8.0',
+    downloadUrl: '',
+    fileName: 'flow-basic-extension-v1.8.0.zip',
+    description: 'Standard Video Prompt Sync & Studio Launcher for Basic Plan Members.',
+    updatedAt: new Date().toISOString(),
+    downloadType: 'url',
+  },
+  ultra: {
+    name: 'Flow Ultra VIP Extension',
+    version: '3.2.0',
+    downloadUrl: '',
+    fileName: 'flow-ultra-vip-extension-v3.2.0.zip',
+    description: 'High-Speed 4K Pipeline, Unlimited Prompt Queue & VIP Multi-Session Sync.',
+    updatedAt: new Date().toISOString(),
+    downloadType: 'url',
+  },
+};
+
+const DEFAULT_TUTORIAL_CONFIG: TutorialConfig = {
+  desktopVideoUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+  desktopTitle: 'How to Use Flow on Desktop / PC',
+  desktopSubtitle: 'Complete tutorial on setting up the Chrome extension & using Desktop Studio.',
+  mobileVideoUrl: 'https://www.youtube.com/watch?v=ScMzIvxBSi4',
+  mobileTitle: 'How to Use Flow on Mobile (Android & iOS)',
+  mobileSubtitle: 'Step-by-step guide on generating AI videos seamlessly from mobile browsers.',
+};
+
+const DEFAULT_HERO_CONFIG: HeroConfig = {
+  items: [
+    {
+      id: '1',
+      title: 'Nano Banana 2 is Here!',
+      description: "We've updated the original Nano Banana model, with significant improvements in image generation, stylization, multiple references and editing.",
+      mediaUrl: 'https://images.unsplash.com/photo-1552728089-57bdde30beb3?w=2400&auto=format&fit=crop&q=95',
+      mediaType: 'image',
+      buttonText: 'Generate Video',
+      buttonUrl: 'https://flow.google.com/',
+    }
+  ],
+  rotationSpeed: 5000,
+};
+
+export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
+  servers: [
+    {
+      id: 'server1',
+      label: 'Server 1',
+      prompt: '',
+    }
+  ],
+  costs: {
+    image: 20,
+    video: 30
+  },
+  headerEmailOpacity: 100,
+  signupEnabled: true,
+  resellerContactUrl: '',
+  resellerContactUrlEnabled: true,
+  customPlanContactUrl: '',
+  pricing: {
+    plans: [
+      {
+        id: 'pro',
+        name: 'Pro',
+        label: 'PRO',
+        subtitle: 'Contact Your Reseller',
+        credits: '25,000',
+        videos: '750',
+        features: [
+          '25,000 credits per month',
+          '750 AI videos / month',
+          'Google Flow managed access',
+          '15-day satisfaction warranty',
+          'Session auto-rotation every 24h',
+          'Credit tracking dashboard',
+          'Reseller support'
+        ],
+        buttonText: 'Get Pro — Contact Your Reseller',
+        color: 'blue'
+      },
+      {
+        id: 'ultra',
+        name: 'Ultra',
+        label: 'ULTRA',
+        subtitle: 'Contact Your Reseller',
+        credits: '45,000',
+        videos: '1,250',
+        features: [
+          '45,000 credits per month',
+          '1,250 AI videos / month',
+          'Google Flow managed access',
+          'Priority session pool',
+          'Session auto-rotation every 24h',
+          'Full generation history',
+          'Credit tracking dashboard',
+          'Priority reseller support',
+          'Early access to new features'
+        ],
+        buttonText: 'Get Ultra — Contact Your Reseller',
+        badge: 'MOST POPULAR',
+        color: 'purple'
+      },
+      {
+        id: 'unlimited',
+        name: 'Flow Unlimited',
+        label: 'UNLIMITED',
+        subtitle: 'Contact Your Reseller',
+        credits: '∞',
+        videos: '∞',
+        features: [
+          'Unlimited credits',
+          'Unlimited AI videos',
+          'Google Flow managed access',
+          'Priority session pool',
+          'Session auto-rotation every 24h',
+          'Full generation history',
+          'Credit tracking dashboard',
+          'Priority reseller support',
+          'Early access to new features',
+          'Dedicated account manager',
+          'Custom session allocation'
+        ],
+        buttonText: 'Get Unlimited — Contact Your Reseller',
+        badge: 'BEST VALUE',
+        color: 'amber'
+      }
+    ]
+  }
+};
+
+const PURGED_MOCK_IDS = new Set([
+  'usr-res-1', 'usr-res-2', 'usr-res-3', 'usr-res-4', 'usr-res-5',
+  'usr-res-6', 'usr-res-7', 'usr-4018', 'usr-res-9', 'usr-res-10',
+  'usr-res-11', 'usr-res-12', 'usr-102', 'usr-103', 'usr-104',
+  'reseller-sachin-5', 'reseller-alpha-1'
+]);
+
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [users, setUsers] = useState<User[]>(() => {
+    try {
+      const saved = localStorage.getItem(USERS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const cleaned = parsed.filter(u => !PURGED_MOCK_IDS.has(u.id));
+          const hasAdmin = cleaned.some(u => u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+          if (!hasAdmin) {
+            return [...INITIAL_USERS, ...cleaned];
+          }
+          return cleaned.length > 0 ? cleaned : INITIAL_USERS;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return INITIAL_USERS;
+  });
+
+  const [resellers, setResellers] = useState<Reseller[]>(() => {
+    try {
+      const saved = localStorage.getItem(RESELLERS_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.filter(r => !PURGED_MOCK_IDS.has(r.id));
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return INITIAL_RESELLERS;
+  });
+
+  const [sessionTerminatedNotice, setSessionTerminatedNotice] = useState(false);
+  const dismissSessionTerminatedNotice = () => setSessionTerminatedNotice(false);
+
+  const [currentReseller, setCurrentReseller] = useState<Reseller | null>(() => {
+    try {
+      const saved = localStorage.getItem(CURRENT_RESELLER_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  });
+
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const saved = localStorage.getItem(CURRENT_USER_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  });
+
+  const [generations, setGenerations] = useState<Generation[]>(() => {
+    try {
+      const saved = localStorage.getItem(GENERATIONS_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore
+    }
+    return INITIAL_GENERATIONS;
+  });
+
+  const [showcaseVideos] = useState<ShowcaseVideo[]>(INITIAL_SHOWCASE);
+
+  const [planExtensions, setPlanExtensions] = useState<PlanExtensionsConfig>(() => {
+    try {
+      const saved = localStorage.getItem(PLAN_EXTENSIONS_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_PLAN_EXTENSIONS;
+  });
+
+  const [tutorialConfig, setTutorialConfig] = useState<TutorialConfig>(() => {
+    try {
+      const saved = localStorage.getItem(TUTORIAL_STORAGE_KEY);
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_TUTORIAL_CONFIG;
+  });
+
+  const [heroConfig, setHeroConfig] = useState<HeroConfig>(() => {
+    try {
+      const saved = localStorage.getItem(HERO_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Migration check for old single-item structure
+        if (parsed.title) {
+          return {
+            items: [{
+              id: '1',
+              title: parsed.title,
+              description: parsed.description,
+              mediaUrl: parsed.mediaUrl,
+              mediaType: parsed.mediaType,
+              buttonText: parsed.buttonText,
+              buttonUrl: parsed.buttonUrl
+            }],
+            rotationSpeed: 5000
+          };
+        }
+        return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_HERO_CONFIG;
+  });
+
+  const [promptConfig, setPromptConfig] = useState<PromptConfig>(() => {
+    try {
+      const saved = localStorage.getItem(PROMPT_CONFIG_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Merge with defaults to ensure new keys like 'pricing' are present
+        return {
+          ...DEFAULT_PROMPT_CONFIG,
+          ...parsed,
+          pricing: parsed.pricing || DEFAULT_PROMPT_CONFIG.pricing
+        };
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_PROMPT_CONFIG;
+  });
+
+  // Track timestamps of locally updated entities to prevent polling from reverting rapid changes
+  const lastUpdatedUsersRef = useRef<Map<string, { timestamp: number; data: Partial<User> }>>(new Map());
+  const lastUpdatedResellersRef = useRef<Map<string, { timestamp: number; data: Partial<Reseller> }>>(new Map());
+  const lastConfigUpdateRef = useRef<number>(0);
+
+  // Current user's plan extension (fallback to basic)
+  const activePlan = currentUser?.plan || 'basic';
+  const extensionConfig = planExtensions[activePlan] || planExtensions.basic;
+
+  // Sync plan extensions to localStorage & central server
+  useEffect(() => {
+    try {
+      localStorage.setItem(PLAN_EXTENSIONS_STORAGE_KEY, JSON.stringify(planExtensions));
+    } catch {
+      // ignore
+    }
+
+    fetch(apiUrl('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ planExtensions }),
+    }).catch(() => {});
+  }, [planExtensions]);
+
+  // Sync tutorial config to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(TUTORIAL_STORAGE_KEY, JSON.stringify(tutorialConfig));
+    } catch {
+      // ignore
+    }
+
+    fetch(apiUrl('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tutorialConfig }),
+    }).catch(() => {});
+  }, [tutorialConfig]);
+
+  // Sync hero config to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(HERO_STORAGE_KEY, JSON.stringify(heroConfig));
+    } catch {
+      // ignore
+    }
+
+    fetch(apiUrl('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ heroConfig }),
+    }).catch(() => {});
+  }, [heroConfig]);
+
+  // Sync prompt config to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(PROMPT_CONFIG_STORAGE_KEY, JSON.stringify(promptConfig));
+    } catch {
+      // ignore
+    }
+
+    fetch(apiUrl('/api/config'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ promptConfig }),
+    }).catch(() => {});
+  }, [promptConfig]);
+
+  // Sync resellers to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(RESELLERS_STORAGE_KEY, JSON.stringify(resellers));
+    } catch {
+      // ignore
+    }
+  }, [resellers]);
+
+  // Sync current reseller to localStorage
+  useEffect(() => {
+    try {
+      if (currentReseller) {
+        localStorage.setItem(CURRENT_RESELLER_KEY, JSON.stringify(currentReseller));
+      } else {
+        localStorage.removeItem(CURRENT_RESELLER_KEY);
+      }
+    } catch {
+      // ignore
+    }
+  }, [currentReseller]);
+
+  // Sync users to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
+    } catch {
+      // ignore
+    }
+  }, [users]);
+
+  // Sync current user to localStorage & Extension Bridge
+  useEffect(() => {
+    try {
+      if (currentUser) {
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(currentUser));
+        
+        const isUltra = currentUser.plan === 'ultra';
+        const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+        const canAccessPrompts = isUltra && currentUser.status === 'active';
+
+        const extensionBridgeData = {
+          email: currentUser.email,
+          name: currentUser.name,
+          plan: currentUser.plan,
+          planName: isUltra ? 'Ultra VIP 4K Plan' : 'Basic Plan',
+          credits: currentUser.credits,
+          creditsLeft: currentUser.credits,
+          maxCredits: currentUser.maxCredits,
+          totalCredits: currentUser.maxCredits,
+          sessionToken: sessionToken,
+          canAccessPrompts: canAccessPrompts, // Basic plan = false (no prompt access), Ultra = true
+          status: currentUser.status,
+          planDaysLeft: currentUser.planDaysLeft,
+          extensionAccess: currentUser.extensionAccess !== false,
+          isConnected: true,
+          portalDomain: window.location.hostname || 'flowmakerai.site',
+          lastSynced: new Date().toISOString()
+        };
+
+        localStorage.setItem('flow_extension_bridge_v3', JSON.stringify(extensionBridgeData));
+        localStorage.setItem('flow_portal_session_v3', JSON.stringify(extensionBridgeData));
+        
+        // Notify any active chrome extension content scripts on flowmakerai.site
+        window.dispatchEvent(new CustomEvent('FLOW_EXTENSION_SYNC', { detail: extensionBridgeData }));
+        window.postMessage({ type: 'FLOW_PORTAL_USER_SYNC', data: extensionBridgeData }, '*');
+      } else {
+        localStorage.removeItem(CURRENT_USER_KEY);
+        localStorage.removeItem('flow_extension_bridge_v3');
+        localStorage.removeItem('flow_portal_session_v3');
+        localStorage.removeItem('flowmaker_session_token');
+        localStorage.removeItem('google_flow_user_data');
+        window.dispatchEvent(new CustomEvent('FLOW_EXTENSION_DISCONNECT', { detail: { action: 'logout' } }));
+        window.postMessage({ type: 'FLOW_PORTAL_DISCONNECT' }, '*');
+      }
+    } catch {
+      // ignore
+    }
+  }, [currentUser]);
+
+  // Sync generations
+  useEffect(() => {
+    try {
+      localStorage.setItem(GENERATIONS_STORAGE_KEY, JSON.stringify(generations));
+    } catch {
+      // ignore
+    }
+  }, [generations]);
+
+  // Real-time Central Server Sync & Polling
+  useEffect(() => {
+    let isMounted = true;
+
+    // Initial sync of current local users to server (excluding mock/purged IDs)
+    try {
+      const currentLocalUsers = JSON.parse(localStorage.getItem(USERS_STORAGE_KEY) || '[]');
+      if (Array.isArray(currentLocalUsers) && currentLocalUsers.length > 0) {
+        const validUsers = currentLocalUsers.filter((u: any) => u.id && !PURGED_MOCK_IDS.has(u.id));
+        if (validUsers.length > 0) {
+          fetch(apiUrl('/api/users/sync-all'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ users: validUsers }),
+          }).catch(() => {});
+        }
+      }
+    } catch {}
+
+    const pollCentralServer = async () => {
+      try {
+        const supabase = getSupabase();
+        if (supabase) {
+          // 1. Fetch from Supabase Cloud (Users table for user accounts & config rows)
+          const { data: supaUsers, error: userErr } = await supabase.from('users').select('*');
+          if (!userErr && supaUsers && Array.isArray(supaUsers) && isMounted) {
+            const nowTime = Date.now();
+            const configUpdateSafe = nowTime - lastConfigUpdateRef.current > 10000;
+
+            const sysConfigExtensions = supaUsers.find((u: any) => u.id === 'admin_config_extensions');
+            if (sysConfigExtensions && sysConfigExtensions.name && configUpdateSafe) {
+              try {
+                const parsed = JSON.parse(sysConfigExtensions.name);
+                if (parsed.basic && parsed.ultra) {
+                  setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+                }
+              } catch (e) {
+                console.error("Failed to parse plan extensions from Supabase", e);
+              }
+            }
+
+            const sysConfigTutorial = supaUsers.find((u: any) => u.id === 'admin_config_tutorial');
+            if (sysConfigTutorial && sysConfigTutorial.name && configUpdateSafe) {
+              try {
+                const parsed = JSON.parse(sysConfigTutorial.name);
+                if (parsed.desktopVideoUrl !== undefined) {
+                  setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+                }
+              } catch (e) {
+                console.error("Failed to parse tutorial config from Supabase", e);
+              }
+            }
+
+            const sysConfigHero = supaUsers.find((u: any) => u.id === 'admin_config_hero');
+            if (sysConfigHero && sysConfigHero.name && configUpdateSafe) {
+              try {
+                const parsed = JSON.parse(sysConfigHero.name);
+                if (parsed.items !== undefined || parsed.title !== undefined) {
+                  setHeroConfig(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+                }
+              } catch (e) {
+                console.error("Failed to parse hero config from Supabase", e);
+              }
+            }
+
+            const sysConfigPrompts = supaUsers.find((u: any) => u.id === 'admin_config_prompts');
+            if (sysConfigPrompts && sysConfigPrompts.name && configUpdateSafe) {
+              try {
+                const parsed = JSON.parse(sysConfigPrompts.name);
+                if (parsed.servers !== undefined) {
+                  setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+                }
+              } catch (e) {
+                console.error("Failed to parse prompt config from Supabase", e);
+              }
+            }
+
+            const mappedUsers: User[] = supaUsers
+              .filter((su: any) => 
+                su.id && 
+                !su.id.startsWith('admin_config_') && 
+                !su.id.startsWith('sys_config_') && 
+                !su.email?.includes('@system.local')
+              )
+              .map((su: any) => {
+                const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
+                const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime < 180000);
+                return {
+                  id: su.id,
+                  name: su.name,
+                  email: su.email,
+                  password: su.password,
+                  sessionToken: su.session_token || su.sessionToken || '',
+                  whatsapp: su.whatsapp || '',
+                  telegram: su.telegram || '',
+                  referralCode: su.referral_code || '',
+                  referredBy: su.referred_by || '',
+                  plan: (su.plan as PlanType) || 'basic',
+                  credits: Number(su.credits) || 0,
+                  maxCredits: Number(su.max_credits) || 100,
+                  planDaysLeft: Number(su.plan_days_left) || 30,
+                  role: (su.role as any) || 'user',
+                  resellerId: su.reseller_id,
+                  resellerName: su.reseller_name,
+                  createdAt: su.created_at || new Date().toISOString(),
+                  avatarColor: su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+                  status: (su.status as any) || 'active',
+                  extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
+                  canEditPrompts: su.can_edit_prompts === true,
+                  isOnline: Boolean(su.is_online) || isRecent,
+                  lastActive: su.last_active || new Date().toISOString(),
+                };
+              });
+            
+            const now = Date.now();
+            const mergedUsers = mappedUsers.map((su: User) => {
+              if (currentUser && (su.id === currentUser.id || (su.email && su.email.toLowerCase() === currentUser.email.toLowerCase()))) {
+                return { ...su, isOnline: true, lastActive: new Date().toISOString() };
+              }
+              const pending = lastUpdatedUsersRef.current.get(su.id);
+              if (pending && now - pending.timestamp < 10000) {
+                return { ...su, ...pending.data };
+              }
+              return su;
+            });
+
+            setUsers(mergedUsers);
+            if (currentUser) {
+              const currentInList = mergedUsers.find((u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase());
+              const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
+              
+              if (currentInList && (
+                currentInList.status === 'suspended' || 
+                currentInList.status === 'inactive' || 
+                (currentInList.sessionToken && localToken && currentInList.sessionToken !== localToken)
+              )) {
+                console.warn('[SingleSession] Newer login on another device detected during Supabase poll! Terminating session.');
+                setSessionTerminatedNotice(true);
+                logout();
+              } else if (currentInList && (
+                currentInList.plan !== currentUser.plan || 
+                currentInList.credits !== currentUser.credits || 
+                currentInList.maxCredits !== currentUser.maxCredits ||
+                currentInList.planDaysLeft !== currentUser.planDaysLeft ||
+                currentInList.status !== currentUser.status ||
+                Boolean(currentInList.canEditPrompts) !== Boolean(currentUser.canEditPrompts) ||
+                currentInList.role !== currentUser.role ||
+                currentInList.extensionAccess !== currentUser.extensionAccess
+              )) {
+                setCurrentUser(prev => prev ? { ...prev, ...currentInList } : null);
+              }
+            }
+          }
+
+          const { data: supaResellers, error: resErr } = await supabase.from('resellers').select('*');
+          if (!resErr && supaResellers && Array.isArray(supaResellers) && isMounted) {
+            const mappedResellers: Reseller[] = supaResellers.map((sr: any) => ({
+              id: sr.id,
+              portalName: sr.portal_name || sr.portalName,
+              email: sr.email,
+              password: sr.password,
+              userLimit: sr.user_limit || sr.userLimit || sr.max_users || 50,
+              daysLeft: sr.days_left || sr.daysLeft || 30,
+              expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
+              status: sr.status || 'active',
+              createdAt: sr.created_at || new Date().toISOString(),
+              notes: sr.notes || '',
+            }));
+            const now = Date.now();
+            const mergedResellers = mappedResellers.map((sr: Reseller) => {
+              const pending = lastUpdatedResellersRef.current.get(sr.id);
+              if (pending && now - pending.timestamp < 10000) {
+                return { ...sr, ...pending.data };
+              }
+              return sr;
+            });
+            setResellers(mergedResellers);
+          }
+        }
+
+        // 2. Fetch config & fallback server
+        const [usersRes, resellersRes, configRes] = await Promise.all([
+          fetch(apiUrl('/api/users')),
+          fetch(apiUrl('/api/resellers')),
+          fetch(apiUrl('/api/config')),
+        ]);
+
+        if (!supabase && usersRes.ok) {
+          const data = await usersRes.json();
+          if (data.users && Array.isArray(data.users) && isMounted) {
+            const now = Date.now();
+            const mergedUsers = data.users.map((u: User) => {
+              if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
+                return { ...u, isOnline: true, lastActive: new Date().toISOString() };
+              }
+              const pending = lastUpdatedUsersRef.current.get(u.id);
+              if (pending && now - pending.timestamp < 10000) {
+                return { ...u, ...pending.data };
+              }
+              return u;
+            });
+            setUsers(mergedUsers);
+            // If current user is logged in, refresh their status if updated from admin
+            if (currentUser) {
+              const currentInList = mergedUsers.find((u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase());
+              const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
+              
+              if (currentInList && (
+                currentInList.status === 'suspended' || 
+                currentInList.status === 'inactive' || 
+                (currentInList.sessionToken && localToken && currentInList.sessionToken !== localToken)
+              )) {
+                console.warn('[SingleSession] Newer login on another device detected during server poll! Terminating session.');
+                setSessionTerminatedNotice(true);
+                logout();
+              } else if (currentInList && (
+                currentInList.plan !== currentUser.plan || 
+                currentInList.credits !== currentUser.credits || 
+                currentInList.maxCredits !== currentUser.maxCredits ||
+                currentInList.planDaysLeft !== currentUser.planDaysLeft ||
+                currentInList.status !== currentUser.status ||
+                Boolean(currentInList.canEditPrompts) !== Boolean(currentUser.canEditPrompts) ||
+                currentInList.role !== currentUser.role ||
+                currentInList.extensionAccess !== currentUser.extensionAccess
+              )) {
+                setCurrentUser(prev => prev ? { ...prev, ...currentInList } : null);
+              }
+            }
+          }
+        }
+
+        if (!supabase && resellersRes.ok) {
+          const resData = await resellersRes.json();
+          if (resData.resellers && Array.isArray(resData.resellers) && isMounted) {
+            const now = Date.now();
+            const mergedResellers = resData.resellers.map((r: Reseller) => {
+              const pending = lastUpdatedResellersRef.current.get(r.id);
+              if (pending && now - pending.timestamp < 10000) {
+                return { ...r, ...pending.data };
+              }
+              return r;
+            });
+            setResellers(mergedResellers);
+          }
+        }
+
+        if (configRes.ok) {
+          const cfgData = await configRes.json();
+          if (cfgData.planExtensions && isMounted) {
+            setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.planExtensions) ? prev : cfgData.planExtensions));
+          }
+          if (cfgData.tutorialConfig && isMounted) {
+            setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.tutorialConfig) ? prev : cfgData.tutorialConfig));
+          }
+          if (cfgData.promptConfig && isMounted && Date.now() - lastConfigUpdateRef.current > 10000) {
+            setPromptConfig(prev => {
+              const merged = {
+                ...DEFAULT_PROMPT_CONFIG,
+                ...prev,
+                ...cfgData.promptConfig,
+              };
+              if (prev && JSON.stringify(prev) === JSON.stringify(merged)) {
+                return prev;
+              }
+              return merged;
+            });
+          }
+        }
+      } catch {
+        // network or offline fallback
+      }
+    };
+
+    pollCentralServer();
+    // Poll every 3 seconds for live member signups
+    const pollInterval = setInterval(pollCentralServer, 3000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, [currentUser?.id, currentUser?.plan, currentUser?.credits]);
+
+  // Cross-tab broadcast channel for instant multi-tab presence & single-session sync
+  useEffect(() => {
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new BroadcastChannel('flow_user_presence');
+        bc.onmessage = (event) => {
+          const { type, userId, email, isOnline, lastActive, sessionToken } = event.data || {};
+          if (type === 'HEARTBEAT' && (userId || email)) {
+            setUsers(prev => prev.map(u => {
+              if ((userId && u.id === userId) || (email && u.email && u.email.toLowerCase() === email.toLowerCase())) {
+                return { ...u, isOnline: isOnline ?? true, lastActive: lastActive || new Date().toISOString() };
+              }
+              return u;
+            }));
+          }
+          if (type === 'NEW_LOGIN' && email && currentUser) {
+            const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinxexplore@gmail.com' || currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
+            const localToken = localStorage.getItem('flowmaker_session_token');
+            if (!isCurrentUserAdmin && currentUser.email.toLowerCase() === email.toLowerCase() && sessionToken && localToken && sessionToken !== localToken) {
+              console.warn('[SingleSession] BroadcastChannel: new login detected on another tab/window! Logging out old session.');
+              logout();
+              setSessionTerminatedNotice(true);
+            }
+          }
+        };
+      }
+    } catch {
+      // fallback
+    }
+
+    return () => {
+      if (bc) {
+        bc.close();
+      }
+    };
+  }, [currentUser?.email]);
+
+  // Supabase Realtime subscription for immediate (< 500ms) cross-device session termination
+  useEffect(() => {
+    if (!currentUser) return;
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    const channel = supabase.channel(`user-session-${currentUser.id}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'users',
+        filter: `id=eq.${currentUser.id}`,
+      }, (payload: any) => {
+        const newSupaUser = payload.new;
+        const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
+        if (newSupaUser && newSupaUser.session_token && localToken && newSupaUser.session_token !== localToken) {
+          console.warn('[Realtime] Newer session detected on another device! Logging out old session.');
+          setSessionTerminatedNotice(true);
+          logout();
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser?.id, currentUser?.email]);
+
+  // Heartbeat to keep currentUser active/online & enforce single-session exclusivity
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new BroadcastChannel('flow_user_presence');
+      }
+    } catch {}
+
+    const heartbeat = () => {
+      const now = new Date().toISOString();
+      const localToken = localStorage.getItem('flowmaker_session_token');
+
+      setUsers(prev =>
+        prev.map(u => (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
+          ? { ...u, isOnline: true, lastActive: now } 
+          : u
+        ))
+      );
+
+      // Broadcast to other tabs on same machine
+      if (bc) {
+        try {
+          bc.postMessage({
+            type: 'HEARTBEAT',
+            userId: currentUser.id,
+            email: currentUser.email,
+            isOnline: true,
+            lastActive: now,
+          });
+        } catch {}
+      }
+
+      // Smart Throttled Supabase Single-Session Guard (Only runs if active tab & throttled to save 99% Supabase quota)
+      const supabase = getSupabase();
+      if (supabase && currentUser.email && document.visibilityState === 'visible') {
+        const lastCheck = (window as any)._lastSupaSessionCheck || 0;
+        const nowMs = Date.now();
+        
+        // Check session token every 12 seconds or on tab focus
+        if (nowMs - lastCheck > 12000) {
+          (window as any)._lastSupaSessionCheck = nowMs;
+          supabase
+            .from('users')
+            .select('session_token, status')
+            .ilike('email', currentUser.email.toLowerCase())
+            .maybeSingle()
+            .then(
+              ({ data: remoteUser }) => {
+                if (remoteUser) {
+                  const currentLocalToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
+                  if (remoteUser.status === 'suspended') {
+                    console.warn('[SingleDeviceGuard] Account suspended! Logging out.');
+                    setSessionTerminatedNotice(true);
+                    logout();
+                  } else if (remoteUser.session_token && currentLocalToken && remoteUser.session_token !== currentLocalToken) {
+                    console.warn('[SingleDeviceGuard] Remote session token mismatch on Supabase! Logging out old session.');
+                    setSessionTerminatedNotice(true);
+                    logout();
+                  }
+                }
+              },
+              () => {}
+            );
+        }
+      }
+
+      // Central server sync with session token verification (Runs on server.ts - 0 Supabase cost)
+      fetch(apiUrl('/api/users/heartbeat'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          email: currentUser.email,
+          isOnline: true,
+          sessionToken: localToken || currentUser.sessionToken
+        }),
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.sessionMismatch) {
+          console.warn('[SingleSession] Heartbeat detected session mismatch! Terminating old session.');
+          setSessionTerminatedNotice(true);
+          logout();
+        }
+      })
+      .catch(() => {});
+    };
+
+    heartbeat();
+    const interval = setInterval(heartbeat, 3000);
+
+    const onUserActivity = () => {
+      (window as any)._lastSupaSessionCheck = 0; // Force immediate check on tab focus/activity
+      heartbeat();
+    };
+    window.addEventListener('focus', onUserActivity);
+    window.addEventListener('visibilitychange', onUserActivity);
+
+    const handleUnload = () => {
+      if (currentUser) {
+        if (bc) {
+          try {
+            bc.postMessage({
+              type: 'HEARTBEAT',
+              userId: currentUser.id,
+              email: currentUser.email,
+              isOnline: false,
+              lastActive: new Date().toISOString(),
+            });
+          } catch {}
+        }
+        const supabase = getSupabase();
+        if (supabase && currentUser.email) {
+          supabase.from('users')
+            .update({ is_online: false, last_active: new Date().toISOString() })
+            .eq('email', currentUser.email.toLowerCase())
+            .then(() => {}, () => {});
+        }
+        navigator.sendBeacon(
+          apiUrl('/api/users/heartbeat'),
+          JSON.stringify({ userId: currentUser.id, email: currentUser.email, isOnline: false })
+        );
+      }
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onUserActivity);
+      window.removeEventListener('beforeunload', handleUnload);
+      if (bc) bc.close();
+    };
+  }, [currentUser?.id, currentUser?.email]);
+
+  // Active Telegram Alert Monitor (Runs continuously in browser so reminders & overdue alerts work 100% on live portal / Vercel / Netlify)
+  useEffect(() => {
+    const checkTelegramAlerts = async () => {
+      const tg = promptConfig?.telegramAlerts;
+      if (!tg || !tg.enabled || !tg.botToken?.trim() || !tg.chatId?.trim() || !Array.isArray(promptConfig.servers) || promptConfig.servers.length === 0) {
+        return;
+      }
+
+      const cycleMinutes = Number(promptConfig.promptReminderMinutes) || 120;
+      const cycleMs = cycleMinutes * 60 * 1000;
+      const reminderMinutesBefore = Number(tg.reminderMinutesBefore) || 20;
+      const missedMinutesAfter = Number(tg.missedAlertMinutesAfter) || 5;
+      const now = Date.now();
+      let updatedServers = [...promptConfig.servers];
+      let hasChange = false;
+
+      for (let i = 0; i < updatedServers.length; i++) {
+        const srv = { ...updatedServers[i] };
+        if (!srv.lastUpdatedAt) continue;
+        const lastUpdatedMs = new Date(srv.lastUpdatedAt).getTime();
+        if (isNaN(lastUpdatedMs)) continue;
+
+        const expiryTime = lastUpdatedMs + cycleMs;
+        const remainingMs = expiryTime - now;
+        const remainingMinutes = Math.floor(remainingMs / 60000);
+
+        // 1. 20-Minutes Pre-Expiry Reminder
+        if (remainingMinutes <= reminderMinutesBefore && remainingMinutes > 0 && !srv.reminded20MinSent) {
+          const msg = generate20MinReminderMessage(
+            srv.label || `Server ${i + 1}`,
+            srv.id,
+            Math.max(1, remainingMinutes),
+            srv.updatedBy
+          );
+          const res = await sendTelegramNotification(tg.botToken.trim(), tg.chatId.trim(), msg);
+          if (res.success) {
+            srv.reminded20MinSent = true;
+            updatedServers[i] = srv;
+            hasChange = true;
+          }
+        }
+
+        // 2. 5-Minutes Post-Expiry Missed Alert with exact IST Time
+        const overdueMs = now - expiryTime;
+        const overdueMinutes = Math.floor(overdueMs / 60000);
+        if (overdueMinutes >= missedMinutesAfter && !srv.missed5MinSent) {
+          const msg = generate5MinMissedAlertMessage(
+            srv.label || `Server ${i + 1}`,
+            srv.id,
+            overdueMinutes,
+            srv.updatedBy
+          );
+          const res = await sendTelegramNotification(tg.botToken.trim(), tg.chatId.trim(), msg);
+          if (res.success) {
+            srv.missed5MinSent = true;
+            srv.wasMissed = true;
+            srv.missedAlertSentAt = new Date().toISOString();
+            updatedServers[i] = srv;
+            hasChange = true;
+          }
+        }
+      }
+
+      if (hasChange) {
+        updatePromptConfig({ servers: updatedServers });
+      }
+    };
+
+    const alertTimer = setInterval(checkTelegramAlerts, 25000);
+    const initTimer = setTimeout(checkTelegramAlerts, 4000);
+
+    return () => {
+      clearInterval(alertTimer);
+      clearTimeout(initTimer);
+    };
+  }, [promptConfig]);
+
+  const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
+  const isAdmin = (currentUser?.email && adminEmails.includes(currentUser.email.toLowerCase())) || currentUser?.role === 'admin';
+
+  const resellerLogin = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPass = pass.trim();
+
+    // Check local first
+    let reseller = resellers.find(r => r.email.toLowerCase() === cleanEmail);
+
+    // 0. Supabase direct check
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data: supaR, error } = await supabase
+          .from('resellers')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (!error && supaR) {
+          const mapped: Reseller = {
+            id: supaR.id,
+            portalName: supaR.portal_name || supaR.portalName,
+            email: supaR.email,
+            password: supaR.password,
+            userLimit: supaR.user_limit || supaR.userLimit || supaR.max_users || 50,
+            daysLeft: supaR.days_left || supaR.daysLeft || 30,
+            expiryDate: supaR.expiry_date || supaR.expiryDate || '30/10/2026',
+            status: supaR.status || 'active',
+            createdAt: supaR.created_at || new Date().toISOString(),
+            notes: supaR.notes || '',
+          };
+          reseller = mapped;
+          setResellers(prev => {
+            const exists = prev.some(x => x.id === mapped.id);
+            return exists ? prev.map(x => x.id === mapped.id ? mapped : x) : [mapped, ...prev];
+          });
+        }
+      } catch (err) {
+        console.warn('Supabase reseller check error:', err);
+      }
+    }
+
+    // If not found locally, fetch latest resellers from live backend
+    if (!reseller) {
+      try {
+        const res = await fetch(apiUrl('/api/resellers'));
+        if (res.ok) {
+          const data = await res.json();
+          if (data.resellers && Array.isArray(data.resellers)) {
+            setResellers(data.resellers);
+            reseller = data.resellers.find((r: Reseller) => r.email.toLowerCase() === cleanEmail);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching resellers:', err);
+      }
+    }
+
+    if (!reseller) {
+      return { success: false, error: 'No reseller portal found with this email. Contact main administrator.' };
+    }
+
+    if (reseller.password !== cleanPass) {
+      return { success: false, error: 'Incorrect portal password.' };
+    }
+
+    if (reseller.status === 'suspended') {
+      return { success: false, error: 'This reseller portal has been suspended by administration.' };
+    }
+
+    setCurrentReseller(reseller);
+    return { success: true };
+  };
+
+  const loginAsReseller = (reseller: Reseller) => {
+    setCurrentReseller(reseller);
+  };
+
+  const logoutReseller = () => {
+    setCurrentReseller(null);
+  };
+
+  const createReseller = async (data: {
+    portalName: string;
+    email: string;
+    password: string;
+    userLimit: number;
+    daysLeft: number;
+    notes?: string;
+  }): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = data.email.trim().toLowerCase();
+    if (!data.portalName.trim()) {
+      return { success: false, error: 'Please enter a portal store name.' };
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid email address.' };
+    }
+    if (!data.password.trim()) {
+      return { success: false, error: 'Please enter a password for this reseller portal.' };
+    }
+
+    const exists = resellers.some(r => r.email.toLowerCase() === cleanEmail);
+    if (exists) {
+      return { success: false, error: 'A reseller with this email already exists.' };
+    }
+
+    const targetDays = Math.max(1, data.daysLeft || 30);
+    const expDate = new Date();
+    expDate.setDate(expDate.getDate() + targetDays);
+    const formattedExp = `${String(expDate.getDate()).padStart(2, '0')}/${String(expDate.getMonth() + 1).padStart(2, '0')}/${expDate.getFullYear()}`;
+
+    const newReseller: Reseller = {
+      id: `reseller-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      portalName: data.portalName.trim(),
+      email: cleanEmail,
+      password: data.password.trim(),
+      userLimit: Math.max(1, data.userLimit || 20),
+      daysLeft: targetDays,
+      expiryDate: formattedExp,
+      status: targetDays > 0 ? 'active' : 'expired',
+      createdAt: new Date().toISOString(),
+      notes: data.notes?.trim() || '',
+    };
+
+    setResellers(prev => [newReseller, ...prev]);
+    // Supabase direct sync
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('resellers').upsert({
+        id: newReseller.id,
+        portal_name: newReseller.portalName,
+        email: newReseller.email,
+        password: newReseller.password,
+        user_limit: newReseller.userLimit,
+        days_left: newReseller.daysLeft,
+        expiry_date: newReseller.expiryDate,
+        status: newReseller.status,
+        created_at: newReseller.createdAt,
+        notes: newReseller.notes,
+      }).then(({ error }) => {
+        if (error) console.error('Supabase reseller create error:', error);
+      });
+    }
+
+    try {
+      await fetch(apiUrl('/api/resellers'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newReseller),
+      });
+    } catch (err) {
+      console.error('Error creating reseller on server:', err);
+    }
+    return { success: true };
+  };
+
+  const updateReseller = (resellerId: string, data: Partial<Reseller>) => {
+    setResellers(prev =>
+      prev.map(r => {
+        if (r.id === resellerId) {
+          const updatedDays = data.daysLeft !== undefined ? Math.max(0, data.daysLeft) : r.daysLeft;
+          const status = data.status !== undefined ? data.status : (updatedDays <= 0 ? 'expired' : 'active');
+          const updated: Reseller = {
+            ...r,
+            ...data,
+            daysLeft: updatedDays,
+            status,
+          };
+          return updated;
+        }
+        return r;
+      })
+    );
+
+    if (currentReseller && currentReseller.id === resellerId) {
+      setCurrentReseller(prev => (prev ? { ...prev, ...data } : null));
+    }
+
+    const existingReseller = resellers.find(r => r.id === resellerId);
+    if (existingReseller) {
+      const updatedReseller: Reseller = {
+        ...existingReseller,
+        ...data,
+        daysLeft: data.daysLeft !== undefined ? Math.max(0, data.daysLeft) : existingReseller.daysLeft,
+        status: data.status !== undefined ? data.status : ((data.daysLeft !== undefined ? Math.max(0, data.daysLeft) : existingReseller.daysLeft) <= 0 ? 'expired' : 'active'),
+      };
+
+      lastUpdatedResellersRef.current.set(resellerId, {
+        timestamp: Date.now(),
+        data: updatedReseller,
+      });
+
+      const supa = getSupabase();
+      if (supa) {
+        const supaUpdatePayload: any = {};
+        if (data.portalName !== undefined) supaUpdatePayload.portal_name = data.portalName;
+        if (data.email !== undefined) supaUpdatePayload.email = data.email;
+        if (data.password !== undefined) supaUpdatePayload.password = data.password;
+        if (data.userLimit !== undefined) supaUpdatePayload.user_limit = data.userLimit;
+        if (data.daysLeft !== undefined) supaUpdatePayload.days_left = data.daysLeft;
+        if (data.status !== undefined) supaUpdatePayload.status = data.status;
+        if (data.notes !== undefined) supaUpdatePayload.notes = data.notes;
+        supa.from('resellers').update(supaUpdatePayload).eq('id', resellerId).then(() => {});
+      }
+
+      fetch(apiUrl('/api/resellers'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedReseller),
+      }).catch(() => {});
+    }
+  };
+
+  const deleteReseller = (resellerId: string) => {
+    setResellers(prev => prev.filter(r => r.id !== resellerId));
+    if (currentReseller?.id === resellerId) {
+      setCurrentReseller(null);
+    }
+    const supa = getSupabase();
+    if (supa) {
+      supa.from('resellers').delete().eq('id', resellerId).then(() => {});
+    }
+    fetch(apiUrl(`/api/resellers/${resellerId}`), { method: 'DELETE' }).catch(() => {});
+  };
+
+  const addUserByReseller = async (
+    resellerId: string,
+    userData: {
+      name: string;
+      email: string;
+      password?: string;
+      plan: PlanType;
+      credits: number;
+      daysLeft: number;
+    }
+  ): Promise<{ success: boolean; error?: string }> => {
+    const targetReseller = resellers.find(r => r.id === resellerId);
+    if (!targetReseller) {
+      return { success: false, error: 'Reseller not found.' };
+    }
+
+    if (targetReseller.daysLeft <= 0 || targetReseller.status === 'expired') {
+      return { success: false, error: 'Your reseller portal has expired. Contact administrator to renew.' };
+    }
+
+    const currentResellerUsersCount = users.filter(u => u.resellerId === resellerId).length;
+    if (currentResellerUsersCount >= targetReseller.userLimit) {
+      return {
+        success: false,
+        error: `User limit of ${targetReseller.userLimit} reached. Request admin to increase limit.`,
+      };
+    }
+
+    const cleanEmail = userData.email.trim().toLowerCase();
+    if (!userData.name.trim()) {
+      return { success: false, error: 'Please enter full name.' };
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid email address.' };
+    }
+
+    const existingUser = users.find(u => u.email.toLowerCase() === cleanEmail);
+    if (existingUser) {
+      return { success: false, error: 'This Gmail ID is already registered! Please use a different Gmail.' };
+    }
+
+    // Double check Supabase for absolute certainty
+    const supa = getSupabase();
+    if (supa) {
+      const { data: supaExists } = await supa.from('users').select('id').eq('email', cleanEmail).maybeSingle();
+      if (supaExists) {
+        return { success: false, error: 'This Gmail ID is already registered! Please use a different Gmail.' };
+      }
+    }
+
+    const initialPassword = userData.password?.trim() || `flow${Math.floor(100000 + Math.random() * 900000)}`;
+    const credits = userData.credits || (userData.plan === 'ultra' ? 45000 : 100);
+    const maxCredits = credits;
+    // Reseller members access is strictly capped at maximum 30 days
+    const requestedDays = userData.daysLeft !== undefined ? userData.daysLeft : 30;
+    const daysLeft = Math.min(30, Math.max(1, requestedDays));
+
+    const newUser: User = {
+      id: `usr-res-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      name: userData.name.trim(),
+      email: cleanEmail,
+      password: initialPassword,
+      plan: userData.plan,
+      credits,
+      maxCredits,
+      planDaysLeft: daysLeft,
+      role: 'user',
+      resellerId: targetReseller.id,
+      resellerName: targetReseller.portalName,
+      createdAt: new Date().toISOString(),
+      avatarColor: userData.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+      status: 'active',
+      isOnline: false,
+      lastActive: new Date().toISOString(),
+    };
+
+    setUsers(prev => [newUser, ...prev]);
+
+    // Supabase direct database insert
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').upsert({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        password: newUser.password,
+        plan: newUser.plan,
+        credits: newUser.credits,
+        max_credits: newUser.maxCredits,
+        plan_days_left: newUser.planDaysLeft,
+        role: newUser.role,
+        reseller_id: newUser.resellerId,
+        reseller_name: targetReseller.portalName,
+        status: newUser.status,
+        is_online: false,
+        last_active: newUser.lastActive,
+        created_at: newUser.createdAt,
+      }).then(({ error }) => {
+        if (error) console.error('Supabase reseller user insert error:', error);
+      });
+    }
+
+    // Send to central server database immediately
+    try {
+      await fetch(apiUrl('/api/users/signup'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: newUser.id,
+          name: newUser.name,
+          email: newUser.email,
+          password: newUser.password,
+          plan: newUser.plan,
+          credits: newUser.credits,
+          maxCredits: newUser.maxCredits,
+          planDaysLeft: newUser.planDaysLeft,
+          role: newUser.role,
+          resellerId: newUser.resellerId,
+          resellerName: targetReseller.portalName,
+          createdAt: newUser.createdAt,
+          avatarColor: newUser.avatarColor,
+          status: newUser.status,
+        }),
+      });
+    } catch (err) {
+      console.error('Error saving reseller user to central server:', err);
+    }
+
+    return { success: true };
+  };
+
+  const rotateUserCredentials = (userId: string): { email: string; password?: string } | null => {
+    const user = users.find(u => u.id === userId);
+    if (!user) return null;
+
+    const newPass = `flow${Math.floor(100000 + Math.random() * 900000)}`;
+    setUsers(prev =>
+      prev.map(u => (u.id === userId ? { ...u, password: newPass } : u))
+    );
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev => (prev ? { ...prev, password: newPass } : null));
+    }
+
+    fetch(apiUrl('/api/users/update'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, data: { password: newPass } }),
+    }).catch(() => {});
+
+    return { email: user.email, password: newPass };
+  };
+
+  const renewResellerUser = (userId: string, days = 30) => {
+    const user = users.find(u => u.id === userId);
+    const newDays = (user?.planDaysLeft || 0) + days;
+
+    lastUpdatedUsersRef.current.set(userId, {
+      timestamp: Date.now(),
+      data: { planDaysLeft: newDays },
+    });
+
+    setUsers(prev =>
+      prev.map(u => {
+        if (u.id === userId) {
+          return {
+            ...u,
+            planDaysLeft: newDays,
+          };
+        }
+        return u;
+      })
+    );
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev => (prev ? { ...prev, planDaysLeft: newDays } : null));
+    }
+
+    fetch(apiUrl('/api/users/update'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, data: { planDaysLeft: newDays } }),
+    }).catch(() => {});
+
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').update({ plan_days_left: newDays }).eq('id', userId).then(() => {});
+    }
+  };
+
+  const reloadResellerUserCredits = (userId: string) => {
+    const user = users.find(u => u.id === userId);
+    const targetCredits = user?.maxCredits || (user?.plan === 'ultra' ? 45000 : 100);
+    setUsers(prev =>
+      prev.map(u => {
+        if (u.id === userId) {
+          return {
+            ...u,
+            credits: targetCredits,
+          };
+        }
+        return u;
+      })
+    );
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev => (prev ? { ...prev, credits: targetCredits } : null));
+    }
+
+    fetch(apiUrl('/api/users/update'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId, data: { credits: targetCredits } }),
+    }).catch(() => {});
+
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').update({ credits: targetCredits }).eq('id', userId).then(() => {});
+    }
+  };
+
+  const login = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPass = pass.trim();
+
+    const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
+    // Special Check for configured Admin credentials
+    if (adminEmails.includes(cleanEmail) && cleanPass === ADMIN_PASSWORD) {
+      let adminUser = users.find(u => adminEmails.includes(u.email.toLowerCase()));
+      if (!adminUser) {
+        adminUser = {
+          id: 'usr-admin-1',
+          name: 'Sachin Kumar',
+          email: cleanEmail,
+          password: ADMIN_PASSWORD,
+          whatsapp: '+91 9876543210',
+          telegram: '@sachinkumar_admin',
+          referralCode: 'FLOWADMIN',
+          plan: 'ultra',
+          credits: 45000,
+          maxCredits: 45000,
+          planDaysLeft: 30,
+          role: 'admin',
+          createdAt: new Date().toISOString(),
+          status: 'active',
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+        };
+        setUsers(prev => [adminUser!, ...prev]);
+      }
+      const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+      adminUser.sessionToken = sessionToken;
+      localStorage.setItem('flowmaker_session_token', sessionToken);
+      setCurrentUser(adminUser);
+
+      // Broadcast across tabs
+      try {
+        const bc = new BroadcastChannel('flow_user_presence');
+        bc.postMessage({
+          type: 'NEW_LOGIN',
+          email: adminUser.email,
+          sessionToken: sessionToken,
+        });
+        setTimeout(() => bc.close(), 1000);
+      } catch {}
+
+      // Update Supabase & server database so older devices running this account immediately terminate
+      const supa = getSupabase();
+      if (supa) {
+        supa.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).ilike('email', cleanEmail).then(() => {});
+      }
+      fetch(apiUrl('/api/users/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass, sessionToken }),
+      }).catch(() => {});
+
+      return { success: true };
+    }
+
+    // 1. Check Supabase Database First if connected
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data: supaUser, error: supaErr } = await supabase
+          .from('users')
+          .select('*')
+          .eq('email', cleanEmail)
+          .maybeSingle();
+
+        if (!supaErr && supaUser) {
+          if (supaUser.password && supaUser.password !== cleanPass) {
+            return { success: false, error: 'Incorrect password. Please try again.' };
+          }
+          if (supaUser.status === 'suspended') {
+            return { success: false, error: 'This account has been suspended by administration.' };
+          }
+
+          // Single-Device Lock: If account is active on another device, block new login until old device logs out
+          const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
+          const currentLocalToken = localStorage.getItem('flowmaker_session_token');
+          if (!isSystemAdmin && supaUser.is_online && supaUser.session_token) {
+            const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;
+            const isRecent = Date.now() - lastActiveTime < 10 * 60 * 1000; // 10 mins window
+            if (isRecent && currentLocalToken !== supaUser.session_token) {
+              return {
+                success: false,
+                error: '⚠️ This account is already active on another device! Please logout from the other device first to login here.'
+              };
+            }
+          }
+
+          const mappedUser: User = {
+            id: supaUser.id,
+            name: supaUser.name,
+            email: supaUser.email,
+            password: supaUser.password,
+            whatsapp: supaUser.whatsapp || '',
+            telegram: supaUser.telegram || '',
+            referralCode: supaUser.referral_code || '',
+            referredBy: supaUser.referred_by || '',
+            plan: (supaUser.plan as PlanType) || 'basic',
+            credits: Number(supaUser.credits) || 0,
+            maxCredits: Number(supaUser.max_credits) || 100,
+            planDaysLeft: Number(supaUser.plan_days_left) || 30,
+            role: (supaUser.role as any) || 'user',
+            resellerId: supaUser.reseller_id,
+            resellerName: supaUser.reseller_name,
+            createdAt: supaUser.created_at || new Date().toISOString(),
+            avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+            status: (supaUser.status as any) || 'active',
+            isOnline: true,
+            lastActive: new Date().toISOString(),
+          };
+
+          const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+          mappedUser.sessionToken = sessionToken;
+          localStorage.setItem('flowmaker_session_token', sessionToken);
+
+          try {
+            const bc = new BroadcastChannel('flow_user_presence');
+            bc.postMessage({
+              type: 'NEW_LOGIN',
+              email: mappedUser.email,
+              sessionToken: sessionToken,
+            });
+            setTimeout(() => bc.close(), 1000);
+          } catch {}
+
+          setUsers(prev => {
+            const exists = prev.some(u => u.id === mappedUser.id || u.email.toLowerCase() === mappedUser.email.toLowerCase());
+            return exists ? prev.map(u => (u.id === mappedUser.id || u.email.toLowerCase() === mappedUser.email.toLowerCase()) ? mappedUser : u) : [mappedUser, ...prev];
+          });
+          setCurrentUser(mappedUser);
+
+          // Update online status & session token in supabase
+          supabase.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).eq('id', mappedUser.id).then(() => {});
+          return { success: true };
+        }
+      } catch (err) {
+        console.warn('Supabase login check error:', err);
+      }
+    }
+
+    // 2. Direct login via central online server endpoint
+    try {
+      const res = await fetch(apiUrl('/api/users/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          const serverUser: User = data.user;
+          if (serverUser.sessionToken) {
+            localStorage.setItem('flowmaker_session_token', serverUser.sessionToken);
+            try {
+              const bc = new BroadcastChannel('flow_user_presence');
+              bc.postMessage({
+                type: 'NEW_LOGIN',
+                email: serverUser.email,
+                sessionToken: serverUser.sessionToken,
+              });
+              setTimeout(() => bc.close(), 1000);
+            } catch {}
+          }
+          // Update local memory and current user
+          setUsers(prev => {
+            const exists = prev.some(u => u.id === serverUser.id || u.email.toLowerCase() === serverUser.email.toLowerCase());
+            if (exists) {
+              return prev.map(u => (u.id === serverUser.id || u.email.toLowerCase() === serverUser.email.toLowerCase()) ? serverUser : u);
+            }
+            return [serverUser, ...prev];
+          });
+          setCurrentUser(serverUser);
+          return { success: true };
+        }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          return { success: false, error: errData.error || 'Incorrect password. Please try again.' };
+        }
+        if (res.status === 403) {
+          return { success: false, error: errData.error || 'This account has been suspended by administration.' };
+        }
+        // If 404 or other, fallback to check local cache
+      }
+    } catch (err) {
+      console.warn('Direct server login call error, checking local/sync fallback:', err);
+    }
+
+    // 2. Fallback: Check local memory or fetch latest users list from server
+    let user = users.find(u => u.email.toLowerCase() === cleanEmail);
+
+    if (!user) {
+      try {
+        const res = await fetch(apiUrl('/api/users'));
+        if (res.ok) {
+          const data = await res.json();
+          if (data.users && Array.isArray(data.users)) {
+            setUsers(data.users);
+            user = data.users.find((u: User) => u.email.toLowerCase() === cleanEmail);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching live users on login:', err);
+      }
+    }
+
+    if (!user) {
+      return { success: false, error: 'No account found with this email. Please sign up.' };
+    }
+
+    if (user.password && user.password !== cleanPass) {
+      return { success: false, error: 'Incorrect password. Please try again.' };
+    }
+
+    if (user.status === 'suspended') {
+      return { success: false, error: 'This account has been suspended by administration.' };
+    }
+
+    const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+    localStorage.setItem('flowmaker_session_token', sessionToken);
+
+    const updatedUser: User = {
+      ...user,
+      sessionToken,
+      isOnline: true,
+      lastActive: new Date().toISOString(),
+    };
+
+    setUsers(prev => prev.map(u => (u.id === user.id ? updatedUser : u)));
+    setCurrentUser(updatedUser);
+
+    // Update Supabase with session token
+    const supa = getSupabase();
+    if (supa) {
+      supa.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).eq('id', user.id).then(() => {});
+    }
+
+    // Send heartbeat to server with session token
+    fetch(apiUrl('/api/users/heartbeat'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.id, isOnline: true, sessionToken }),
+    }).catch(() => {});
+
+    return { success: true };
+  };
+
+  const signup = async (data: {
+    name: string;
+    email: string;
+    password?: string;
+    whatsapp?: string;
+    telegram?: string;
+    referralCode?: string;
+  }): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = data.email.trim().toLowerCase();
+    
+    if (!data.name.trim()) {
+      return { success: false, error: 'Please enter your name.' };
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid email address.' };
+    }
+    if (!data.password || data.password.length < 4) {
+      return { success: false, error: 'Password must be at least 4 characters.' };
+    }
+
+    const exists = users.some(u => u.email.toLowerCase() === cleanEmail);
+    if (exists) {
+      return { success: false, error: 'An account with this email already exists. Please log in.' };
+    }
+
+    // Double check Supabase for absolute certainty
+    const supa = getSupabase();
+    if (supa) {
+      const { data: supaExists } = await supa.from('users').select('id').eq('email', cleanEmail).maybeSingle();
+      if (supaExists) {
+        return { success: false, error: 'Email already registered. Please login.' };
+      }
+    }
+
+    const isSystemAdmin = cleanEmail === ADMIN_EMAIL.toLowerCase();
+    const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+    localStorage.setItem('flowmaker_session_token', sessionToken);
+
+    const newUser: User = {
+      id: `usr-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      name: data.name.trim(),
+      email: cleanEmail,
+      password: data.password,
+      sessionToken,
+      whatsapp: data.whatsapp?.trim() || '',
+      telegram: data.telegram?.trim() || '',
+      referralCode: `FLOW${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
+      referredBy: data.referralCode?.trim() || '',
+      plan: isSystemAdmin ? 'ultra' : 'basic',
+      credits: isSystemAdmin ? 45000 : 100,
+      maxCredits: isSystemAdmin ? 45000 : 100,
+      planDaysLeft: 30,
+      role: isSystemAdmin ? 'admin' : 'user',
+      createdAt: new Date().toISOString(),
+      avatarColor: 'from-blue-600 to-indigo-600',
+      status: 'active',
+      isOnline: true,
+      lastActive: new Date().toISOString(),
+    };
+
+    setUsers(prev => [newUser, ...prev]);
+    setCurrentUser(newUser);
+
+    // Supabase direct database insert
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').upsert({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        password: newUser.password,
+        whatsapp: newUser.whatsapp,
+        telegram: newUser.telegram,
+        referral_code: newUser.referralCode,
+        referred_by: newUser.referredBy,
+        plan: newUser.plan,
+        credits: newUser.credits,
+        max_credits: newUser.maxCredits,
+        plan_days_left: newUser.planDaysLeft,
+        role: newUser.role,
+        status: newUser.status,
+        is_online: true,
+        last_active: newUser.lastActive,
+        created_at: newUser.createdAt,
+      }).then(({ error }) => {
+        if (error) console.error('Supabase user insert error:', error);
+      });
+    }
+
+    // Send to central server database immediately
+    try {
+      const res = await fetch(apiUrl('/api/users/signup'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: newUser.id,
+          name: newUser.name,
+          email: newUser.email,
+          password: newUser.password,
+          whatsapp: newUser.whatsapp,
+          telegram: newUser.telegram,
+          referralCode: newUser.referralCode,
+          referredBy: newUser.referredBy,
+          plan: newUser.plan,
+          credits: newUser.credits,
+          maxCredits: newUser.maxCredits,
+          planDaysLeft: newUser.planDaysLeft,
+          role: newUser.role,
+          createdAt: newUser.createdAt,
+          avatarColor: newUser.avatarColor,
+          status: newUser.status,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          setUsers(prev => prev.map(u => u.email === newUser.email ? { ...u, id: data.user.id } : u));
+        }
+      }
+    } catch (err) {
+      console.error('Error sending signup to central server:', err);
+    }
+
+    return { success: true };
+  };
+
+  const adminCreateUser = async (data: {
+    name: string;
+    email: string;
+    password?: string;
+    whatsapp?: string;
+    telegram?: string;
+    plan?: PlanType;
+    credits?: number;
+    planDaysLeft?: number;
+    canEditPrompts?: boolean;
+    extensionAccess?: boolean;
+  }): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = data.email.trim().toLowerCase();
+    if (!data.name.trim() || !cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'Please enter valid name and email.' };
+    }
+    const exists = users.some(u => u.email.toLowerCase() === cleanEmail);
+    if (exists) {
+      return { success: false, error: 'A user with this email already exists.' };
+    }
+
+    const plan = data.plan || 'ultra';
+    const credits = data.credits !== undefined ? data.credits : (plan === 'ultra' ? 45000 : 100);
+    const planDaysLeft = data.planDaysLeft !== undefined ? data.planDaysLeft : 30;
+    const newUser: User = {
+      id: `usr-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+      name: data.name.trim(),
+      email: cleanEmail,
+      password: data.password || '123456',
+      whatsapp: data.whatsapp?.trim() || '',
+      telegram: data.telegram?.trim() || '',
+      referralCode: `FLOW${Math.random().toString(36).substring(2, 7).toUpperCase()}`,
+      plan,
+      credits,
+      maxCredits: credits,
+      planDaysLeft,
+      role: 'user',
+      canEditPrompts: Boolean(data.canEditPrompts),
+      extensionAccess: data.extensionAccess !== false,
+      createdAt: new Date().toISOString(),
+      avatarColor: plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+      status: 'active',
+      isOnline: false,
+      lastActive: new Date().toISOString(),
+    };
+
+    setUsers(prev => [newUser, ...prev]);
+
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').upsert({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        password: newUser.password,
+        whatsapp: newUser.whatsapp,
+        telegram: newUser.telegram,
+        referral_code: newUser.referralCode,
+        plan: newUser.plan,
+        credits: newUser.credits,
+        max_credits: newUser.maxCredits,
+        plan_days_left: newUser.planDaysLeft,
+        role: newUser.role,
+        can_edit_prompts: newUser.canEditPrompts,
+        extension_access: newUser.extensionAccess,
+        status: newUser.status,
+        created_at: newUser.createdAt,
+      }).then(({ error }) => {
+        if (error) console.error("Supabase user create error:", error);
+      });
+    }
+
+    fetch(apiUrl('/api/users/signup'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newUser),
+    }).catch(() => {});
+
+    return { success: true };
+  };
+
+  const logout = () => {
+    if (currentUser) {
+      const now = new Date().toISOString();
+      const supa = getSupabase();
+      if (supa && currentUser.id) {
+        supa.from('users').update({ is_online: false, session_token: '', last_active: now }).eq('id', currentUser.id).then(() => {});
+      }
+      fetch(apiUrl('/api/users/logout'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: currentUser.id, email: currentUser.email }),
+      }).catch(() => {});
+      setUsers(prev =>
+        prev.map(u => (u.id === currentUser.id ? { ...u, isOnline: false, sessionToken: '', lastActive: now } : u))
+      );
+    }
+    localStorage.removeItem(CURRENT_USER_KEY);
+    localStorage.removeItem('flowmaker_session_token');
+    localStorage.removeItem('flow_extension_bridge_v3');
+    localStorage.removeItem('flow_portal_session_v3');
+    localStorage.removeItem('google_flow_user_data');
+    setCurrentUser(null);
+  };
+
+  const updateUserPlan = (userId: string, newPlan: PlanType, days?: number) => {
+    const defaultCredits = newPlan === 'ultra' ? 45000 : 100;
+    const targetDays = days !== undefined ? days : 30;
+
+    lastUpdatedUsersRef.current.set(userId, {
+      timestamp: Date.now(),
+      data: {
+        plan: newPlan,
+        credits: defaultCredits,
+        maxCredits: defaultCredits,
+        planDaysLeft: targetDays,
+        upgradeRequested: false,
+      },
+    });
+
+    setUsers(prev =>
+      prev.map(u => {
+        if (u.id === userId) {
+          return {
+            ...u,
+            plan: newPlan,
+            credits: defaultCredits,
+            maxCredits: defaultCredits,
+            planDaysLeft: targetDays,
+            upgradeRequested: false,
+          };
+        }
+        return u;
+      })
+    );
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev =>
+        prev
+          ? {
+              ...prev,
+              plan: newPlan,
+              credits: defaultCredits,
+              maxCredits: defaultCredits,
+              planDaysLeft: targetDays,
+              upgradeRequested: false,
+            }
+          : null
+      );
+    }
+
+    fetch(apiUrl('/api/users/update'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        data: {
+          plan: newPlan,
+          credits: defaultCredits,
+          maxCredits: defaultCredits,
+          planDaysLeft: targetDays,
+          upgradeRequested: false,
+        },
+      }),
+    }).catch(() => {});
+
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').update({
+        plan: newPlan,
+        credits: defaultCredits,
+        max_credits: defaultCredits,
+        plan_days_left: targetDays,
+      }).eq('id', userId).then(() => {});
+    }
+  };
+
+  const updateUserDetails = (
+    userId: string,
+    data: {
+      name?: string;
+      password?: string;
+      plan?: PlanType;
+      credits?: number;
+      maxCredits?: number;
+      planDaysLeft?: number;
+      status?: 'active' | 'suspended';
+      email?: string;
+      extensionAccess?: boolean;
+      canEditPrompts?: boolean;
+      isOnline?: boolean;
+      sessionToken?: string;
+    }
+  ) => {
+    const userToUpdate = users.find(u => u.id === userId);
+    const existingPending = lastUpdatedUsersRef.current.get(userId)?.data || {};
+    const calculatedExpiresAt = data.planDaysLeft !== undefined ? new Date(Date.now() + Math.max(0, data.planDaysLeft) * 24 * 60 * 60 * 1000).toISOString() : undefined;
+
+    lastUpdatedUsersRef.current.set(userId, {
+      timestamp: Date.now(),
+      data: {
+        ...existingPending,
+        ...data,
+        ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
+      },
+    });
+
+    setUsers(prev =>
+      prev.map(u => {
+        if (u.id === userId) {
+          const updated: User = {
+            ...u,
+            ...data,
+            name: data.name !== undefined ? data.name : u.name,
+            email: data.email !== undefined ? data.email : u.email,
+            password: data.password !== undefined ? data.password : u.password,
+            plan: data.plan !== undefined ? data.plan : u.plan,
+            credits: data.credits !== undefined ? data.credits : u.credits,
+            maxCredits: data.maxCredits !== undefined ? data.maxCredits : u.maxCredits,
+            planDaysLeft: data.planDaysLeft !== undefined ? Math.max(0, data.planDaysLeft) : u.planDaysLeft,
+            planExpiresAt: calculatedExpiresAt || u.planExpiresAt,
+            status: data.status !== undefined ? data.status : (data.planDaysLeft !== undefined && data.planDaysLeft <= 0 ? 'suspended' : u.status),
+            extensionAccess: data.extensionAccess !== undefined ? data.extensionAccess : (u.extensionAccess !== undefined ? u.extensionAccess : true),
+            canEditPrompts: data.canEditPrompts !== undefined ? data.canEditPrompts : (u.canEditPrompts !== undefined ? u.canEditPrompts : false),
+            isOnline: data.isOnline !== undefined ? data.isOnline : u.isOnline,
+            sessionToken: data.sessionToken !== undefined ? data.sessionToken : u.sessionToken,
+            upgradeRequested: data.plan === 'ultra' ? false : u.upgradeRequested,
+          };
+          return updated;
+        }
+        return u;
+      })
+    );
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev =>
+        prev
+          ? {
+              ...prev,
+              ...data,
+              name: data.name !== undefined ? data.name : prev.name,
+              email: data.email !== undefined ? data.email : prev.email,
+              password: data.password !== undefined ? data.password : prev.password,
+              plan: data.plan !== undefined ? data.plan : prev.plan,
+              credits: data.credits !== undefined ? data.credits : prev.credits,
+              maxCredits: data.maxCredits !== undefined ? data.maxCredits : prev.maxCredits,
+              planDaysLeft: data.planDaysLeft !== undefined ? Math.max(0, data.planDaysLeft) : prev.planDaysLeft,
+              planExpiresAt: calculatedExpiresAt || prev.planExpiresAt,
+              status: data.status !== undefined ? data.status : (data.planDaysLeft !== undefined && data.planDaysLeft <= 0 ? 'suspended' : prev.status),
+              extensionAccess: data.extensionAccess !== undefined ? data.extensionAccess : (prev.extensionAccess !== undefined ? prev.extensionAccess : true),
+              canEditPrompts: data.canEditPrompts !== undefined ? data.canEditPrompts : (prev.canEditPrompts !== undefined ? prev.canEditPrompts : false),
+              isOnline: data.isOnline !== undefined ? data.isOnline : prev.isOnline,
+              sessionToken: data.sessionToken !== undefined ? data.sessionToken : prev.sessionToken,
+              upgradeRequested: data.plan === 'ultra' ? false : prev.upgradeRequested,
+            }
+          : null
+      );
+    }
+
+    const payload = {
+      userId,
+      data: {
+        ...data,
+        ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
+      }
+    };
+
+    fetch(apiUrl('/api/users/update'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+
+    const supabase = getSupabase();
+    if (supabase) {
+      const supaData: any = {};
+      if (data.name !== undefined) supaData.name = data.name;
+      if (data.email !== undefined) supaData.email = data.email;
+      if (data.password !== undefined) supaData.password = data.password;
+      if (data.plan !== undefined) supaData.plan = data.plan;
+      if (data.credits !== undefined) supaData.credits = data.credits;
+      if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
+      if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
+      if (calculatedExpiresAt) supaData.plan_expires_at = calculatedExpiresAt;
+      if (data.status !== undefined) supaData.status = data.status;
+      if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
+      if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
+      if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
+      if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
+      supabase.from('users').update(supaData).eq('id', userId).then(() => {});
+    }
+  };
+
+  const updateUserEmail = async (userId: string, newEmail: string): Promise<{ success: boolean; error?: string }> => {
+    const cleanEmail = newEmail.trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return { success: false, error: 'Please enter a valid Gmail address.' };
+    }
+
+    const currentUserObj = users.find(u => u.id === userId);
+    if (!currentUserObj) {
+      return { success: false, error: 'User not found.' };
+    }
+
+    if (currentUserObj.email.toLowerCase() === cleanEmail) {
+      return { success: false, error: 'New Gmail is the same as current Gmail.' };
+    }
+
+    // Check duplicate locally
+    const exists = users.some(u => u.id !== userId && u.email.toLowerCase() === cleanEmail);
+    if (exists) {
+      return { success: false, error: 'This Gmail ID is already registered!' };
+    }
+
+    // Check Supabase for duplicate
+    const supa = getSupabase();
+    if (supa) {
+      try {
+        const { data: supaExists } = await supa.from('users').select('id').eq('email', cleanEmail).neq('id', userId).maybeSingle();
+        if (supaExists) {
+          return { success: false, error: 'This Gmail ID is already registered!' };
+        }
+      } catch {}
+    }
+
+    updateUserDetails(userId, { email: cleanEmail });
+    return { success: true };
+  };
+
+  const requestUpgrade = () => {
+    if (!currentUser) return;
+    const now = new Date().toISOString();
+    updateProfile({ upgradeRequested: true, upgradeRequestedAt: now });
+  };
+
+  const updateUserCredits = (userId: string, newCredits: number, newMax?: number) => {
+    const userToUpdate = users.find(u => u.id === userId);
+    const max = newMax !== undefined ? newMax : (userToUpdate ? Math.max(userToUpdate.maxCredits, newCredits) : newCredits);
+    
+    lastUpdatedUsersRef.current.set(userId, {
+      timestamp: Date.now(),
+      data: {
+        credits: newCredits,
+        maxCredits: max,
+      },
+    });
+
+    setUsers(prev =>
+      prev.map(u => {
+        if (u.id === userId) {
+          return {
+            ...u,
+            credits: newCredits,
+            maxCredits: max,
+          };
+        }
+        return u;
+      })
+    );
+
+    if (currentUser && currentUser.id === userId) {
+      setCurrentUser(prev =>
+        prev
+          ? {
+              ...prev,
+              credits: newCredits,
+              maxCredits: newMax !== undefined ? newMax : Math.max(prev.maxCredits, newCredits),
+            }
+          : null
+      );
+    }
+
+    fetch(apiUrl('/api/users/update'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        data: {
+          credits: newCredits,
+          maxCredits: newMax !== undefined ? newMax : Math.max(newCredits),
+        },
+      }),
+    }).catch(() => {});
+
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').update({
+        credits: newCredits,
+        ...(newMax !== undefined ? { max_credits: newMax } : {}),
+      }).eq('id', userId).then(() => {});
+    }
+  };
+
+  const deleteUser = (userId: string) => {
+    setUsers(prev => prev.filter(u => u.id !== userId));
+    if (currentUser?.id === userId) {
+      setCurrentUser(null);
+    }
+    const supabase = getSupabase();
+    if (supabase) {
+      supabase.from('users').delete().eq('id', userId).then(() => {});
+    }
+    fetch(apiUrl(`/api/users/${userId}`), { method: 'DELETE' }).catch(() => {});
+  };
+
+  const deductCredits = (amount: number): boolean => {
+    if (!currentUser) return false;
+    if (currentUser.credits < amount) return false;
+
+    const newCredits = currentUser.credits - amount;
+    updateUserCredits(currentUser.id, newCredits);
+    return true;
+  };
+
+  const addGeneration = async (genData: Omit<Generation, 'id' | 'createdAt'>): Promise<Generation> => {
+    const newGen: Generation = {
+      ...genData,
+      id: `gen-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      createdAt: new Date().toISOString(),
+    };
+
+    setGenerations(prev => [newGen, ...prev]);
+    return newGen;
+  };
+
+  const updateProfile = (data: Partial<User>) => {
+    if (!currentUser) return;
+    const updated = { ...currentUser, ...data };
+    setCurrentUser(updated);
+    setUsers(prev => prev.map(u => (u.id === currentUser.id ? updated : u)));
+  };
+
+  const updateExtensionConfig = (newConfig: Partial<ExtensionConfig>) => {
+    const targetPlan = currentUser?.plan || 'basic';
+    updatePlanExtensionConfig(targetPlan, newConfig);
+  };
+
+  const updatePlanExtensionConfig = (plan: PlanType, newConfig: Partial<ExtensionConfig>) => {
+    lastConfigUpdateRef.current = Date.now() + 30000;
+    setPlanExtensions(prev => {
+      const mergedConfig: ExtensionConfig = {
+        ...prev.basic,
+        ...prev.ultra,
+        ...prev[plan],
+        ...newConfig,
+        updatedAt: new Date().toISOString(),
+      };
+      const updated = {
+        basic: mergedConfig,
+        ultra: mergedConfig,
+      };
+
+      const supa = getSupabase();
+      if (supa) {
+        supa.from('users').upsert({
+          id: 'admin_config_extensions',
+          email: 'admin_config_extensions@system.local',
+          name: JSON.stringify(updated),
+          password: '',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          role: 'user',
+          status: 'active',
+          is_online: false,
+          created_at: new Date().toISOString()
+        }).then(({ error }) => {
+          if (error) console.error("Supabase plan extensions config update error:", error);
+        });
+      }
+
+      fetch(apiUrl('/api/config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planExtensions: updated }),
+      }).catch(() => {});
+
+      return updated;
+    });
+  };
+
+  const updateTutorialConfig = (newConfig: Partial<TutorialConfig>) => {
+    lastConfigUpdateRef.current = Date.now() + 30000;
+    setTutorialConfig(prev => {
+      const updated = {
+        ...prev,
+        ...newConfig,
+      };
+
+      const supa = getSupabase();
+      if (supa) {
+        supa.from('users').upsert({
+          id: 'admin_config_tutorial',
+          email: 'admin_config_tutorial@system.local',
+          name: JSON.stringify(updated),
+          password: '',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          role: 'user',
+          status: 'active',
+          is_online: false,
+          created_at: new Date().toISOString()
+        }).then(({ error }) => {
+          if (error) console.error("Supabase tutorial config update error:", error);
+        });
+      }
+
+      fetch(apiUrl('/api/config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tutorialConfig: updated }),
+      }).catch(() => {});
+
+      return updated;
+    });
+  };
+
+  const updateHeroConfig = (newConfig: Partial<HeroConfig>) => {
+    lastConfigUpdateRef.current = Date.now() + 30000;
+    setHeroConfig(prev => {
+      const updated = {
+        ...prev,
+        ...newConfig,
+      };
+
+      const supa = getSupabase();
+      if (supa) {
+        supa.from('users').upsert({
+          id: 'admin_config_hero',
+          email: 'admin_config_hero@system.local',
+          name: JSON.stringify(updated),
+          password: '',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          role: 'user',
+          status: 'active',
+          is_online: false,
+          created_at: new Date().toISOString()
+        }).then(({ error }) => {
+          if (error) console.error("Supabase hero config update error:", error);
+        });
+      }
+
+      fetch(apiUrl('/api/config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ heroConfig: updated }),
+      }).catch(() => {});
+
+      return updated;
+    });
+  };
+
+  const updatePromptConfig = (newConfig: Partial<PromptConfig>) => {
+    lastConfigUpdateRef.current = Date.now() + 30000;
+    setPromptConfig(prev => {
+      const updated = {
+        ...prev,
+        ...newConfig,
+      };
+
+      const supa = getSupabase();
+      if (supa) {
+        supa.from('users').upsert({
+          id: 'admin_config_prompts',
+          email: 'admin_config_prompts@system.local',
+          name: JSON.stringify(updated),
+          password: '',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          role: 'user',
+          status: 'active',
+          is_online: false,
+          created_at: new Date().toISOString()
+        }).then(({ error }) => {
+          if (error) console.error("Supabase prompt config update error:", error);
+        });
+      }
+
+      fetch(apiUrl('/api/config'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ promptConfig: updated }),
+      }).catch(() => {});
+
+      return updated;
+    });
+  };
+
+  return (
+    <AuthContext.Provider
+      value={{
+        currentUser,
+        users,
+        resellers,
+        currentReseller,
+        generations,
+        showcaseVideos,
+        extensionConfig,
+        planExtensions,
+        tutorialConfig,
+        isAdmin,
+        login,
+        resellerLogin,
+        loginAsReseller,
+        logoutReseller,
+        createReseller,
+        updateReseller,
+        deleteReseller,
+        addUserByReseller,
+        rotateUserCredentials,
+        renewResellerUser,
+        reloadResellerUserCredits,
+        signup,
+        adminCreateUser,
+        logout,
+        updateUserPlan,
+        updateUserCredits,
+        updateUserDetails,
+        updateUserEmail,
+        deleteUser,
+        addGeneration,
+        deductCredits,
+        updateProfile,
+        requestUpgrade,
+        updateExtensionConfig,
+        updatePlanExtensionConfig,
+        updateTutorialConfig,
+        updateHeroConfig,
+        updatePromptConfig,
+        heroConfig,
+        promptConfig,
+        sessionTerminatedNotice,
+        dismissSessionTerminatedNotice,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
+};
+
