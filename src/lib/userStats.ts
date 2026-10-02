@@ -66,9 +66,99 @@ export function formatUserLastActive(
   return `Active ${diffDays}d ago`;
 }
 
+// Memory cache for user plan expiry times to guarantee real-time non-freezing ticking
+const userExpiryCache = new Map<string, { daysLeft: number; expiryMs: number; setAt: number }>();
+
 /**
- * Computes exact real-time validity remaining in Days and Hours (e.g. "24D 5h" or "30D 0h").
- * As real-world time progresses, remaining validity automatically ticks down in real-time.
+ * Gets or initializes a persistent expiry timestamp for a user so countdowns continuously tick down.
+ */
+export function getOrInitUserExpiryMs(user: User): number {
+  const now = Date.now();
+  const daysLeft = typeof user.planDaysLeft === 'number' ? Math.max(0, user.planDaysLeft) : 30;
+  if (daysLeft <= 0 || user.status === 'suspended') {
+    return now;
+  }
+
+  // 1. If explicit planExpiresAt is provided on user object, respect it
+  if (user.planExpiresAt) {
+    const parsedExp = new Date(user.planExpiresAt).getTime();
+    if (!isNaN(parsedExp)) {
+      userExpiryCache.set(user.id, { daysLeft, expiryMs: parsedExp, setAt: now });
+      return parsedExp;
+    }
+  }
+
+  // 2. Check memory cache
+  const cached = userExpiryCache.get(user.id);
+  if (cached && cached.daysLeft === daysLeft) {
+    return cached.expiryMs;
+  }
+
+  // 3. Check localStorage persistent cache
+  try {
+    const storageKey = `flowmaker_user_expiry_${user.id}`;
+    const stored = localStorage.getItem(storageKey);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed.expiryMs === 'number' && parsed.daysLeft === daysLeft) {
+        userExpiryCache.set(user.id, { daysLeft, expiryMs: parsed.expiryMs, setAt: parsed.setAt || now });
+        return parsed.expiryMs;
+      }
+    }
+  } catch {
+    // Ignore storage parse errors
+  }
+
+  // 4. Derive from createdAt timestamp if present and valid
+  let calculatedExpiryMs: number;
+  if (user.createdAt) {
+    const createdMs = new Date(user.createdAt).getTime();
+    if (!isNaN(createdMs) && createdMs <= now && (now - createdMs) < (daysLeft * 86400000)) {
+      calculatedExpiryMs = createdMs + (daysLeft * 86400000);
+    } else {
+      calculatedExpiryMs = now + (daysLeft * 86400000);
+    }
+  } else {
+    calculatedExpiryMs = now + (daysLeft * 86400000);
+  }
+
+  // Save to memory cache & localStorage
+  userExpiryCache.set(user.id, { daysLeft, expiryMs: calculatedExpiryMs, setAt: now });
+  try {
+    localStorage.setItem(`flowmaker_user_expiry_${user.id}`, JSON.stringify({
+      daysLeft,
+      expiryMs: calculatedExpiryMs,
+      setAt: now
+    }));
+  } catch {
+    // Ignore storage quota errors
+  }
+
+  return calculatedExpiryMs;
+}
+
+/**
+ * Updates or resets the expiry timestamp when admin/reseller changes a user's validity.
+ */
+export function setUserExpiryMs(userId: string, newDays: number, exactExpiryMs?: number) {
+  const now = Date.now();
+  const safeDays = Math.max(0, newDays);
+  const expiryMs = exactExpiryMs || (now + safeDays * 86400000);
+  userExpiryCache.set(userId, { daysLeft: safeDays, expiryMs, setAt: now });
+  try {
+    localStorage.setItem(`flowmaker_user_expiry_${userId}`, JSON.stringify({
+      daysLeft: safeDays,
+      expiryMs,
+      setAt: now
+    }));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+/**
+ * Computes exact real-time validity remaining in Days, Hours, and Minutes (e.g. "24D 23h", "24D 4h", "5h 30m").
+ * As real-world time progresses, remaining validity automatically and continuously ticks down in real-time.
  */
 export function getUserValidityTime(user: User | null | undefined): {
   totalMs: number;
@@ -94,34 +184,28 @@ export function getUserValidityTime(user: User | null | undefined): {
     return { totalMs: 0, days: 0, hours: 0, minutes: 0, profileDays: 0, isExpired: true, displayText: '0D 0h', percentageRemaining: 0 };
   }
 
-  let expiryMs: number;
   const now = Date.now();
-
-  if (user.planExpiresAt) {
-    const parsedExp = new Date(user.planExpiresAt).getTime();
-    if (!isNaN(parsedExp) && parsedExp > now) {
-      expiryMs = parsedExp;
-    } else {
-      expiryMs = now + daysLeft * 24 * 60 * 60 * 1000;
-    }
-  } else {
-    expiryMs = now + daysLeft * 24 * 60 * 60 * 1000;
-  }
-
+  const expiryMs = getOrInitUserExpiryMs(user);
   const diffMs = Math.max(0, expiryMs - now);
+
   if (diffMs <= 0) {
     return { totalMs: 0, days: 0, hours: 0, minutes: 0, profileDays: 0, isExpired: true, displayText: '0D 0h', percentageRemaining: 0 };
   }
 
+  const totalMinutes = Math.floor(diffMs / (60 * 1000));
   const totalHours = Math.floor(diffMs / (60 * 60 * 1000));
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
-  const minutes = Math.floor((diffMs % (60 * 60 * 1000)) / (60 * 1000));
-  const profileDays = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+  const minutes = totalMinutes % 60;
+  const profileDays = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
 
   let displayText = `${days}D ${hours}h`;
-  if (days === 0 && hours === 0) {
-    displayText = `${Math.max(1, minutes)}m`;
+  if (days === 0) {
+    if (hours === 0) {
+      displayText = `${Math.max(1, minutes)}m`;
+    } else {
+      displayText = `${hours}h ${minutes}m`;
+    }
   }
 
   const totalDurationMs = Math.max(daysLeft, 30) * 24 * 60 * 60 * 1000;

@@ -4,6 +4,7 @@ import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIA
 import { apiUrl } from '../config/api';
 import { getSupabase } from '../lib/supabase';
 import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
+import { setUserExpiryMs } from '../lib/userStats';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -660,6 +661,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   credits: Number(su.credits) !== undefined && !isNaN(Number(su.credits)) ? Number(su.credits) : (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
                   maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
                   planDaysLeft: Number(su.plan_days_left) ?? 30,
+                  planExpiresAt: su.plan_expires_at || (su.created_at ? new Date(new Date(su.created_at).getTime() + (Number(su.plan_days_left) || 30) * 86400000).toISOString() : undefined),
                   role: (su.email && (su.email.toLowerCase() === 'sachinxexplore@gmail.com' || su.email.toLowerCase() === 'sachinkumar629171@gmail.com')) ? 'admin' : ((su.role as any) || 'user'),
                   resellerId: su.reseller_id,
                   resellerName: su.reseller_name,
@@ -2154,6 +2156,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const userToUpdate = users.find(u => u.id === userId);
     const existingPending = lastUpdatedUsersRef.current.get(userId)?.data || {};
     const calculatedExpiresAt = data.planDaysLeft !== undefined ? new Date(Date.now() + Math.max(0, data.planDaysLeft) * 24 * 60 * 60 * 1000).toISOString() : undefined;
+    if (data.planDaysLeft !== undefined) {
+      setUserExpiryMs(userId, data.planDaysLeft, calculatedExpiresAt ? new Date(calculatedExpiresAt).getTime() : undefined);
+    }
 
     lastUpdatedUsersRef.current.set(userId, {
       timestamp: Date.now(),
