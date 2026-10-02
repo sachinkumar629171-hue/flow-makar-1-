@@ -1,5 +1,34 @@
 {
   "version": 2,
+  "headers": [
+    {
+      "source": "/api/extension/servers",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=600, s-maxage=600, stale-while-revalidate=1200"
+        }
+      ]
+    },
+    {
+      "source": "/api/extension/user",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=180, s-maxage=180, stale-while-revalidate=360"
+        }
+      ]
+    },
+    {
+      "source": "/api/extension/version",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600, s-maxage=3600"
+        }
+      ]
+    }
+  ],
   "rewrites": [
     {
       "source": "/((?!api/).*)",
