@@ -43,10 +43,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
-        const isUltra = supaUser.plan === 'ultra';
+        const isUltraOrUnlimited = supaUser.plan === 'ultra' || supaUser.plan === 'unlimited';
         const sessionToken = supaUser.session_token || supaUser.sessionToken || '';
         const isTokenValid = Boolean(reqToken && sessionToken && reqToken === sessionToken);
-        const canAccessPrompts = isUltra && supaUser.status === 'active' && extensionAllowed && isTokenValid;
+        const canAccessPrompts = isUltraOrUnlimited && supaUser.status !== 'suspended' && extensionAllowed && isTokenValid;
+
+        let planDisplayName = 'Basic Plan';
+        if (supaUser.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';
+        else if (supaUser.plan === 'ultra') planDisplayName = 'Ultra VIP Plan';
 
         return res.status(200).json({
           success: true,
@@ -55,14 +59,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             name: supaUser.name,
             email: supaUser.email,
             plan: supaUser.plan || 'basic',
-            planName: isUltra ? 'Ultra VIP Plan' : 'Basic Plan',
+            planName: planDisplayName,
             credits,
             creditsLeft: credits,
             maxCredits,
             totalCredits: maxCredits,
             creditsUsed,
             sessionToken,
-            canAccessPrompts, // True ONLY if active ultra user with matching valid sessionToken
+            canAccessPrompts, // True ONLY if active ultra/unlimited user with matching valid sessionToken
             planDaysLeft,
             status: supaUser.status || 'active',
             extensionAccess: supaUser.extension_access !== false,

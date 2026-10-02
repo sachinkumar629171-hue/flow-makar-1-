@@ -720,7 +720,7 @@ app.get('/api/extension/user', async (req, res) => {
     saveStorage();
   }
 
-  const maxCredits = user.maxCredits || (user.plan === 'ultra' ? 45000 : 100);
+  const maxCredits = user.maxCredits || (user.plan === 'unlimited' ? 99999 : user.plan === 'ultra' ? 45000 : 100);
   const credits = user.credits ?? 0;
   const creditsUsed = Math.max(0, maxCredits - credits);
   const planDaysLeft = user.planDaysLeft ?? 0;
@@ -745,10 +745,14 @@ app.get('/api/extension/user', async (req, res) => {
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
 
   const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
-  const isUltra = user.plan === 'ultra';
+  const isUltraOrUnlimited = user.plan === 'ultra' || user.plan === 'unlimited';
   const sessionToken = user.sessionToken || '';
   const isTokenValid = Boolean(reqToken && sessionToken && reqToken === sessionToken);
-  const canAccessPrompts = isUltra && user.status === 'active' && user.extensionAccess !== false && planDaysLeft > 0 && isTokenValid;
+  const canAccessPrompts = isUltraOrUnlimited && user.status === 'active' && user.extensionAccess !== false && planDaysLeft > 0 && isTokenValid;
+
+  let planDisplayName = 'Basic Plan';
+  if (user.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';
+  else if (user.plan === 'ultra') planDisplayName = 'Ultra VIP Plan';
 
   res.json({
     success: true,
@@ -757,16 +761,16 @@ app.get('/api/extension/user', async (req, res) => {
       name: user.name,
       email: user.email,
       plan: user.plan,
-      planName: isUltra ? 'Ultra VIP Plan' : 'Basic Plan',
+      planName: planDisplayName,
       credits,
       creditsLeft: credits,
       maxCredits,
       totalCredits: maxCredits,
       creditsUsed,
       sessionToken,
-      canAccessPrompts, // True ONLY if active ultra user with matching valid sessionToken
+      canAccessPrompts, // True ONLY if active ultra/unlimited user with matching valid sessionToken
       planDaysLeft,
-      status: user.status,
+      status: user.status || 'active',
       extensionAccess: user.extensionAccess !== false,
       isAllowed: extensionAllowed,
     },

@@ -1,4 +1,4 @@
-export type PlanType = 'basic' | 'ultra';
+export type PlanType = 'basic' | 'ultra' | 'unlimited';
 
 export interface User {
   id: string;

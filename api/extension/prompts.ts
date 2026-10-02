@@ -58,11 +58,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(403).json({ success: false, error: 'Account suspended by admin.', servers: [] });
       }
 
-      // 3. Plan must be Ultra (or Admin)
-      if (supaUser.plan !== 'ultra' && supaUser.role !== 'admin') {
+      // 3. Plan must be Ultra or Unlimited (or Admin)
+      if (supaUser.plan !== 'ultra' && supaUser.plan !== 'unlimited' && supaUser.role !== 'admin') {
         return res.status(403).json({
           success: false,
-          error: 'Basic Plan members do not have access to server prompts. Upgrade to Ultra VIP.',
+          error: 'Basic Plan members do not have access to server prompts. Upgrade to Ultra or Unlimited VIP.',
           servers: [],
         });
       }

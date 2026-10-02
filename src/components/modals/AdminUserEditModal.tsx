@@ -32,7 +32,10 @@ export const AdminUserEditModal: React.FC<EditModalProps> = ({ user, isOpen, onC
 
   const handlePlanChange = (newPlan: PlanType) => {
     setPlan(newPlan);
-    if (newPlan === 'ultra') {
+    if (newPlan === 'unlimited') {
+      setCredits(99999);
+      setMaxCredits(99999);
+    } else if (newPlan === 'ultra') {
       setCredits(45000);
       setMaxCredits(45000);
     } else {
@@ -86,28 +89,39 @@ export const AdminUserEditModal: React.FC<EditModalProps> = ({ user, isOpen, onC
           {/* Account Plan Tier Conversion */}
           <div>
             <label className="block text-xs font-medium text-neutral-300 mb-1.5">Convert Plan Tier</label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
                 onClick={() => handlePlanChange('basic')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                className={`py-2 px-2 rounded-xl border text-[11px] font-semibold transition-all cursor-pointer text-center ${
                   plan === 'basic'
                     ? 'bg-blue-600/20 border-blue-500 text-blue-300 ring-1 ring-blue-500/50'
                     : 'bg-[#0b0c0f] border-neutral-800 text-neutral-400 hover:text-white'
                 }`}
               >
-                Basic Plan (100 credits)
+                Basic (100)
               </button>
               <button
                 type="button"
                 onClick={() => handlePlanChange('ultra')}
-                className={`py-2.5 px-3 rounded-xl border text-xs font-semibold transition-all cursor-pointer ${
+                className={`py-2 px-2 rounded-xl border text-[11px] font-semibold transition-all cursor-pointer text-center ${
                   plan === 'ultra'
                     ? 'bg-purple-600/20 border-purple-500 text-purple-300 ring-1 ring-purple-500/50'
                     : 'bg-[#0b0c0f] border-neutral-800 text-neutral-400 hover:text-white'
                 }`}
               >
-                Ultra VIP (45,000 credits)
+                Ultra (45k)
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePlanChange('unlimited')}
+                className={`py-2 px-2 rounded-xl border text-[11px] font-semibold transition-all cursor-pointer text-center ${
+                  plan === 'unlimited'
+                    ? 'bg-amber-600/20 border-amber-500 text-amber-300 ring-1 ring-amber-500/50'
+                    : 'bg-[#0b0c0f] border-neutral-800 text-neutral-400 hover:text-white'
+                }`}
+              >
+                Unlimited (99k)
               </button>
             </div>
           </div>

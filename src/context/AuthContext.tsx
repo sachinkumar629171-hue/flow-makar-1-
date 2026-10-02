@@ -503,22 +503,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (currentUser) {
         localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(currentUser));
         
-        const isUltra = currentUser.plan === 'ultra';
+        const isUltraOrUnlimited = currentUser.plan === 'ultra' || currentUser.plan === 'unlimited';
         const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
-        const canAccessPrompts = isUltra && currentUser.status === 'active';
+        const canAccessPrompts = isUltraOrUnlimited && currentUser.status !== 'suspended';
+
+        let planDisplayName = 'Basic Plan';
+        if (currentUser.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';
+        else if (currentUser.plan === 'ultra') planDisplayName = 'Ultra VIP Plan';
 
         const extensionBridgeData = {
           email: currentUser.email,
           name: currentUser.name,
           plan: currentUser.plan,
-          planName: isUltra ? 'Ultra VIP 4K Plan' : 'Basic Plan',
+          planName: planDisplayName,
           credits: currentUser.credits,
           creditsLeft: currentUser.credits,
           maxCredits: currentUser.maxCredits,
           totalCredits: currentUser.maxCredits,
           sessionToken: sessionToken,
-          canAccessPrompts: canAccessPrompts, // Basic plan = false (no prompt access), Ultra = true
-          status: currentUser.status,
+          canAccessPrompts: canAccessPrompts, // Basic plan = false (no prompt access), Ultra/Unlimited = true
+          status: currentUser.status || 'active',
           planDaysLeft: currentUser.planDaysLeft,
           extensionAccess: currentUser.extensionAccess !== false,
           isConnected: true,
@@ -653,14 +657,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   referralCode: su.referral_code || '',
                   referredBy: su.referred_by || '',
                   plan: (su.plan as PlanType) || 'basic',
-                  credits: Number(su.credits) || 0,
-                  maxCredits: Number(su.max_credits) || 100,
-                  planDaysLeft: Number(su.plan_days_left) || 30,
-                  role: (su.role as any) || 'user',
+                  credits: Number(su.credits) !== undefined && !isNaN(Number(su.credits)) ? Number(su.credits) : (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
+                  maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
+                  planDaysLeft: Number(su.plan_days_left) ?? 30,
+                  role: (su.email && (su.email.toLowerCase() === 'sachinxexplore@gmail.com' || su.email.toLowerCase() === 'sachinkumar629171@gmail.com')) ? 'admin' : ((su.role as any) || 'user'),
                   resellerId: su.reseller_id,
                   resellerName: su.reseller_name,
                   createdAt: su.created_at || new Date().toISOString(),
-                  avatarColor: su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+                  avatarColor: su.plan === 'unlimited' ? 'from-amber-500 to-yellow-500' : su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
                   status: (su.status as any) || 'active',
                   extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
                   canEditPrompts: su.can_edit_prompts === true,
@@ -2059,7 +2063,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateUserPlan = (userId: string, newPlan: PlanType, days?: number) => {
-    const defaultCredits = newPlan === 'ultra' ? 45000 : 100;
+    const defaultCredits = newPlan === 'unlimited' ? 99999 : newPlan === 'ultra' ? 45000 : 100;
     const targetDays = days !== undefined ? days : 30;
 
     lastUpdatedUsersRef.current.set(userId, {
