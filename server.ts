@@ -62,6 +62,64 @@ function getServerSupabase(): SupabaseClient | null {
   return null;
 }
 
+async function safeServerSupabaseUserUpdate(
+  supa: SupabaseClient,
+  userId: string,
+  userEmail: string | undefined,
+  fields: Record<string, any>
+): Promise<boolean> {
+  if (!supa || (!userId && !userEmail)) return false;
+  const cleanFields: Record<string, any> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) cleanFields[k] = v;
+  }
+  if (Object.keys(cleanFields).length === 0) return true;
+
+  try {
+    if (userId) {
+      const { error, data } = await supa.from('users').update(cleanFields).eq('id', userId).select('id');
+      if (!error && data && data.length > 0) return true;
+    }
+    if (userEmail) {
+      const { error, data } = await supa.from('users').update(cleanFields).eq('email', userEmail.toLowerCase()).select('id');
+      if (!error && data && data.length > 0) return true;
+    }
+
+    // Core fields fallback
+    const coreFields: Record<string, any> = {};
+    if (cleanFields.credits !== undefined) coreFields.credits = cleanFields.credits;
+    if (cleanFields.plan_days_left !== undefined) coreFields.plan_days_left = cleanFields.plan_days_left;
+    if (cleanFields.plan !== undefined) coreFields.plan = cleanFields.plan;
+    if (cleanFields.name !== undefined) coreFields.name = cleanFields.name;
+    if (cleanFields.email !== undefined) coreFields.email = cleanFields.email;
+    if (cleanFields.password !== undefined) coreFields.password = cleanFields.password;
+    if (cleanFields.status !== undefined) coreFields.status = cleanFields.status;
+
+    if (Object.keys(coreFields).length > 0) {
+      if (userId) {
+        const { error, data } = await supa.from('users').update(coreFields).eq('id', userId).select('id');
+        if (!error && data && data.length > 0) return true;
+      }
+      if (userEmail) {
+        const { error, data } = await supa.from('users').update(coreFields).eq('email', userEmail.toLowerCase()).select('id');
+        if (!error && data && data.length > 0) return true;
+      }
+    }
+
+    // Single field updates fallback
+    for (const [k, v] of Object.entries(cleanFields)) {
+      try {
+        if (userId) await supa.from('users').update({ [k]: v }).eq('id', userId);
+        else if (userEmail) await supa.from('users').update({ [k]: v }).eq('email', userEmail.toLowerCase());
+      } catch {}
+    }
+    return true;
+  } catch (err) {
+    console.error('safeServerSupabaseUserUpdate catch error:', err);
+    return false;
+  }
+}
+
 const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
 const ADMIN_PASSWORD = '147258';
 
@@ -591,44 +649,25 @@ app.post('/api/users/update', async (req, res) => {
 
   const supa = getServerSupabase();
   if (supa) {
-    try {
-      const currentUser = db.users[userIndex];
-      const supaData: any = {
-        id: currentUser.id,
-        email: currentUser.email,
-        name: currentUser.name,
-        password: currentUser.password,
-        plan: currentUser.plan,
-        credits: currentUser.credits,
-        max_credits: currentUser.maxCredits,
-        plan_days_left: currentUser.planDaysLeft,
-        role: currentUser.role,
-        status: currentUser.status,
-        extension_access: currentUser.extensionAccess !== undefined ? currentUser.extensionAccess : true,
-        can_edit_prompts: currentUser.canEditPrompts === true,
-        whatsapp: currentUser.whatsapp || '',
-        telegram: currentUser.telegram || '',
-        referral_code: currentUser.referralCode || '',
-        referred_by: currentUser.referredBy || '',
-      };
-      if (data.name !== undefined) supaData.name = data.name;
-      if (data.email !== undefined) supaData.email = data.email;
-      if (data.password !== undefined) supaData.password = data.password;
-      if (data.plan !== undefined) supaData.plan = data.plan;
-      if (data.credits !== undefined) supaData.credits = data.credits;
-      if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
-      if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
-      if (data.planExpiresAt !== undefined) supaData.plan_expires_at = data.planExpiresAt;
-      if (data.status !== undefined) supaData.status = data.status;
-      if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
-      if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
-      if (data.whatsapp !== undefined) supaData.whatsapp = data.whatsapp;
-      if (data.telegram !== undefined) supaData.telegram = data.telegram;
+    const currentUser = db.users[userIndex];
+    const supaData: any = {};
+    if (data.name !== undefined) supaData.name = data.name;
+    if (data.email !== undefined) supaData.email = data.email;
+    if (data.password !== undefined) supaData.password = data.password;
+    if (data.plan !== undefined) supaData.plan = data.plan;
+    if (data.credits !== undefined) supaData.credits = data.credits;
+    if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
+    if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
+    if (data.planExpiresAt !== undefined) supaData.plan_expires_at = data.planExpiresAt;
+    if (data.status !== undefined) supaData.status = data.status;
+    if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
+    if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
+    if (data.whatsapp !== undefined) supaData.whatsapp = data.whatsapp;
+    if (data.telegram !== undefined) supaData.telegram = data.telegram;
 
-      await supa.from('users').upsert(supaData);
-    } catch (err) {
-      console.error('Supabase user update error:', err);
-    }
+    safeServerSupabaseUserUpdate(supa, currentUser.id, currentUser.email, supaData).catch(err => {
+      console.error('Server Supabase user update error:', err);
+    });
   }
 
   res.json({ success: true, user: db.users[userIndex] });

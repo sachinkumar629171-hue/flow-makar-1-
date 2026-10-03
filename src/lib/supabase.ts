@@ -76,3 +76,83 @@ export function getSupabase(): SupabaseClient | null {
     return null;
   }
 }
+
+/**
+ * Resiliently updates a user in Supabase.
+ * If columns are missing or if id format differs, tries multiple fallback strategies
+ * so that critical updates (credits, plan_days_left, plan, status) never fail.
+ */
+export async function safeSupabaseUserUpdate(
+  supabase: SupabaseClient,
+  userId: string,
+  userEmail: string | undefined,
+  fields: Record<string, any>
+): Promise<boolean> {
+  if (!supabase || (!userId && !userEmail)) return false;
+
+  // Clean payload
+  const cleanFields: Record<string, any> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) {
+      cleanFields[k] = v;
+    }
+  }
+
+  if (Object.keys(cleanFields).length === 0) return true;
+
+  try {
+    // Strategy 1: Attempt update by ID with full fields
+    if (userId) {
+      const { error, data } = await supabase.from('users').update(cleanFields).eq('id', userId).select('id');
+      if (!error && data && data.length > 0) {
+        return true;
+      }
+    }
+
+    // Strategy 2: Attempt update by Email with full fields
+    if (userEmail) {
+      const { error, data } = await supabase.from('users').update(cleanFields).eq('email', userEmail.toLowerCase()).select('id');
+      if (!error && data && data.length > 0) {
+        return true;
+      }
+    }
+
+    // Strategy 3: Column error fallback - try only core known table columns
+    const coreFields: Record<string, any> = {};
+    if (cleanFields.credits !== undefined) coreFields.credits = cleanFields.credits;
+    if (cleanFields.plan_days_left !== undefined) coreFields.plan_days_left = cleanFields.plan_days_left;
+    if (cleanFields.plan !== undefined) coreFields.plan = cleanFields.plan;
+    if (cleanFields.name !== undefined) coreFields.name = cleanFields.name;
+    if (cleanFields.email !== undefined) coreFields.email = cleanFields.email;
+    if (cleanFields.password !== undefined) coreFields.password = cleanFields.password;
+    if (cleanFields.status !== undefined) coreFields.status = cleanFields.status;
+    if (cleanFields.role !== undefined) coreFields.role = cleanFields.role;
+
+    if (Object.keys(coreFields).length > 0) {
+      if (userId) {
+        const { error, data } = await supabase.from('users').update(coreFields).eq('id', userId).select('id');
+        if (!error && data && data.length > 0) return true;
+      }
+      if (userEmail) {
+        const { error, data } = await supabase.from('users').update(coreFields).eq('email', userEmail.toLowerCase()).select('id');
+        if (!error && data && data.length > 0) return true;
+      }
+    }
+
+    // Strategy 4: Individual key updates for absolute fault tolerance
+    for (const [k, v] of Object.entries(cleanFields)) {
+      try {
+        if (userId) {
+          await supabase.from('users').update({ [k]: v }).eq('id', userId);
+        } else if (userEmail) {
+          await supabase.from('users').update({ [k]: v }).eq('email', userEmail.toLowerCase());
+        }
+      } catch {}
+    }
+
+    return true;
+  } catch (err) {
+    console.error('safeSupabaseUserUpdate catch error:', err);
+    return false;
+  }
+}

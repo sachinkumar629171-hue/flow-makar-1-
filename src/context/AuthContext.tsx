@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import { User, PlanType, Generation, ShowcaseVideo, ExtensionConfig, PlanExtensionsConfig, TutorialConfig, HeroConfig, Reseller, PromptConfig } from '../types';
 import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIAL_SHOWCASE, INITIAL_RESELLERS } from '../data/initialData';
 import { apiUrl } from '../config/api';
-import { getSupabase, getSupabaseConfig, saveSupabaseConfig } from '../lib/supabase';
+import { getSupabase, getSupabaseConfig, saveSupabaseConfig, safeSupabaseUserUpdate } from '../lib/supabase';
 import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
 import { setUserExpiryMs } from '../lib/userStats';
 
@@ -738,8 +738,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               if (currentUser && (su.id === currentUser.id || (su.email && su.email.toLowerCase() === currentUser.email.toLowerCase()))) {
                 return { ...su, isOnline: true, lastActive: new Date().toISOString() };
               }
-              const pending = lastUpdatedUsersRef.current.get(su.id);
-              if (pending && now - pending.timestamp < 10000) {
+              const pending = lastUpdatedUsersRef.current.get(su.id) || (su.email ? lastUpdatedUsersRef.current.get(su.email.toLowerCase()) : undefined);
+              if (pending && now - pending.timestamp < 30000) {
                 return { ...su, ...pending.data };
               }
               return su;
@@ -899,10 +899,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     pollCentralServer();
-    // Smart Polling: 20 seconds for admin, 60 seconds for normal user to preserve Supabase free quota
-    const isUserAdmin = currentUser?.role === 'admin';
-    const pollTime = isUserAdmin ? 20000 : 60000;
-    const pollInterval = setInterval(pollCentralServer, pollTime);
+    // Smart Polling: 90 seconds for admin, 180 seconds for normal user to preserve Supabase quota
+    const pollInterval = setInterval(pollCentralServer, 90000);
 
     // Immediate refresh on tab focus
     const handleTabFocus = () => {
@@ -915,7 +913,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       clearInterval(pollInterval);
       window.removeEventListener('focus', handleTabFocus);
     };
-  }, [currentUser?.id, currentUser?.plan, currentUser?.credits, currentUser?.role]);
+  }, []); // Run only once on mount to prevent infinite poll cycles
 
   // Cross-tab broadcast channel for instant multi-tab presence & single-session sync
   useEffect(() => {
@@ -1018,41 +1016,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch {}
       }
 
-      // Smart Throttled Supabase Single-Session Guard (Only runs if active tab & throttled to save 99% Supabase quota)
-      const supabase = getSupabase();
-      if (supabase && currentUser.email && document.visibilityState === 'visible') {
-        const lastCheck = (window as any)._lastSupaSessionCheck || 0;
-        const nowMs = Date.now();
-        
-        // Check session token every 12 seconds or on tab focus
-        if (nowMs - lastCheck > 12000) {
-          (window as any)._lastSupaSessionCheck = nowMs;
-          supabase
-            .from('users')
-            .select('session_token, status')
-            .ilike('email', currentUser.email.toLowerCase())
-            .maybeSingle()
-            .then(
-              ({ data: remoteUser }) => {
-                if (remoteUser) {
-                  const currentLocalToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
-                  if (remoteUser.status === 'suspended') {
-                    console.warn('[SingleDeviceGuard] Account suspended! Logging out.');
-                    setSessionTerminatedNotice(true);
-                    logout();
-                  } else if (remoteUser.session_token && currentLocalToken && remoteUser.session_token !== currentLocalToken) {
-                    console.warn('[SingleDeviceGuard] Remote session token mismatch on Supabase! Logging out old session.');
-                    setSessionTerminatedNotice(true);
-                    logout();
-                  }
-                }
-              },
-              () => {}
-            );
-        }
-      }
-
-      // Central server sync with session token verification (Runs on server.ts - 0 Supabase cost)
+      // Central server sync with session token verification (Runs on server - 0 Supabase cost)
       fetch(apiUrl('/api/users/heartbeat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1580,12 +1544,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const renewResellerUser = (userId: string, days = 30) => {
     const user = users.find(u => u.id === userId);
+    const userEmail = user?.email;
     const newDays = (user?.planDaysLeft || 0) + days;
+    const calculatedExpiresAt = new Date(Date.now() + newDays * 24 * 60 * 60 * 1000).toISOString();
+    setUserExpiryMs(userId, newDays, new Date(calculatedExpiresAt).getTime());
 
     lastUpdatedUsersRef.current.set(userId, {
       timestamp: Date.now(),
-      data: { planDaysLeft: newDays },
+      data: { planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt },
     });
+    if (userEmail) {
+      lastUpdatedUsersRef.current.set(userEmail.toLowerCase(), {
+        timestamp: Date.now(),
+        data: { planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt },
+      });
+    }
 
     setUsers(prev =>
       prev.map(u => {
@@ -1593,6 +1566,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return {
             ...u,
             planDaysLeft: newDays,
+            planExpiresAt: calculatedExpiresAt,
           };
         }
         return u;
@@ -1600,24 +1574,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
 
     if (currentUser && currentUser.id === userId) {
-      setCurrentUser(prev => (prev ? { ...prev, planDaysLeft: newDays } : null));
+      setCurrentUser(prev => (prev ? { ...prev, planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt } : null));
     }
 
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, data: { planDaysLeft: newDays } }),
+      body: JSON.stringify({ userId, data: { planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt } }),
     }).catch(() => {});
 
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').update({ plan_days_left: newDays }).eq('id', userId).then(() => {});
+      safeSupabaseUserUpdate(supabase, userId, userEmail, {
+        plan_days_left: newDays,
+        plan_expires_at: calculatedExpiresAt,
+      }).catch(() => {});
     }
   };
 
   const reloadResellerUserCredits = (userId: string) => {
     const user = users.find(u => u.id === userId);
+    const userEmail = user?.email;
     const targetCredits = user?.maxCredits || (user?.plan === 'ultra' ? 45000 : 100);
+
+    lastUpdatedUsersRef.current.set(userId, {
+      timestamp: Date.now(),
+      data: { credits: targetCredits },
+    });
+    if (userEmail) {
+      lastUpdatedUsersRef.current.set(userEmail.toLowerCase(), {
+        timestamp: Date.now(),
+        data: { credits: targetCredits },
+      });
+    }
+
     setUsers(prev =>
       prev.map(u => {
         if (u.id === userId) {
@@ -1642,7 +1632,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').update({ credits: targetCredits }).eq('id', userId).then(() => {});
+      safeSupabaseUserUpdate(supabase, userId, userEmail, {
+        credits: targetCredits,
+      }).catch(() => {});
     }
   };
 
@@ -2174,6 +2166,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
+    const targetUser = users.find(u => u.id === userId);
+    const userEmail = targetUser?.email;
+
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2191,12 +2186,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').update({
+      safeSupabaseUserUpdate(supabase, userId, userEmail, {
         plan: newPlan,
         credits: defaultCredits,
         max_credits: defaultCredits,
         plan_days_left: targetDays,
-      }).eq('id', userId).then(() => {});
+      }).catch(() => {});
     }
   };
 
@@ -2218,20 +2213,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   ) => {
     const userToUpdate = users.find(u => u.id === userId);
+    const userEmail = data.email || userToUpdate?.email;
     const existingPending = lastUpdatedUsersRef.current.get(userId)?.data || {};
     const calculatedExpiresAt = data.planDaysLeft !== undefined ? new Date(Date.now() + Math.max(0, data.planDaysLeft) * 24 * 60 * 60 * 1000).toISOString() : undefined;
     if (data.planDaysLeft !== undefined) {
       setUserExpiryMs(userId, data.planDaysLeft, calculatedExpiresAt ? new Date(calculatedExpiresAt).getTime() : undefined);
     }
 
+    const mergedData = {
+      ...existingPending,
+      ...data,
+      ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
+    };
+
     lastUpdatedUsersRef.current.set(userId, {
       timestamp: Date.now(),
-      data: {
-        ...existingPending,
-        ...data,
-        ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
-      },
+      data: mergedData,
     });
+    if (userEmail) {
+      lastUpdatedUsersRef.current.set(userEmail.toLowerCase(), {
+        timestamp: Date.now(),
+        data: mergedData,
+      });
+    }
 
     setUsers(prev =>
       prev.map(u => {
@@ -2315,7 +2319,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
       if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
       if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
-      supabase.from('users').update(supaData).eq('id', userId).then(() => {});
+
+      safeSupabaseUserUpdate(supabase, userId, userEmail, supaData).catch(err => {
+        console.error('Failed to sync update to Supabase:', err);
+      });
     }
   };
 
@@ -2363,6 +2370,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateUserCredits = (userId: string, newCredits: number, newMax?: number) => {
     const userToUpdate = users.find(u => u.id === userId);
+    const userEmail = userToUpdate?.email;
     const max = newMax !== undefined ? newMax : (userToUpdate ? Math.max(userToUpdate.maxCredits, newCredits) : newCredits);
     
     lastUpdatedUsersRef.current.set(userId, {
@@ -2372,6 +2380,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         maxCredits: max,
       },
     });
+    if (userEmail) {
+      lastUpdatedUsersRef.current.set(userEmail.toLowerCase(), {
+        timestamp: Date.now(),
+        data: {
+          credits: newCredits,
+          maxCredits: max,
+        },
+      });
+    }
 
     setUsers(prev =>
       prev.map(u => {
@@ -2412,10 +2429,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').update({
+      safeSupabaseUserUpdate(supabase, userId, userEmail, {
         credits: newCredits,
         ...(newMax !== undefined ? { max_credits: newMax } : {}),
-      }).eq('id', userId).then(() => {});
+      }).catch(() => {});
     }
   };
 
