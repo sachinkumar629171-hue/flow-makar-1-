@@ -14,6 +14,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   ];
   let costs = { image: 20, video: 30 };
   let promptReminderMinutes = 120;
+  let extensionVersion = 'v1.0.1';
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
   const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
@@ -27,10 +28,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (parsed?.servers) servers = parsed.servers;
         if (parsed?.costs) costs = parsed.costs;
         if (parsed?.promptReminderMinutes) promptReminderMinutes = parsed.promptReminderMinutes;
+        if (parsed?.extensionVersion) extensionVersion = parsed.extensionVersion;
         return res.status(200).json({
           success: true,
           servers,
           costs,
+          version: extensionVersion,
+          extensionVersion: extensionVersion,
+          requiredVersion: extensionVersion,
           promptReminderMinutes,
           serverTimestamp: new Date().toISOString(),
         });
@@ -52,6 +57,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     success: true,
     servers,
     costs,
+    version: extensionVersion,
+    extensionVersion: extensionVersion,
+    requiredVersion: extensionVersion,
     promptReminderMinutes,
     serverTimestamp: new Date().toISOString(),
   });

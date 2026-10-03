@@ -46,7 +46,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const isUltraOrUnlimited = supaUser.plan === 'ultra' || supaUser.plan === 'unlimited';
         const sessionToken = supaUser.session_token || supaUser.sessionToken || '';
         const isTokenValid = Boolean(reqToken && sessionToken && reqToken === sessionToken);
-        const canAccessPrompts = isUltraOrUnlimited && supaUser.status !== 'suspended' && extensionAllowed && isTokenValid;
+        const canAccessPrompts = isUltraOrUnlimited && supaUser.status !== 'suspended' && extensionAllowed;
 
         let planDisplayName = 'Basic Plan';
         if (supaUser.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';

@@ -513,6 +513,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         else if (currentUser.plan === 'ultra') planDisplayName = 'Ultra VIP Plan';
 
         const extensionBridgeData = {
+          id: currentUser.id,
+          userId: currentUser.id,
           email: currentUser.email,
           name: currentUser.name,
           plan: currentUser.plan,
@@ -522,20 +524,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           maxCredits: currentUser.maxCredits,
           totalCredits: currentUser.maxCredits,
           sessionToken: sessionToken,
+          token: sessionToken,
           canAccessPrompts: canAccessPrompts, // Basic plan = false (no prompt access), Ultra/Unlimited = true
           status: currentUser.status || 'active',
           planDaysLeft: currentUser.planDaysLeft,
           extensionAccess: currentUser.extensionAccess !== false,
           isConnected: true,
           portalDomain: window.location.hostname || 'flowmakerai.site',
+          portalUrl: window.location.origin,
           lastSynced: new Date().toISOString()
         };
 
         localStorage.setItem('flow_extension_bridge_v3', JSON.stringify(extensionBridgeData));
         localStorage.setItem('flow_portal_session_v3', JSON.stringify(extensionBridgeData));
+        localStorage.setItem('google_flow_user_data', JSON.stringify(extensionBridgeData));
+        localStorage.setItem('flow_user', JSON.stringify(extensionBridgeData));
+        localStorage.setItem('portalUser', JSON.stringify(extensionBridgeData));
+        localStorage.setItem('flowmaker_user', JSON.stringify(extensionBridgeData));
+        localStorage.setItem('sessionToken', sessionToken);
+        localStorage.setItem('token', sessionToken);
         
+        // Also set a document cookie so extensions using chrome.cookies or document.cookie get fresh data
+        try {
+          document.cookie = `flow_user_email=${encodeURIComponent(currentUser.email)}; path=/; max-age=2592000; SameSite=Lax`;
+          document.cookie = `flow_user_token=${encodeURIComponent(sessionToken)}; path=/; max-age=2592000; SameSite=Lax`;
+        } catch {}
+
         // Notify any active chrome extension content scripts on flowmakerai.site
         window.dispatchEvent(new CustomEvent('FLOW_EXTENSION_SYNC', { detail: extensionBridgeData }));
+        window.dispatchEvent(new CustomEvent('google_flow_auth_sync', { detail: extensionBridgeData }));
         window.postMessage({ type: 'FLOW_PORTAL_USER_SYNC', data: extensionBridgeData }, '*');
       } else {
         localStorage.removeItem(CURRENT_USER_KEY);
@@ -543,6 +560,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('flow_portal_session_v3');
         localStorage.removeItem('flowmaker_session_token');
         localStorage.removeItem('google_flow_user_data');
+        localStorage.removeItem('flow_user');
+        localStorage.removeItem('portalUser');
+        localStorage.removeItem('flowmaker_user');
+        try {
+          document.cookie = 'flow_user_email=; path=/; max-age=0';
+          document.cookie = 'flow_user_token=; path=/; max-age=0';
+        } catch {}
         window.dispatchEvent(new CustomEvent('FLOW_EXTENSION_DISCONNECT', { detail: { action: 'logout' } }));
         window.postMessage({ type: 'FLOW_PORTAL_DISCONNECT' }, '*');
       }
@@ -1697,14 +1721,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     }
 
-    // 1. Check Supabase Database First if connected
+    // 1. First, consult central server login for strict authoritative single-device lock verification
+    try {
+      const serverRes = await fetch(apiUrl('/api/users/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+      });
+      const serverData = await serverRes.json().catch(() => ({}));
+      if (!serverRes.ok) {
+        if (serverRes.status === 403) {
+          return {
+            success: false,
+            error: serverData.error || '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Kripya pehle waha se logout karein.'
+          };
+        }
+        if (serverRes.status === 401) {
+          return { success: false, error: serverData.error || 'Incorrect password. Please try again.' };
+        }
+      } else if (serverData.success && serverData.user) {
+        const sUser: User = serverData.user;
+        if (sUser.sessionToken) {
+          localStorage.setItem('flowmaker_session_token', sUser.sessionToken);
+          try {
+            const bc = new BroadcastChannel('flow_user_presence');
+            bc.postMessage({
+              type: 'NEW_LOGIN',
+              email: sUser.email,
+              sessionToken: sUser.sessionToken,
+            });
+            setTimeout(() => bc.close(), 1000);
+          } catch {}
+        }
+        setUsers(prev => {
+          const exists = prev.some(u => u.id === sUser.id || u.email.toLowerCase() === sUser.email.toLowerCase());
+          return exists ? prev.map(u => (u.id === sUser.id || u.email.toLowerCase() === sUser.email.toLowerCase()) ? sUser : u) : [sUser, ...prev];
+        });
+        setCurrentUser(sUser);
+
+        // Also sync to Supabase if connected
+        const supa = getSupabase();
+        if (supa) {
+          safeSupabaseUserUpdate(supa, sUser.id, sUser.email, {
+            session_token: sUser.sessionToken,
+            is_online: true,
+            last_active: new Date().toISOString(),
+          }).catch(() => {});
+        }
+        return { success: true };
+      }
+    } catch (err) {
+      console.warn('Central server login attempt error, checking Supabase direct:', err);
+    }
+
+    // 2. Direct Supabase Database check if central server was unreachable
     const supabase = getSupabase();
     if (supabase) {
       try {
         const { data: supaUser, error: supaErr } = await supabase
           .from('users')
           .select('*')
-          .eq('email', cleanEmail)
+          .ilike('email', cleanEmail)
           .maybeSingle();
 
         if (!supaErr && supaUser) {
@@ -1720,11 +1797,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const currentLocalToken = localStorage.getItem('flowmaker_session_token');
           if (!isSystemAdmin && supaUser.is_online && supaUser.session_token) {
             const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;
-            const isRecent = Date.now() - lastActiveTime < 10 * 60 * 1000; // 10 mins window
+            const isRecent = Date.now() - lastActiveTime < 5 * 60 * 1000; // 5 mins window
             if (isRecent && currentLocalToken !== supaUser.session_token) {
               return {
                 success: false,
-                error: '⚠️ This account is already active on another device! Please logout from the other device first to login here.'
+                error: '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Pehle purane device se logout karein ya Admin se reset karwayein.'
               };
             }
           }
@@ -1773,7 +1850,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setCurrentUser(mappedUser);
 
           // Update online status & session token in supabase
-          supabase.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).eq('id', mappedUser.id).then(() => {});
+          safeSupabaseUserUpdate(supabase, mappedUser.id, mappedUser.email, {
+            session_token: sessionToken,
+            is_online: true,
+            last_active: new Date().toISOString(),
+          }).catch(() => {});
+
           return { success: true };
         }
       } catch (err) {

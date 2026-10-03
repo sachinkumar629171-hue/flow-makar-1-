@@ -543,14 +543,55 @@ app.post('/api/users/sync-all', (req, res) => {
 });
 
 // POST login
-app.post('/api/users/login', (req, res) => {
-  const { email, password } = req.body;
+app.post('/api/users/login', async (req, res) => {
+  const { email, password, sessionToken: clientSessionToken, forceLogin } = req.body;
   if (!email) {
     return res.status(400).json({ success: false, error: 'Email is required' });
   }
 
-  // Case-insensitive email search
-  const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  const cleanEmail = cleanEmailString(email);
+
+  // 1. Find user in memory or load from Supabase if missing
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === cleanEmail);
+  const supa = getServerSupabase();
+  if (!user && supa) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('*').ilike('email', cleanEmail).maybeSingle();
+      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        const freshUser = {
+          id: supaUser.id,
+          name: supaUser.name,
+          email: supaUser.email,
+          password: supaUser.password,
+          whatsapp: supaUser.whatsapp || '',
+          telegram: supaUser.telegram || '',
+          referralCode: supaUser.referral_code || '',
+          referredBy: supaUser.referred_by || '',
+          plan: supaUser.plan || 'basic',
+          credits: Number(supaUser.credits) ?? 0,
+          maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
+          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+          role: supaUser.role || 'user',
+          resellerId: supaUser.reseller_id,
+          resellerName: supaUser.reseller_name,
+          status: supaUser.status || 'active',
+          extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
+          canEditPrompts: supaUser.can_edit_prompts === true,
+          isOnline: Boolean(supaUser.is_online),
+          sessionToken: supaUser.session_token || '',
+          lastActive: supaUser.last_active || new Date().toISOString(),
+          createdAt: supaUser.created_at || new Date().toISOString(),
+          avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+        };
+        db.users.push(freshUser);
+        user = freshUser;
+        saveStorage();
+      }
+    } catch (e) {
+      console.error('Supabase lookup error during login:', e);
+    }
+  }
+
   if (!user) {
     return res.status(404).json({ success: false, error: 'Account not found. Please sign up first.' });
   }
@@ -563,28 +604,35 @@ app.post('/api/users/login', (req, res) => {
     return res.status(403).json({ success: false, error: 'This account has been suspended by administration.' });
   }
 
-  // Single-Device Lock: If user is already active on another device, reject new login
-  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(user.email.toLowerCase());
-  if (!isSystemAdmin && user.isOnline && user.sessionToken) {
+  // Strict Single-Device Lock: If user is active on another device, block concurrent login!
+  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
+  if (!isSystemAdmin && !forceLogin && user.isOnline && user.sessionToken) {
     const lastActiveTime = user.lastActive ? new Date(user.lastActive).getTime() : 0;
-    const isRecent = Date.now() - lastActiveTime < 10 * 60 * 1000; // 10 minutes
-    if (isRecent) {
+    const isRecent = Date.now() - lastActiveTime < 5 * 60 * 1000; // Active within last 5 minutes
+    
+    // If incoming client already holds this same session token, it's the same device refresh
+    const isSameDevice = clientSessionToken && clientSessionToken === user.sessionToken;
+    if (isRecent && !isSameDevice) {
       return res.status(403).json({
         success: false,
-        error: '⚠️ This account is currently active on another device! Please logout from the other device first to login here.'
+        isDeviceLocked: true,
+        error: '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Pehle purane device se logout karein ya Admin panel se Reset Device Session karwayein.'
       });
     }
   }
 
-  const newSessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+  const newSessionToken = clientSessionToken || ('sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9));
   user.sessionToken = newSessionToken;
   user.isOnline = true;
   user.lastActive = new Date().toISOString();
   saveStorage();
 
-  const supa = getServerSupabase();
   if (supa) {
-    supa.from('users').update({ session_token: newSessionToken, is_online: true, last_active: user.lastActive }).eq('id', user.id).then(() => {});
+    safeServerSupabaseUserUpdate(supa, user.id, user.email, {
+      session_token: newSessionToken,
+      is_online: true,
+      last_active: user.lastActive,
+    }).catch(() => {});
   }
 
   res.json({ success: true, user });
@@ -787,7 +835,8 @@ app.get('/api/extension/user', async (req, res) => {
   const isUltraOrUnlimited = user.plan === 'ultra' || user.plan === 'unlimited';
   const sessionToken = user.sessionToken || '';
   const isTokenValid = Boolean(reqToken && sessionToken && reqToken === sessionToken);
-  const canAccessPrompts = isUltraOrUnlimited && user.status === 'active' && user.extensionAccess !== false && planDaysLeft > 0 && isTokenValid;
+  // Allow active Ultra / Unlimited users with remaining validity to access servers
+  const canAccessPrompts = isUltraOrUnlimited && user.status === 'active' && user.extensionAccess !== false && planDaysLeft > 0;
 
   let planDisplayName = 'Basic Plan';
   if (user.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';
@@ -1032,10 +1081,15 @@ app.get('/api/extension/servers', async (req, res) => {
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
 
+  const ver = db.promptConfig?.extensionVersion || 'v1.0.1';
+
   res.json({
     success: true,
     servers,
     costs,
+    version: ver,
+    extensionVersion: ver,
+    requiredVersion: ver,
     promptReminderMinutes,
     serverTimestamp: new Date().toISOString(),
   });
