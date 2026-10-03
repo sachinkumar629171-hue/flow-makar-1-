@@ -44,16 +44,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onB
   // Feedback state
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
 
-  const handleLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleLoginSubmit = async (e: React.FormEvent, force = false) => {
+    if (e) e.preventDefault();
     setError(null);
     setLoading(true);
 
     try {
-      const res = await login(loginEmail, loginPassword);
+      const res = await login(loginEmail, loginPassword, force);
       if (!res.success) {
         setError(res.error || 'Failed to login');
+        setIsLocked(Boolean(res.isDeviceLocked));
+      } else {
+        setIsLocked(false);
       }
     } catch {
       setError('Connection error. Please try again.');
@@ -151,9 +155,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onB
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
-                className="mb-5 p-3 rounded-lg bg-red-950/70 border border-red-800/60 text-red-300 text-xs text-left"
+                className="mb-5 p-3 rounded-lg bg-red-950/70 border border-red-800/60 text-red-300 text-xs text-left flex flex-col gap-2"
               >
-                {error}
+                <div>{error}</div>
+                {isLocked && mode === 'login' && (
+                  <div className="pt-2 border-t border-red-800/60">
+                    <button
+                      type="button"
+                      onClick={(e) => handleLoginSubmit(e, true)}
+                      disabled={loading}
+                      className="w-full py-2 px-3 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white font-semibold text-xs rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md"
+                    >
+                      {loading ? (
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : (
+                        '⚡ Purane Device Se Logout Karein & Yaha Login Karein (Force Login)'
+                      )}
+                    </button>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

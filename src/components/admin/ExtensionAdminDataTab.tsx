@@ -784,7 +784,7 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
                   <p>1. <span className="text-purple-300 font-bold">GET /api/extension/servers</span> - Fetches all server prompts ({localServers.length} servers) & costs.</p>
                   <p>2. <span className="text-cyan-300 font-bold">GET /api/extension/user?email=GMAIL_ID</span> - Fetches plan, credits, validity & server prompts.</p>
                   <p>3. <span className="text-rose-300 font-bold">POST /api/extension/deduct-credits</span> - Deducts credits for generation (body: <code>{`{ email, type: 'image' | 'video' }`}</code>).</p>
-                  <p>4. <span className="text-emerald-300 font-bold">GET /api/extension/version</span> - Checks required extension version set in database / admin panel.</p>
+                  <p>4. <span className="text-emerald-300 font-bold">POST /api/extension/prompts</span> - Returns live server prompts, online status & required version in a single response.</p>
                 </div>
               </div>
             </div>

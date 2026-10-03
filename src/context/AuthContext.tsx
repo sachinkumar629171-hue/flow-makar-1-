@@ -18,7 +18,7 @@ interface AuthContextType {
   tutorialConfig: TutorialConfig;
   heroConfig: HeroConfig;
   isAdmin: boolean;
-  login: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
+  login: (email: string, pass: string, forceLogin?: boolean) => Promise<{ success: boolean; isDeviceLocked?: boolean; error?: string }>;
   resellerLogin: (email: string, pass: string) => Promise<{ success: boolean; error?: string }>;
   loginAsReseller: (reseller: Reseller) => void;
   logoutReseller: () => void;
@@ -550,6 +550,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           document.cookie = `flow_user_token=${encodeURIComponent(sessionToken)}; path=/; max-age=2592000; SameSite=Lax`;
         } catch {}
 
+        // Hidden DOM bridge element for foolproof extension content script discovery
+        try {
+          let bridgeEl = document.getElementById('flow-portal-bridge');
+          if (!bridgeEl) {
+            bridgeEl = document.createElement('div');
+            bridgeEl.id = 'flow-portal-bridge';
+            bridgeEl.style.display = 'none';
+            document.body.appendChild(bridgeEl);
+          }
+          bridgeEl.setAttribute('data-user', JSON.stringify(extensionBridgeData));
+          bridgeEl.setAttribute('data-token', sessionToken);
+          bridgeEl.setAttribute('data-email', currentUser.email);
+          bridgeEl.setAttribute('data-name', currentUser.name);
+          bridgeEl.setAttribute('data-plan', currentUser.plan);
+          bridgeEl.setAttribute('data-credits', String(currentUser.credits));
+          bridgeEl.setAttribute('data-days', String(currentUser.planDaysLeft));
+        } catch {}
+
         // Notify any active chrome extension content scripts on flowmakerai.site
         window.dispatchEvent(new CustomEvent('FLOW_EXTENSION_SYNC', { detail: extensionBridgeData }));
         window.dispatchEvent(new CustomEvent('google_flow_auth_sync', { detail: extensionBridgeData }));
@@ -564,6 +582,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         localStorage.removeItem('portalUser');
         localStorage.removeItem('flowmaker_user');
         try {
+          const bridgeEl = document.getElementById('flow-portal-bridge');
+          if (bridgeEl) bridgeEl.remove();
+        } catch {}
+        try {
           document.cookie = 'flow_user_email=; path=/; max-age=0';
           document.cookie = 'flow_user_token=; path=/; max-age=0';
         } catch {}
@@ -573,6 +595,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore
     }
+  }, [currentUser]);
+
+  // Reply to extension sync requests on demand
+  useEffect(() => {
+    const handleMsg = (e: MessageEvent) => {
+      if (e.data && (e.data.type === 'FLOW_REQUEST_USER_SYNC' || e.data.type === 'GET_PORTAL_USER')) {
+        if (currentUser) {
+          const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+          const bridgeData = {
+            id: currentUser.id,
+            userId: currentUser.id,
+            email: currentUser.email,
+            name: currentUser.name,
+            plan: currentUser.plan,
+            planName: currentUser.plan === 'ultra' ? 'Ultra VIP Plan' : currentUser.plan === 'unlimited' ? 'Unlimited VIP Plan' : 'Basic Plan',
+            credits: currentUser.credits,
+            creditsLeft: currentUser.credits,
+            maxCredits: currentUser.maxCredits,
+            totalCredits: currentUser.maxCredits,
+            sessionToken: sessionToken,
+            token: sessionToken,
+            planDaysLeft: currentUser.planDaysLeft,
+            status: currentUser.status,
+            extensionAccess: currentUser.extensionAccess !== false,
+            canAccessPrompts: (currentUser.plan === 'ultra' || currentUser.plan === 'unlimited') && currentUser.status !== 'suspended',
+            portalUrl: window.location.origin,
+            lastSynced: new Date().toISOString()
+          };
+          window.postMessage({ type: 'FLOW_PORTAL_USER_SYNC', data: bridgeData }, '*');
+        }
+      }
+    };
+    window.addEventListener('message', handleMsg);
+    return () => window.removeEventListener('message', handleMsg);
   }, [currentUser]);
 
   // Sync generations
@@ -1662,7 +1718,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const login = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
+  const login = async (email: string, pass: string, forceLogin = false): Promise<{ success: boolean; isDeviceLocked?: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
@@ -1715,7 +1771,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       fetch(apiUrl('/api/users/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password: cleanPass, sessionToken }),
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass, sessionToken, forceLogin }),
       }).catch(() => {});
 
       return { success: true };
@@ -1726,13 +1782,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const serverRes = await fetch(apiUrl('/api/users/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass, forceLogin }),
       });
       const serverData = await serverRes.json().catch(() => ({}));
       if (!serverRes.ok) {
         if (serverRes.status === 403) {
           return {
             success: false,
+            isDeviceLocked: serverData.isDeviceLocked || false,
             error: serverData.error || '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Kripya pehle waha se logout karein.'
           };
         }
@@ -1795,13 +1852,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Single-Device Lock: If account is active on another device, block new login until old device logs out
           const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
           const currentLocalToken = localStorage.getItem('flowmaker_session_token');
-          if (!isSystemAdmin && supaUser.is_online && supaUser.session_token) {
+          if (!isSystemAdmin && !forceLogin && supaUser.is_online && supaUser.session_token) {
             const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;
-            const isRecent = Date.now() - lastActiveTime < 5 * 60 * 1000; // 5 mins window
+            const isRecent = Date.now() - lastActiveTime < 3 * 60 * 1000; // 3 mins window
             if (isRecent && currentLocalToken !== supaUser.session_token) {
               return {
                 success: false,
-                error: '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Pehle purane device se logout karein ya Admin se reset karwayein.'
+                isDeviceLocked: true,
+                error: '⚠️ Yeh account abhi kisi dusre device / browser par ACTIVE hai! Kripya pehle purane device se logout karein ya Force Login karein.'
               };
             }
           }

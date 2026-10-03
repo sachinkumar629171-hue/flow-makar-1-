@@ -318,30 +318,6 @@ app.get('/api/extension/profile/:userId', (req, res) => {
   });
 });
 
-// GET required extension version signal (checks admin panel set version)
-app.get('/api/extension/version', async (req, res) => {
-  let ver = db.promptConfig?.extensionVersion;
-  const supa = getServerSupabase();
-  if (supa) {
-    try {
-      const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-      if (promptRow?.name) {
-        const parsed = JSON.parse(promptRow.name);
-        if (parsed?.extensionVersion) {
-          ver = parsed.extensionVersion;
-        }
-      }
-    } catch {}
-  }
-  const finalVer = ver || db.promptConfig?.extensionVersion || 'v2.4.1';
-  res.json({
-    success: true,
-    version: finalVer,
-    extensionVersion: finalVer,
-    requiredVersion: finalVer
-  });
-});
-
 // ======================== API ROUTES ========================
 
 // Health check
@@ -550,14 +526,16 @@ app.post('/api/users/login', async (req, res) => {
   }
 
   const cleanEmail = cleanEmailString(email);
+  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
 
-  // 1. Find user in memory or load from Supabase if missing
-  let user = db.users.find(u => u.email && cleanEmailString(u.email) === cleanEmail);
+  // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
+  let supaUser: any = null;
   const supa = getServerSupabase();
-  if (!user && supa) {
+  if (supa) {
     try {
-      const { data: supaUser } = await supa.from('users').select('*').ilike('email', cleanEmail).maybeSingle();
-      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+      const { data } = await supa.from('users').select('*').ilike('email', cleanEmail).maybeSingle();
+      if (data && !data.id?.startsWith('admin_config_')) {
+        supaUser = data;
         const freshUser = {
           id: supaUser.id,
           name: supaUser.name,
@@ -583,14 +561,20 @@ app.post('/api/users/login', async (req, res) => {
           createdAt: supaUser.created_at || new Date().toISOString(),
           avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
         };
-        db.users.push(freshUser);
-        user = freshUser;
+        const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === cleanEmail));
+        if (existingIdx >= 0) {
+          db.users[existingIdx] = freshUser;
+        } else {
+          db.users.push(freshUser);
+        }
         saveStorage();
       }
     } catch (e) {
       console.error('Supabase lookup error during login:', e);
     }
   }
+
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === cleanEmail);
 
   if (!user) {
     return res.status(404).json({ success: false, error: 'Account not found. Please sign up first.' });
@@ -604,24 +588,26 @@ app.post('/api/users/login', async (req, res) => {
     return res.status(403).json({ success: false, error: 'This account has been suspended by administration.' });
   }
 
-  // Strict Single-Device Lock: If user is active on another device, block concurrent login!
-  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
-  if (!isSystemAdmin && !forceLogin && user.isOnline && user.sessionToken) {
-    const lastActiveTime = user.lastActive ? new Date(user.lastActive).getTime() : 0;
-    const isRecent = Date.now() - lastActiveTime < 5 * 60 * 1000; // Active within last 5 minutes
-    
+  // Strict Single-Device Lock: Check if already actively logged in on another device
+  const activeSessionToken = (supaUser && supaUser.session_token) || user.sessionToken;
+  const isOnline = supaUser ? Boolean(supaUser.is_online) : Boolean(user.isOnline);
+  const lastActiveTimestamp = (supaUser && supaUser.last_active) || user.lastActive;
+  const lastActiveTime = lastActiveTimestamp ? new Date(lastActiveTimestamp).getTime() : 0;
+  const isRecentlyActive = (Date.now() - lastActiveTime) < 3 * 60 * 1000; // 3 minutes window
+
+  if (!isSystemAdmin && !forceLogin && isOnline && activeSessionToken && isRecentlyActive) {
     // If incoming client already holds this same session token, it's the same device refresh
-    const isSameDevice = clientSessionToken && clientSessionToken === user.sessionToken;
-    if (isRecent && !isSameDevice) {
+    const isSameDevice = clientSessionToken && clientSessionToken === activeSessionToken;
+    if (!isSameDevice) {
       return res.status(403).json({
         success: false,
         isDeviceLocked: true,
-        error: '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Pehle purane device se logout karein ya Admin panel se Reset Device Session karwayein.'
+        error: '⚠️ Yeh account abhi kisi dusre device / browser par ACTIVE hai! Ek samay me kewal 1 device par login allowed hai. Kripya pehle waha se logout karein ya Force Login karein.'
       });
     }
   }
 
-  const newSessionToken = clientSessionToken || ('sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9));
+  const newSessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
   user.sessionToken = newSessionToken;
   user.isOnline = true;
   user.lastActive = new Date().toISOString();
@@ -656,15 +642,32 @@ app.post('/api/users/logout', (req, res) => {
 });
 
 // POST heartbeat with strict single-device session check
-app.post('/api/users/heartbeat', (req, res) => {
+app.post('/api/users/heartbeat', async (req, res) => {
   const { userId, email, isOnline, sessionToken } = req.body;
   const now = new Date().toISOString();
+  const cleanEmail = cleanEmailString(email);
   let user = db.users.find(u => 
     (userId && u.id === userId) || 
-    (email && u.email && u.email.toLowerCase() === email.toLowerCase())
+    (cleanEmail && u.email && cleanEmailString(u.email) === cleanEmail)
   );
+
+  // Authoritative check against Supabase
+  const supa = getServerSupabase();
+  if (supa && cleanEmail) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('session_token, is_online').ilike('email', cleanEmail).maybeSingle();
+      if (supaUser && supaUser.session_token && sessionToken && supaUser.session_token !== sessionToken) {
+        return res.json({
+          success: false,
+          sessionMismatch: true,
+          error: 'Your account was logged into on another device. This session has been terminated.',
+        });
+      }
+    } catch {}
+  }
+
   if (user) {
-    // Strict single device enforcement: If user has a newer sessionToken, terminate old session!
+    // Single device enforcement against local memory
     if (sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
       return res.json({
         success: false,
@@ -675,6 +678,9 @@ app.post('/api/users/heartbeat', (req, res) => {
 
     user.isOnline = isOnline ?? true;
     user.lastActive = now;
+    if (sessionToken && !user.sessionToken) {
+      user.sessionToken = sessionToken;
+    }
     saveStorage();
   }
   res.json({ success: true, isOnline: user ? user.isOnline : true, lastActive: now });
@@ -741,15 +747,41 @@ function cleanEmailString(raw: string): string {
 
 // ======================== EXTENSION API ENDPOINTS ========================
 
-// GET /api/extension/user?email=...
+// In-memory cache to debounce and stop repeated spam requests from extensions
+const extensionUserCache = new Map<string, { time: number; payload: any }>();
+
+// GET /api/extension/user?email=...&token=...
 // Verifies member Gmail ID, returns profile, plan, credits, validity, and Server 1 & Server 2 prompts
 app.get('/api/extension/user', async (req, res) => {
-  // Edge CDN Caching: Cache at Vercel Edge for 2 minutes to prevent request spikes from legacy extension loops
-  res.setHeader('Cache-Control', 'public, s-maxage=120, stale-while-revalidate=300');
+  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
 
-  const email = cleanEmailString(req.query.email as string || '');
+  let email = cleanEmailString(req.query.email as string || '');
+  const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
+
+  // If email was not explicitly passed, try resolving user by session token
+  if (!email && reqToken) {
+    const matched = db.users.find(u => u.sessionToken === reqToken);
+    if (matched) {
+      email = cleanEmailString(matched.email);
+    } else {
+      const supa = getServerSupabase();
+      if (supa) {
+        try {
+          const { data: supaUser } = await supa.from('users').select('email').eq('session_token', reqToken).maybeSingle();
+          if (supaUser?.email) email = cleanEmailString(supaUser.email);
+        } catch {}
+      }
+    }
+  }
+
   if (!email) {
-    return res.status(400).json({ success: false, error: 'Gmail ID (email) query parameter is required.' });
+    return res.status(400).json({ success: false, error: 'Gmail ID (email) or active session token is required.' });
+  }
+
+  const cacheKey = `${email}_${reqToken || ''}`;
+  const cached = extensionUserCache.get(cacheKey);
+  if (cached && (Date.now() - cached.time < 15000)) {
+    return res.json(cached.payload);
   }
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
@@ -780,6 +812,7 @@ app.get('/api/extension/user', async (req, res) => {
           extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
           canEditPrompts: supaUser.can_edit_prompts === true,
           isOnline: true,
+          sessionToken: supaUser.session_token || '',
           lastActive: new Date().toISOString(),
           createdAt: supaUser.created_at || new Date().toISOString(),
           avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
@@ -831,19 +864,17 @@ app.get('/api/extension/user', async (req, res) => {
   ];
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
 
-  const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
   const isUltraOrUnlimited = user.plan === 'ultra' || user.plan === 'unlimited';
   const sessionToken = user.sessionToken || '';
-  const isTokenValid = Boolean(reqToken && sessionToken && reqToken === sessionToken);
-  // Allow active Ultra / Unlimited users with remaining validity to access servers
   const canAccessPrompts = isUltraOrUnlimited && user.status === 'active' && user.extensionAccess !== false && planDaysLeft > 0;
 
   let planDisplayName = 'Basic Plan';
   if (user.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';
   else if (user.plan === 'ultra') planDisplayName = 'Ultra VIP Plan';
 
-  res.json({
+  const responsePayload = {
     success: true,
+    serverOnline: true,
     user: {
       id: user.id,
       name: user.name,
@@ -856,87 +887,270 @@ app.get('/api/extension/user', async (req, res) => {
       totalCredits: maxCredits,
       creditsUsed,
       sessionToken,
-      canAccessPrompts, // True ONLY if active ultra/unlimited user with matching valid sessionToken
+      canAccessPrompts,
       planDaysLeft,
       status: user.status || 'active',
       extensionAccess: user.extensionAccess !== false,
       isAllowed: extensionAllowed,
     },
-    // PROMPT ENCRYPTION & SECURITY: Only return server prompts if sessionToken is valid and authenticated
     servers: canAccessPrompts ? servers : [],
     costs,
     serverTimestamp: new Date().toISOString(),
+  };
+
+  extensionUserCache.set(cacheKey, { time: Date.now(), payload: responsePayload });
+  res.json(responsePayload);
+});
+
+// GET /api/extension/session?token=...
+// Direct endpoint for extensions to fetch full user info by portal session token without knowing email
+app.get('/api/extension/session', async (req, res) => {
+  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+  const token = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
+
+  if (!token) {
+    return res.status(400).json({ success: false, error: 'Session token is required.' });
+  }
+
+  let user = db.users.find(u => u.sessionToken === token);
+  const supa = getServerSupabase();
+  if (!user && supa) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('*').eq('session_token', token).maybeSingle();
+      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        user = db.users.find(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === cleanEmailString(supaUser.email)));
+        if (!user) {
+          user = {
+            id: supaUser.id,
+            name: supaUser.name,
+            email: supaUser.email,
+            password: supaUser.password,
+            plan: supaUser.plan || 'basic',
+            credits: Number(supaUser.credits) ?? 0,
+            maxCredits: Number(supaUser.max_credits) || 100,
+            planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+            role: supaUser.role || 'user',
+            status: supaUser.status || 'active',
+            extensionAccess: supaUser.extension_access !== false,
+            sessionToken: token,
+            isOnline: true,
+            lastActive: new Date().toISOString(),
+            createdAt: supaUser.created_at || new Date().toISOString(),
+          };
+          db.users.push(user);
+        }
+      }
+    } catch {}
+  }
+
+  if (!user) {
+    return res.status(404).json({ success: false, error: 'Session not found or expired. Please login on the portal.' });
+  }
+
+  const maxCredits = user.maxCredits || (user.plan === 'ultra' ? 45000 : 100);
+  const credits = user.credits ?? 0;
+  const isUltraOrUnlimited = user.plan === 'ultra' || user.plan === 'unlimited';
+  const planDaysLeft = user.planDaysLeft ?? 0;
+
+  res.json({
+    success: true,
+    serverOnline: true,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      plan: user.plan,
+      planName: isUltraOrUnlimited ? 'Ultra VIP Plan' : 'Basic Plan',
+      credits,
+      creditsLeft: credits,
+      maxCredits,
+      totalCredits: maxCredits,
+      sessionToken: token,
+      planDaysLeft,
+      status: user.status || 'active',
+      canAccessPrompts: isUltraOrUnlimited && user.status === 'active' && planDaysLeft > 0,
+    }
   });
 });
 
 // POST /api/extension/prompts
 // High Security Dedicated Server Prompt Fetch Endpoint: Requires email + sessionToken
+// Returns servers, prompts, server online status, and extension version all together in ONE unified response!
 app.post('/api/extension/prompts', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
   const email = cleanEmailString(req.body.email || '');
   const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
+  const clientVersion = req.body.version || req.body.extensionVersion || '';
+
+  // Get freshest required version, servers, and costs from db or Supabase
+  let requiredVer = db.promptConfig?.extensionVersion || 'v1.0.1';
+  let servers = db.promptConfig?.servers || [
+    { id: 'server1', label: 'Server 1', prompt: '' },
+    { id: 'server2', label: 'Server 2', prompt: '' },
+  ];
+  let costs = db.promptConfig?.costs || { image: 20, video: 30 };
+
+  const supa = getServerSupabase();
+  if (supa) {
+    try {
+      const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+      if (promptRow?.name) {
+        try {
+          const parsed = JSON.parse(promptRow.name);
+          if (parsed?.servers) servers = parsed.servers;
+          if (parsed?.extensionVersion) requiredVer = parsed.extensionVersion;
+          if (parsed?.costs) costs = parsed.costs;
+        } catch {}
+      }
+    } catch {}
+  }
+
+  const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
+  const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
   if (!email || !sessionToken) {
     return res.status(401).json({
       success: false,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
       error: 'Authentication failed: Active email and sessionToken are required to access server prompts.',
       servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      serverTimestamp: new Date().toISOString(),
     });
   }
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
-  const supa = getServerSupabase();
   if (supa) {
     try {
       const { data: supaUser } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
       if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
         const liveToken = supaUser.session_token || supaUser.sessionToken || '';
-        if (liveToken !== sessionToken) {
+        if (liveToken && liveToken !== sessionToken) {
           return res.status(403).json({
             success: false,
+            serverOnline: true,
+            serverStatus: 'online',
+            version: requiredVer,
+            extensionVersion: requiredVer,
+            requiredVersion: requiredVer,
             error: 'Access Denied: Invalid or expired session token. Please log in to the portal.',
             servers: [],
+            server1: '',
+            server2: '',
+            costs,
+            serverTimestamp: new Date().toISOString(),
           });
         }
         if (supaUser.status === 'suspended') {
-          return res.status(403).json({ success: false, error: 'Account suspended.', servers: [] });
+          return res.status(403).json({ 
+            success: false, 
+            serverOnline: true, 
+            serverStatus: 'online',
+            version: requiredVer,
+            extensionVersion: requiredVer,
+            requiredVersion: requiredVer,
+            error: 'Account suspended.', 
+            servers: [],
+            server1: '',
+            server2: '',
+            costs,
+            serverTimestamp: new Date().toISOString(),
+          });
         }
-        if (supaUser.plan !== 'ultra' && supaUser.role !== 'admin') {
-          return res.status(403).json({ success: false, error: 'Prompts are exclusive to Ultra VIP members.', servers: [] });
+        if (supaUser.plan !== 'ultra' && supaUser.plan !== 'unlimited' && supaUser.role !== 'admin') {
+          return res.status(403).json({ 
+            success: false, 
+            serverOnline: true, 
+            serverStatus: 'online',
+            version: requiredVer,
+            extensionVersion: requiredVer,
+            requiredVersion: requiredVer,
+            error: 'Prompts are exclusive to Ultra VIP members.', 
+            servers: [],
+            server1: '',
+            server2: '',
+            costs,
+            serverTimestamp: new Date().toISOString(),
+          });
         }
         
-        let servers = [
-          { id: 'server1', label: 'Server 1', prompt: '' },
-          { id: 'server2', label: 'Server 2', prompt: '' },
-        ];
-        const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-        if (promptRow?.name) {
-          try {
-            const parsed = JSON.parse(promptRow.name);
-            if (parsed?.servers) servers = parsed.servers;
-          } catch {}
-        }
-        return res.json({ success: true, servers, serverTimestamp: new Date().toISOString() });
+        return res.json({ 
+          success: true, 
+          serverOnline: true, 
+          serverStatus: 'online',
+          version: requiredVer,
+          extensionVersion: requiredVer,
+          requiredVersion: requiredVer,
+          clientVersion,
+          servers, 
+          server1: server1Prompt,
+          server2: server2Prompt,
+          costs,
+          user: {
+            id: supaUser.id,
+            name: supaUser.name,
+            email: supaUser.email,
+            plan: supaUser.plan || 'ultra',
+            credits: Number(supaUser.credits) || 0,
+            maxCredits: Number(supaUser.max_credits) || 45000,
+            planDaysLeft: Number(supaUser.plan_days_left) || 30,
+            status: supaUser.status || 'active',
+          },
+          serverTimestamp: new Date().toISOString() 
+        });
       }
     } catch (e) {
       console.error('Prompt fetch error:', e);
     }
   }
 
-  if (!user || user.sessionToken !== sessionToken || user.plan !== 'ultra') {
+  if (!user || (user.sessionToken && user.sessionToken !== sessionToken) || (user.plan !== 'ultra' && user.plan !== 'unlimited')) {
     return res.status(403).json({
       success: false,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
       error: 'Access Denied: You must be logged into an Ultra account on the portal to access server prompts.',
       servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      serverTimestamp: new Date().toISOString(),
     });
   }
 
-  const servers = db.promptConfig?.servers || [
-    { id: 'server1', label: 'Server 1', prompt: '' },
-    { id: 'server2', label: 'Server 2', prompt: '' },
-  ];
-
-  return res.json({ success: true, servers, serverTimestamp: new Date().toISOString() });
+  return res.json({ 
+    success: true, 
+    serverOnline: true, 
+    serverStatus: 'online',
+    version: requiredVer,
+    extensionVersion: requiredVer,
+    requiredVersion: requiredVer,
+    clientVersion,
+    servers, 
+    server1: server1Prompt,
+    server2: server2Prompt,
+    costs,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      plan: user.plan,
+      credits: user.credits,
+      maxCredits: user.maxCredits,
+      planDaysLeft: user.planDaysLeft,
+      status: user.status,
+    },
+    serverTimestamp: new Date().toISOString() 
+  });
 });
 
 // POST /api/extension/verify
@@ -1082,14 +1296,20 @@ app.get('/api/extension/servers', async (req, res) => {
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
 
   const ver = db.promptConfig?.extensionVersion || 'v1.0.1';
+  const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
+  const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
   res.json({
     success: true,
-    servers,
-    costs,
+    serverOnline: true,
+    serverStatus: 'online',
     version: ver,
     extensionVersion: ver,
     requiredVersion: ver,
+    servers,
+    server1: server1Prompt,
+    server2: server2Prompt,
+    costs,
     promptReminderMinutes,
     serverTimestamp: new Date().toISOString(),
   });
@@ -1222,12 +1442,22 @@ app.get('/api/extension/prompts', async (req, res) => {
     { id: 'server2', label: 'Server 2', prompt: '' },
   ];
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
+  const ver = db.promptConfig?.extensionVersion || 'v1.0.1';
+  const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
+  const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
   res.json({
     success: true,
+    serverOnline: true,
+    serverStatus: 'online',
+    version: ver,
+    extensionVersion: ver,
+    requiredVersion: ver,
     servers,
+    server1: server1Prompt,
+    server2: server2Prompt,
     costs,
-    timestamp: new Date().toISOString(),
+    serverTimestamp: new Date().toISOString(),
   });
 });
 
