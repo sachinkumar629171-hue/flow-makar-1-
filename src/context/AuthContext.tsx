@@ -644,64 +644,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   id: 'admin_config_prompts',
                   email: 'admin_config_prompts@system.local',
                   name: JSON.stringify(promptConfig),
-                  password: '',
                   plan: 'basic',
-                  credits: 0,
-                  max_credits: 0,
-                  plan_days_left: 0,
-                  role: 'user',
-                  status: 'active',
-                  is_online: false,
-                  created_at: new Date().toISOString()
-                }).then(() => {});
+                }, { onConflict: 'id' }).then(() => {});
               }
               if (!sysConfigHero) {
                 supabase.from('users').upsert({
                   id: 'admin_config_hero',
                   email: 'admin_config_hero@system.local',
                   name: JSON.stringify(heroConfig),
-                  password: '',
                   plan: 'basic',
-                  credits: 0,
-                  max_credits: 0,
-                  plan_days_left: 0,
-                  role: 'user',
-                  status: 'active',
-                  is_online: false,
-                  created_at: new Date().toISOString()
-                }).then(() => {});
+                }, { onConflict: 'id' }).then(() => {});
               }
               if (!sysConfigTutorial) {
                 supabase.from('users').upsert({
                   id: 'admin_config_tutorial',
                   email: 'admin_config_tutorial@system.local',
                   name: JSON.stringify(tutorialConfig),
-                  password: '',
                   plan: 'basic',
-                  credits: 0,
-                  max_credits: 0,
-                  plan_days_left: 0,
-                  role: 'user',
-                  status: 'active',
-                  is_online: false,
-                  created_at: new Date().toISOString()
-                }).then(() => {});
+                }, { onConflict: 'id' }).then(() => {});
               }
               if (!sysConfigExtensions) {
                 supabase.from('users').upsert({
                   id: 'admin_config_extensions',
                   email: 'admin_config_extensions@system.local',
                   name: JSON.stringify(planExtensions),
-                  password: '',
                   plan: 'basic',
-                  credits: 0,
-                  max_credits: 0,
-                  plan_days_left: 0,
-                  role: 'user',
-                  status: 'active',
-                  is_online: false,
-                  created_at: new Date().toISOString()
-                }).then(() => {});
+                }, { onConflict: 'id' }).then(() => {});
               }
             }
 
@@ -2488,16 +2456,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: 'admin_config_extensions',
           email: 'admin_config_extensions@system.local',
           name: JSON.stringify(updated),
-          password: '',
           plan: 'basic',
-          credits: 0,
-          max_credits: 0,
-          plan_days_left: 0,
-          role: 'user',
-          status: 'active',
-          is_online: false,
-          created_at: new Date().toISOString()
-        }).then(({ error }) => {
+        }, { onConflict: 'id' }).then(({ error }) => {
           if (error) console.error("Supabase plan extensions config update error:", error);
         });
       }
@@ -2526,16 +2486,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: 'admin_config_tutorial',
           email: 'admin_config_tutorial@system.local',
           name: JSON.stringify(updated),
-          password: '',
           plan: 'basic',
-          credits: 0,
-          max_credits: 0,
-          plan_days_left: 0,
-          role: 'user',
-          status: 'active',
-          is_online: false,
-          created_at: new Date().toISOString()
-        }).then(({ error }) => {
+        }, { onConflict: 'id' }).then(({ error }) => {
           if (error) console.error("Supabase tutorial config update error:", error);
         });
       }
@@ -2564,16 +2516,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: 'admin_config_hero',
           email: 'admin_config_hero@system.local',
           name: JSON.stringify(updated),
-          password: '',
           plan: 'basic',
-          credits: 0,
-          max_credits: 0,
-          plan_days_left: 0,
-          role: 'user',
-          status: 'active',
-          is_online: false,
-          created_at: new Date().toISOString()
-        }).then(({ error }) => {
+        }, { onConflict: 'id' }).then(({ error }) => {
           if (error) console.error("Supabase hero config update error:", error);
         });
       }
@@ -2602,16 +2546,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: 'admin_config_prompts',
           email: 'admin_config_prompts@system.local',
           name: JSON.stringify(updated),
-          password: '',
           plan: 'basic',
-          credits: 0,
-          max_credits: 0,
-          plan_days_left: 0,
-          role: 'user',
-          status: 'active',
-          is_online: false,
-          created_at: new Date().toISOString()
-        }).then(({ error }) => {
+        }, { onConflict: 'id' }).then(({ error }) => {
           if (error) console.error("Supabase prompt config update error:", error);
         });
       }

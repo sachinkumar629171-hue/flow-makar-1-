@@ -1407,16 +1407,8 @@ async function checkPromptServerTelegramAlerts() {
         id: 'admin_config_prompts',
         email: 'admin_config_prompts@system.local',
         name: JSON.stringify(db.promptConfig),
-        password: '',
         plan: 'basic',
-        credits: 0,
-        max_credits: 0,
-        plan_days_left: 0,
-        role: 'user',
-        status: 'active',
-        is_online: false,
-        created_at: new Date().toISOString(),
-      })).catch(() => {});
+      }, { onConflict: 'id' })).catch(() => {});
     }
   }
 }
@@ -1531,16 +1523,8 @@ app.post('/api/config', async (req, res) => {
         id: 'admin_config_prompts',
         email: 'admin_config_prompts@system.local',
         name: JSON.stringify(promptConfig),
-        password: '',
         plan: 'basic',
-        credits: 0,
-        max_credits: 0,
-        plan_days_left: 0,
-        role: 'user',
-        status: 'active',
-        is_online: false,
-        created_at: new Date().toISOString()
-      }).then(({ error }) => {
+      }, { onConflict: 'id' }).then(({ error }) => {
         if (error) console.error("Server Supabase prompt sync error:", error);
       });
     }
