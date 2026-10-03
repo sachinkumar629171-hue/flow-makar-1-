@@ -74,55 +74,39 @@ async function safeServerSupabaseUserUpdate(
   fields: Record<string, any>
 ): Promise<boolean> {
   if (!supa || (!userId && !userEmail)) return false;
-  const cleanFields: Record<string, any> = {};
-  for (const [k, v] of Object.entries(fields)) {
-    if (v !== undefined) cleanFields[k] = v;
-  }
-  if (Object.keys(cleanFields).length === 0) return true;
+  const fullUser = db.users.find(u => u.id === userId || (userEmail && u.email && cleanEmailString(u.email) === cleanEmailString(userEmail)));
+  if (!fullUser) return false;
+
+  const recordToUpsert: Record<string, any> = {
+    id: fullUser.id,
+    email: fullUser.email,
+    name: fullUser.name,
+    password: fullUser.password || 'user123',
+    plan: fullUser.plan || 'basic',
+    credits: fullUser.credits ?? 0,
+    max_credits: fullUser.maxCredits ?? 100,
+    plan_days_left: fullUser.planDaysLeft ?? 30,
+    role: fullUser.role || 'user',
+    status: fullUser.status || 'active',
+    extension_access: fullUser.extensionAccess !== false,
+    can_edit_prompts: fullUser.canEditPrompts === true,
+    reseller_id: fullUser.resellerId || null,
+    reseller_name: fullUser.resellerName || null,
+    whatsapp: fullUser.whatsapp || '',
+    telegram: fullUser.telegram || '',
+    referral_code: fullUser.referralCode || '',
+    referred_by: fullUser.referredBy || '',
+    created_at: fullUser.createdAt || new Date().toISOString(),
+    ...fields
+  };
 
   try {
-    if (userId) {
-      const { error, data } = await supa.from('users').update(cleanFields).eq('id', userId).select('id');
-      if (!error && data && data.length > 0) return true;
-    }
-    if (userEmail) {
-      const { error, data } = await supa.from('users').update(cleanFields).eq('email', userEmail.toLowerCase()).select('id');
-      if (!error && data && data.length > 0) return true;
-    }
-
-    // Core fields fallback
-    const coreFields: Record<string, any> = {};
-    if (cleanFields.credits !== undefined) coreFields.credits = cleanFields.credits;
-    if (cleanFields.plan_days_left !== undefined) coreFields.plan_days_left = cleanFields.plan_days_left;
-    if (cleanFields.plan !== undefined) coreFields.plan = cleanFields.plan;
-    if (cleanFields.name !== undefined) coreFields.name = cleanFields.name;
-    if (cleanFields.email !== undefined) coreFields.email = cleanFields.email;
-    if (cleanFields.password !== undefined) coreFields.password = cleanFields.password;
-    if (cleanFields.status !== undefined) coreFields.status = cleanFields.status;
-
-    if (Object.keys(coreFields).length > 0) {
-      if (userId) {
-        const { error, data } = await supa.from('users').update(coreFields).eq('id', userId).select('id');
-        if (!error && data && data.length > 0) return true;
-      }
-      if (userEmail) {
-        const { error, data } = await supa.from('users').update(coreFields).eq('email', userEmail.toLowerCase()).select('id');
-        if (!error && data && data.length > 0) return true;
-      }
-    }
-
-    // Single field updates fallback
-    for (const [k, v] of Object.entries(cleanFields)) {
-      try {
-        if (userId) await supa.from('users').update({ [k]: v }).eq('id', userId);
-        else if (userEmail) await supa.from('users').update({ [k]: v }).eq('email', userEmail.toLowerCase());
-      } catch {}
-    }
-    return true;
+    const { error } = await supa.from('users').upsert(recordToUpsert, { onConflict: 'id' });
+    if (!error) return true;
   } catch (err) {
-    console.error('safeServerSupabaseUserUpdate catch error:', err);
-    return false;
+    console.error('safeServerSupabaseUserUpdate upsert error:', err);
   }
+  return false;
 }
 
 const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
@@ -762,6 +746,8 @@ app.post('/api/users/update', async (req, res) => {
     if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
     if (data.whatsapp !== undefined) supaData.whatsapp = data.whatsapp;
     if (data.telegram !== undefined) supaData.telegram = data.telegram;
+    if (data.resellerId !== undefined) supaData.reseller_id = data.resellerId;
+    if (data.resellerName !== undefined) supaData.reseller_name = data.resellerName;
 
     safeServerSupabaseUserUpdate(supa, currentUser.id, currentUser.email, supaData).catch(err => {
       console.error('Server Supabase user update error:', err);
@@ -823,6 +809,38 @@ function getActiveExtensionVersion(plan: string = 'ultra'): string {
 
 // In-memory cache to debounce and stop repeated spam requests from extensions
 const extensionUserCache = new Map<string, { time: number; payload: any }>();
+let lastSupabaseConfigFetchTime = 0;
+const SUPABASE_CONFIG_CACHE_TTL = 30000; // 30 seconds TTL cache to prevent Supabase request spikes
+
+async function refreshSupabaseConfigIfNeeded() {
+  const now = Date.now();
+  if (now - lastSupabaseConfigFetchTime < SUPABASE_CONFIG_CACHE_TTL) {
+    return;
+  }
+  const supa = getServerSupabase();
+  if (!supa) return;
+  try {
+    const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+    if (extRow?.name) {
+      try {
+        const parsedExt = JSON.parse(extRow.name);
+        if (parsedExt?.ultra?.version && String(parsedExt.ultra.version).trim()) {
+          if (!db.planExtensions) db.planExtensions = {};
+          db.planExtensions.ultra = parsedExt.ultra;
+        }
+      } catch {}
+    }
+
+    const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+    if (promptRow?.name) {
+      try {
+        db.promptConfig = JSON.parse(promptRow.name);
+        saveStorage();
+      } catch {}
+    }
+    lastSupabaseConfigFetchTime = Date.now();
+  } catch {}
+}
 
 // GET /api/extension/user?email=...&token=...
 // Verifies member Gmail ID, returns profile, plan, credits, validity, and Server 1 & Server 2 prompts
@@ -1079,6 +1097,8 @@ app.post('/api/extension/prompts', async (req, res) => {
   const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
   const clientVersion = req.body.version || req.body.extensionVersion || '';
 
+  await refreshSupabaseConfigIfNeeded();
+
   // Get freshest required version, servers, and costs from db or Supabase
   let requiredVer = getActiveExtensionVersion('ultra');
   let servers = db.promptConfig?.servers || [
@@ -1086,33 +1106,6 @@ app.post('/api/extension/prompts', async (req, res) => {
     { id: 'server2', label: 'Server 2', prompt: '' },
   ];
   let costs = db.promptConfig?.costs || { image: 20, video: 30 };
-
-  const supa = getServerSupabase();
-  if (supa) {
-    try {
-      // 1. Check live admin_config_extensions in Supabase first (configured via Admin Extension Modal)
-      const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
-      if (extRow?.name) {
-        try {
-          const parsedExt = JSON.parse(extRow.name);
-          if (parsedExt?.ultra?.version && String(parsedExt.ultra.version).trim()) {
-            if (!db.planExtensions) db.planExtensions = {};
-            db.planExtensions.ultra = parsedExt.ultra;
-          }
-        } catch {}
-      }
-
-      // 2. Check admin_config_prompts in Supabase (configured via Prompt Config)
-      const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-      if (promptRow?.name) {
-        try {
-          const parsed = JSON.parse(promptRow.name);
-          if (parsed?.servers) servers = parsed.servers;
-          if (parsed?.costs) costs = parsed.costs;
-        } catch {}
-      }
-    } catch {}
-  }
 
   // Authoritative version from Admin Panel (planExtensions.ultra.version or promptConfig)
   requiredVer = getActiveExtensionVersion('ultra');
@@ -1389,29 +1382,7 @@ app.get('/api/extension/servers', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  const supa = getServerSupabase();
-  if (supa) {
-    try {
-      const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
-      if (extRow?.name) {
-        try {
-          const parsedExt = JSON.parse(extRow.name);
-          if (parsedExt?.ultra?.version && String(parsedExt.ultra.version).trim()) {
-            if (!db.planExtensions) db.planExtensions = {};
-            db.planExtensions.ultra = parsedExt.ultra;
-          }
-        } catch {}
-      }
-
-      const { data: configRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-      if (configRow && configRow.name) {
-        try {
-          db.promptConfig = JSON.parse(configRow.name);
-          saveStorage();
-        } catch {}
-      }
-    } catch {}
-  }
+  await refreshSupabaseConfigIfNeeded();
 
   const servers = db.promptConfig?.servers || [
     { id: 'server1', label: 'Server 1', prompt: '' },
