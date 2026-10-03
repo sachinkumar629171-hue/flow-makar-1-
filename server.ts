@@ -1166,10 +1166,14 @@ app.delete('/api/resellers/:id', (req, res) => {
 
 // GET config
 app.get('/api/config', (req, res) => {
+  const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url || '';
+  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey || '';
+
   res.json({
     planExtensions: db.planExtensions,
     tutorialConfig: db.tutorialConfig,
     promptConfig: db.promptConfig,
+    supabaseConfig: supaUrl && supaKey ? { url: supaUrl, anonKey: supaKey } : undefined,
   });
 });
 

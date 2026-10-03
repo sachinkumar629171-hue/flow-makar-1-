@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import { User, PlanType, Generation, ShowcaseVideo, ExtensionConfig, PlanExtensionsConfig, TutorialConfig, HeroConfig, Reseller, PromptConfig } from '../types';
 import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIAL_SHOWCASE, INITIAL_RESELLERS } from '../data/initialData';
 import { apiUrl } from '../config/api';
-import { getSupabase } from '../lib/supabase';
+import { getSupabase, getSupabaseConfig, saveSupabaseConfig } from '../lib/supabase';
 import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
 import { setUserExpiryMs } from '../lib/userStats';
 
@@ -583,6 +583,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const supabase = getSupabase();
         if (supabase) {
+          // 0. Fetch dedicated app_config table if present in Supabase
+          try {
+            const { data: appConfigs } = await supabase.from('app_config').select('*');
+            if (appConfigs && Array.isArray(appConfigs) && isMounted) {
+              const nowTime = Date.now();
+              const configUpdateSafe = nowTime - lastConfigUpdateRef.current > 10000;
+              if (configUpdateSafe) {
+                for (const cfg of appConfigs) {
+                  if (cfg.key === 'admin_config_prompts' && cfg.value) {
+                    setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
+                  } else if (cfg.key === 'admin_config_hero' && cfg.value) {
+                    setHeroConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
+                  } else if (cfg.key === 'admin_config_tutorial' && cfg.value) {
+                    setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
+                  } else if (cfg.key === 'admin_config_extensions' && cfg.value) {
+                    setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
+                  }
+                }
+              }
+            }
+          } catch {}
+
           // 1. Fetch from Supabase Cloud (Users table for user accounts & config rows)
           const { data: supaUsers, error: userErr } = await supabase.from('users').select('*');
           if (!userErr && supaUsers && Array.isArray(supaUsers) && isMounted) {
@@ -845,6 +867,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (configRes.ok) {
           const cfgData = await configRes.json();
+          if (cfgData.supabaseConfig && cfgData.supabaseConfig.url && cfgData.supabaseConfig.anonKey) {
+            const currentCfg = getSupabaseConfig();
+            if (!currentCfg.isConnected || currentCfg.url !== cfgData.supabaseConfig.url || currentCfg.anonKey !== cfgData.supabaseConfig.anonKey) {
+              saveSupabaseConfig(cfgData.supabaseConfig.url, cfgData.supabaseConfig.anonKey);
+            }
+          }
           if (cfgData.planExtensions && isMounted) {
             setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.planExtensions) ? prev : cfgData.planExtensions));
           }
@@ -2430,6 +2458,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUsers(prev => prev.map(u => (u.id === currentUser.id ? updated : u)));
   };
 
+  const syncConfigToSupabase = (key: string, data: any) => {
+    const supa = getSupabase();
+    if (!supa) return;
+    try {
+      supa.from('app_config').upsert({
+        key,
+        value: data,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'key' }).then(() => {});
+    } catch {}
+
+    try {
+      supa.from('users').upsert({
+        id: key,
+        email: `${key}@system.local`,
+        name: JSON.stringify(data),
+        password: 'config_no_login',
+        plan: 'basic',
+      }, { onConflict: 'id' }).then(({ error }) => {
+        if (error) console.error(`Supabase ${key} config update error:`, error);
+      });
+    } catch {}
+  };
+
   const updateExtensionConfig = (newConfig: Partial<ExtensionConfig>) => {
     const targetPlan = currentUser?.plan || 'basic';
     updatePlanExtensionConfig(targetPlan, newConfig);
@@ -2450,17 +2502,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ultra: mergedConfig,
       };
 
-      const supa = getSupabase();
-      if (supa) {
-        supa.from('users').upsert({
-          id: 'admin_config_extensions',
-          email: 'admin_config_extensions@system.local',
-          name: JSON.stringify(updated),
-          plan: 'basic',
-        }, { onConflict: 'id' }).then(({ error }) => {
-          if (error) console.error("Supabase plan extensions config update error:", error);
-        });
-      }
+      syncConfigToSupabase('admin_config_extensions', updated);
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
@@ -2480,17 +2522,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...newConfig,
       };
 
-      const supa = getSupabase();
-      if (supa) {
-        supa.from('users').upsert({
-          id: 'admin_config_tutorial',
-          email: 'admin_config_tutorial@system.local',
-          name: JSON.stringify(updated),
-          plan: 'basic',
-        }, { onConflict: 'id' }).then(({ error }) => {
-          if (error) console.error("Supabase tutorial config update error:", error);
-        });
-      }
+      syncConfigToSupabase('admin_config_tutorial', updated);
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
@@ -2510,17 +2542,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...newConfig,
       };
 
-      const supa = getSupabase();
-      if (supa) {
-        supa.from('users').upsert({
-          id: 'admin_config_hero',
-          email: 'admin_config_hero@system.local',
-          name: JSON.stringify(updated),
-          plan: 'basic',
-        }, { onConflict: 'id' }).then(({ error }) => {
-          if (error) console.error("Supabase hero config update error:", error);
-        });
-      }
+      syncConfigToSupabase('admin_config_hero', updated);
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
@@ -2540,17 +2562,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...newConfig,
       };
 
-      const supa = getSupabase();
-      if (supa) {
-        supa.from('users').upsert({
-          id: 'admin_config_prompts',
-          email: 'admin_config_prompts@system.local',
-          name: JSON.stringify(updated),
-          plan: 'basic',
-        }, { onConflict: 'id' }).then(({ error }) => {
-          if (error) console.error("Supabase prompt config update error:", error);
-        });
-      }
+      syncConfigToSupabase('admin_config_prompts', updated);
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
