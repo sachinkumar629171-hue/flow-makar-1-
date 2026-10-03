@@ -46,14 +46,19 @@ interface DatabaseSchema {
 }
 
 let serverSupabaseClient: SupabaseClient | null = null;
+let lastSupabaseConfigStr = '';
 
 function getServerSupabase(): SupabaseClient | null {
-  if (serverSupabaseClient) return serverSupabaseClient;
   const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
   const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
+  const configKey = `${url}_${key}`;
+  if (serverSupabaseClient && lastSupabaseConfigStr === configKey) {
+    return serverSupabaseClient;
+  }
   if (url && key) {
     try {
       serverSupabaseClient = createClient(url, key);
+      lastSupabaseConfigStr = configKey;
       return serverSupabaseClient;
     } catch (e) {
       console.error('Failed to init Supabase client on server:', e);
@@ -427,7 +432,46 @@ app.post('/api/users/signup', async (req, res) => {
 
   const existing = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
   if (existing) {
-    return res.status(400).json({ success: false, error: 'User with this email already exists.' });
+    existing.name = name || existing.name;
+    if (password) existing.password = password;
+    if (whatsapp !== undefined) existing.whatsapp = whatsapp;
+    if (telegram !== undefined) existing.telegram = telegram;
+    if (req.body.plan) existing.plan = req.body.plan;
+    if (req.body.credits !== undefined) existing.credits = req.body.credits;
+    if (req.body.maxCredits !== undefined) existing.maxCredits = req.body.maxCredits;
+    if (req.body.planDaysLeft !== undefined) existing.planDaysLeft = req.body.planDaysLeft;
+    if (req.body.status) existing.status = req.body.status;
+    if (req.body.role) existing.role = req.body.role;
+    saveStorage();
+
+    const supa = getServerSupabase();
+    if (supa) {
+      try {
+        await supa.from('users').upsert({
+          id: existing.id,
+          email: existing.email,
+          name: existing.name,
+          password: existing.password,
+          plan: existing.plan,
+          credits: existing.credits,
+          max_credits: existing.maxCredits,
+          plan_days_left: existing.planDaysLeft,
+          role: existing.role,
+          status: existing.status,
+          extension_access: existing.extensionAccess,
+          can_edit_prompts: existing.canEditPrompts,
+          whatsapp: existing.whatsapp,
+          telegram: existing.telegram,
+          referral_code: existing.referralCode,
+          referred_by: existing.referredBy,
+          created_at: existing.createdAt,
+        });
+      } catch (err) {
+        console.error('Supabase signup update error:', err);
+      }
+    }
+
+    return res.json({ success: true, user: existing });
   }
 
   const colors = [
@@ -1348,18 +1392,25 @@ app.get('/api/extension/servers', async (req, res) => {
   const supa = getServerSupabase();
   if (supa) {
     try {
+      const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+      if (extRow?.name) {
+        try {
+          const parsedExt = JSON.parse(extRow.name);
+          if (parsedExt?.ultra?.version && String(parsedExt.ultra.version).trim()) {
+            if (!db.planExtensions) db.planExtensions = {};
+            db.planExtensions.ultra = parsedExt.ultra;
+          }
+        } catch {}
+      }
+
       const { data: configRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
       if (configRow && configRow.name) {
         try {
           db.promptConfig = JSON.parse(configRow.name);
           saveStorage();
-        } catch {
-          // ignore
-        }
+        } catch {}
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 
   const servers = db.promptConfig?.servers || [
@@ -1369,7 +1420,7 @@ app.get('/api/extension/servers', async (req, res) => {
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
 
-  const ver = getActiveExtensionVersion();
+  const ver = getActiveExtensionVersion('ultra');
   const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
   const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
