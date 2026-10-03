@@ -637,6 +637,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             }
 
+            // Auto-initialize missing configs to Supabase so that all settings stay permanently backed up
+            if (currentUser?.role === 'admin') {
+              if (!sysConfigPrompts) {
+                supabase.from('users').upsert({
+                  id: 'admin_config_prompts',
+                  email: 'admin_config_prompts@system.local',
+                  name: JSON.stringify(promptConfig),
+                  password: '',
+                  plan: 'basic',
+                  credits: 0,
+                  max_credits: 0,
+                  plan_days_left: 0,
+                  role: 'user',
+                  status: 'active',
+                  is_online: false,
+                  created_at: new Date().toISOString()
+                }).then(() => {});
+              }
+              if (!sysConfigHero) {
+                supabase.from('users').upsert({
+                  id: 'admin_config_hero',
+                  email: 'admin_config_hero@system.local',
+                  name: JSON.stringify(heroConfig),
+                  password: '',
+                  plan: 'basic',
+                  credits: 0,
+                  max_credits: 0,
+                  plan_days_left: 0,
+                  role: 'user',
+                  status: 'active',
+                  is_online: false,
+                  created_at: new Date().toISOString()
+                }).then(() => {});
+              }
+              if (!sysConfigTutorial) {
+                supabase.from('users').upsert({
+                  id: 'admin_config_tutorial',
+                  email: 'admin_config_tutorial@system.local',
+                  name: JSON.stringify(tutorialConfig),
+                  password: '',
+                  plan: 'basic',
+                  credits: 0,
+                  max_credits: 0,
+                  plan_days_left: 0,
+                  role: 'user',
+                  status: 'active',
+                  is_online: false,
+                  created_at: new Date().toISOString()
+                }).then(() => {});
+              }
+              if (!sysConfigExtensions) {
+                supabase.from('users').upsert({
+                  id: 'admin_config_extensions',
+                  email: 'admin_config_extensions@system.local',
+                  name: JSON.stringify(planExtensions),
+                  password: '',
+                  plan: 'basic',
+                  credits: 0,
+                  max_credits: 0,
+                  plan_days_left: 0,
+                  role: 'user',
+                  status: 'active',
+                  is_online: false,
+                  created_at: new Date().toISOString()
+                }).then(() => {});
+              }
+            }
+
             const mappedUsers: User[] = supaUsers
               .filter((su: any) => 
                 su.id && 

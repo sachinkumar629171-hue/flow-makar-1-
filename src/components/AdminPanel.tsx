@@ -49,6 +49,7 @@ import { HeaderEmailSettingsModal } from './modals/HeaderEmailSettingsModal';
 import { ExtensionAdminDataTab } from './admin/ExtensionAdminDataTab';
 import { ResellerPasswordModal } from './reseller/ResellerPasswordModal';
 import { ResellerEmailModal } from './reseller/ResellerEmailModal';
+import { SupabaseSettingsModal } from './modals/SupabaseSettingsModal';
 import { ADMIN_EMAIL } from '../data/initialData';
 import { apiUrl } from '../config/api';
 
@@ -89,6 +90,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const [showResellerSettingsModal, setShowResellerSettingsModal] = useState(false);
   const [showPricingSettingsModal, setShowPricingSettingsModal] = useState(false);
   const [showEmailOpacityModal, setShowEmailOpacityModal] = useState(false);
+  const [showSupabaseModal, setShowSupabaseModal] = useState(false);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -587,6 +589,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
                 </div>
                 <span className="text-[9.5px] font-semibold text-emerald-400 bg-emerald-900/50 px-1.5 py-0.5 rounded">
                   Auto-Sync
+                </span>
+              </button>
+
+              {/* Supabase Cloud Settings */}
+              <button
+                onClick={() => {
+                  setShowSupabaseModal(true);
+                  setMobileSidebarOpen(false);
+                }}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium bg-purple-950/30 hover:bg-purple-950/60 border border-purple-800/40 text-purple-300 transition-all cursor-pointer"
+                title="Configure Supabase Cloud Database URL & Anon Key"
+              >
+                <div className="flex items-center gap-2">
+                  <Database className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Supabase Cloud</span>
+                </div>
+                <span className="text-[9.5px] font-semibold text-purple-400 bg-purple-900/50 px-1.5 py-0.5 rounded">
+                  Settings
                 </span>
               </button>
 
@@ -1356,6 +1376,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
           </div>
         </div>
       )}
+
+      {/* Supabase Cloud Connection Modal */}
+      <SupabaseSettingsModal
+        isOpen={showSupabaseModal}
+        onClose={() => setShowSupabaseModal(false)}
+      />
     </div>
   );
 };
