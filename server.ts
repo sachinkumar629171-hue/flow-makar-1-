@@ -86,25 +86,24 @@ async function safeServerSupabaseUserUpdate(
     credits: fullUser.credits ?? 0,
     max_credits: fullUser.maxCredits ?? 100,
     plan_days_left: fullUser.planDaysLeft ?? 30,
-    role: fullUser.role || 'user',
-    status: fullUser.status || 'active',
-    extension_access: fullUser.extensionAccess !== false,
-    can_edit_prompts: fullUser.canEditPrompts === true,
-    reseller_id: fullUser.resellerId || null,
-    reseller_name: fullUser.resellerName || null,
+    session_token: fullUser.sessionToken || '',
+    is_online: fullUser.isOnline ?? true,
     whatsapp: fullUser.whatsapp || '',
     telegram: fullUser.telegram || '',
     referral_code: fullUser.referralCode || '',
     referred_by: fullUser.referredBy || '',
+    reseller_id: fullUser.resellerId || null,
     created_at: fullUser.createdAt || new Date().toISOString(),
+    last_active: fullUser.lastActive || new Date().toISOString(),
     ...fields
   };
 
   try {
     const { error } = await supa.from('users').upsert(recordToUpsert, { onConflict: 'id' });
     if (!error) return true;
+    console.error('Supabase upsert error in safeServerSupabaseUserUpdate:', error);
   } catch (err) {
-    console.error('safeServerSupabaseUserUpdate upsert error:', err);
+    console.error('safeServerSupabaseUserUpdate upsert catch error:', err);
   }
   return false;
 }
@@ -440,15 +439,15 @@ app.post('/api/users/signup', async (req, res) => {
           credits: existing.credits,
           max_credits: existing.maxCredits,
           plan_days_left: existing.planDaysLeft,
-          role: existing.role,
-          status: existing.status,
-          extension_access: existing.extensionAccess,
-          can_edit_prompts: existing.canEditPrompts,
-          whatsapp: existing.whatsapp,
-          telegram: existing.telegram,
-          referral_code: existing.referralCode,
-          referred_by: existing.referredBy,
+          session_token: existing.sessionToken || '',
+          is_online: existing.isOnline ?? true,
+          whatsapp: existing.whatsapp || '',
+          telegram: existing.telegram || '',
+          referral_code: existing.referralCode || '',
+          referred_by: existing.referredBy || '',
+          reseller_id: existing.resellerId || null,
           created_at: existing.createdAt,
+          last_active: existing.lastActive || new Date().toISOString(),
         });
       } catch (err) {
         console.error('Supabase signup update error:', err);
@@ -512,15 +511,15 @@ app.post('/api/users/signup', async (req, res) => {
         credits: newUser.credits,
         max_credits: newUser.maxCredits,
         plan_days_left: newUser.planDaysLeft,
-        role: newUser.role,
-        status: newUser.status,
-        extension_access: newUser.extensionAccess,
-        can_edit_prompts: newUser.canEditPrompts,
-        whatsapp: newUser.whatsapp,
-        telegram: newUser.telegram,
-        referral_code: newUser.referralCode,
-        referred_by: newUser.referredBy,
+        session_token: newUser.sessionToken || '',
+        is_online: newUser.isOnline ?? true,
+        whatsapp: newUser.whatsapp || '',
+        telegram: newUser.telegram || '',
+        referral_code: newUser.referralCode || '',
+        referred_by: newUser.referredBy || '',
+        reseller_id: newUser.resellerId || null,
         created_at: newUser.createdAt,
+        last_active: newUser.lastActive || new Date().toISOString(),
       });
     } catch (err) {
       console.error('Supabase signup insert error:', err);
