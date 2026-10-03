@@ -11,7 +11,7 @@ interface AdminExtensionModalProps {
 }
 
 export const AdminExtensionModal: React.FC<AdminExtensionModalProps> = ({ isOpen, onClose }) => {
-  const { planExtensions, updatePlanExtensionConfig } = useAuth();
+  const { planExtensions, updatePlanExtensionConfig, updatePromptConfig } = useAuth();
 
   const [activeTab, setActiveTab] = useState<PlanType>('basic');
 
@@ -103,6 +103,10 @@ export const AdminExtensionModal: React.FC<AdminExtensionModalProps> = ({ isOpen
     updatePlanExtensionConfig('basic', cleanBasic);
     updatePlanExtensionConfig('ultra', cleanUltra);
 
+    if (cleanUltra.version?.trim()) {
+      updatePromptConfig({ extensionVersion: cleanUltra.version.trim() });
+    }
+
     // Sync to backend config
     try {
       await fetch(apiUrl('/api/config'), {
@@ -112,6 +116,9 @@ export const AdminExtensionModal: React.FC<AdminExtensionModalProps> = ({ isOpen
           planExtensions: {
             basic: cleanBasic,
             ultra: cleanUltra,
+          },
+          promptConfig: {
+            extensionVersion: cleanUltra.version?.trim(),
           }
         })
       });

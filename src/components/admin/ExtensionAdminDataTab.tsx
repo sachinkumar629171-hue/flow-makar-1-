@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { apiUrl } from '../../config/api';
 import { 
   Chrome, 
-  Search, 
+  Search,
   Server, 
   Zap, 
   Image as ImageIcon, 
@@ -54,7 +55,7 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
   showToast,
   onOpenPromptServer,
 }) => {
-  const { promptConfig, updatePromptConfig, adminCreateUser } = useAuth();
+  const { promptConfig, updatePromptConfig, planExtensions, updatePlanExtensionConfig, adminCreateUser } = useAuth();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [planFilter, setPlanFilter] = useState<'all' | 'basic' | 'ultra'>('all');
@@ -131,8 +132,11 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
   // Website Tab Logo (Favicon) & Branding State
   const [websiteFaviconUrl, setWebsiteFaviconUrl] = useState<string>(promptConfig?.websiteFaviconUrl ?? '');
   const [websiteTitle, setWebsiteTitle] = useState<string>(promptConfig?.websiteTitle ?? '');
-  const [extensionVersion, setExtensionVersion] = useState<string>(promptConfig?.extensionVersion ?? 'v2.4.1');
+  const [extensionVersion, setExtensionVersion] = useState<string>(
+    promptConfig?.extensionVersion || planExtensions?.ultra?.version || '3.2.0'
+  );
   const [isSavingBranding, setIsSavingBranding] = useState<boolean>(false);
+  const [isSavingVersion, setIsSavingVersion] = useState<boolean>(false);
 
   // Live Extension Tester & Simulator
   const [testEmail, setTestEmail] = useState('');
@@ -183,10 +187,11 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
     if (promptConfig?.websiteTitle !== undefined && !isFocusedRef.current) {
       setWebsiteTitle(promptConfig.websiteTitle ?? '');
     }
-    if (promptConfig?.extensionVersion !== undefined && !isFocusedRef.current) {
-      setExtensionVersion(promptConfig.extensionVersion ?? 'v2.4.1');
+    const currentActiveVer = promptConfig?.extensionVersion || planExtensions?.ultra?.version || '3.2.0';
+    if (!isFocusedRef.current) {
+      setExtensionVersion(currentActiveVer);
     }
-  }, [promptConfig]);
+  }, [promptConfig, planExtensions]);
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -432,11 +437,38 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
   const handleSaveWebsiteBranding = async () => {
     setIsSavingBranding(true);
     try {
+      const v = extensionVersion.trim();
       await updatePromptConfig({
         websiteFaviconUrl: websiteFaviconUrl.trim(),
         websiteTitle: websiteTitle.trim(),
-        extensionVersion: extensionVersion.trim(),
+        extensionVersion: v,
       });
+      if (planExtensions?.ultra) {
+        updatePlanExtensionConfig('ultra', {
+          ...planExtensions.ultra,
+          version: v,
+        });
+      }
+      try {
+        await fetch(apiUrl('/api/config'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            promptConfig: {
+              websiteFaviconUrl: websiteFaviconUrl.trim(),
+              websiteTitle: websiteTitle.trim(),
+              extensionVersion: v,
+            },
+            planExtensions: planExtensions ? {
+              ...planExtensions,
+              ultra: {
+                ...(planExtensions.ultra || {}),
+                version: v,
+              }
+            } : undefined
+          })
+        });
+      } catch {}
       showToast('Website Branding & Extension Version signal saved live successfully!');
     } catch (err: any) {
       showToast(`Error: ${err?.message || 'Failed'}`);

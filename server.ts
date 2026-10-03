@@ -297,7 +297,7 @@ app.get('/api/extension/profile/:userId', (req, res) => {
     saveStorage();
   }
 
-  const ver = db.promptConfig?.extensionVersion || 'v2.4.1';
+  const ver = getActiveExtensionVersion(user.plan);
 
   // Return exactly what the extension needs
   res.json({
@@ -745,6 +745,36 @@ function cleanEmailString(raw: string): string {
   return raw.replace(/[\u200B-\u200D\uFEFF\s]+/g, '').trim().toLowerCase();
 }
 
+// Authoritative version resolver: Reads exact version configured in Admin Panel
+function getActiveExtensionVersion(plan: string = 'ultra'): string {
+  // 1. Admin Panel Ultra extension configuration (Absolute Primary Source of Truth)
+  if (db.planExtensions?.ultra?.version && String(db.planExtensions.ultra.version).trim()) {
+    const uv = String(db.planExtensions.ultra.version).trim();
+    if (uv !== 'v1.0.2') return uv;
+  }
+
+  // 2. Basic plan if explicitly requested
+  if (plan === 'basic') {
+    if (db.planExtensions?.basic?.version && String(db.planExtensions.basic.version).trim()) {
+      const bv = String(db.planExtensions.basic.version).trim();
+      if (bv !== 'v1.0.2') return bv;
+    }
+  }
+
+  // 3. Admin Panel Extension Signal configuration
+  if (db.promptConfig?.extensionVersion && String(db.promptConfig.extensionVersion).trim()) {
+    const pv = String(db.promptConfig.extensionVersion).trim();
+    if (pv !== 'v1.0.2' && pv !== 'v2.7.1') return pv;
+  }
+
+  // 4. Basic plan fallback
+  if (db.planExtensions?.basic?.version && String(db.planExtensions.basic.version).trim()) {
+    return String(db.planExtensions.basic.version).trim();
+  }
+
+  return db.planExtensions?.ultra?.version || '3.2.0';
+}
+
 // ======================== EXTENSION API ENDPOINTS ========================
 
 // In-memory cache to debounce and stop repeated spam requests from extensions
@@ -774,8 +804,13 @@ app.get('/api/extension/user', async (req, res) => {
     }
   }
 
-  if (!email) {
-    return res.status(400).json({ success: false, error: 'Gmail ID (email) or active session token is required.' });
+  if (!email || !reqToken) {
+    return res.status(401).json({ 
+      success: false, 
+      serverOnline: true,
+      serverStatus: 'online',
+      error: 'Authentication failed: Both Gmail ID (email) and session token (token number) are required.' 
+    });
   }
 
   const cacheKey = `${email}_${reqToken || ''}`;
@@ -872,9 +907,18 @@ app.get('/api/extension/user', async (req, res) => {
   if (user.plan === 'unlimited') planDisplayName = 'Unlimited VIP Plan';
   else if (user.plan === 'ultra') planDisplayName = 'Ultra VIP Plan';
 
+  const activePlanVer = getActiveExtensionVersion(user.plan);
+
   const responsePayload = {
     success: true,
     serverOnline: true,
+    serverStatus: 'online',
+    email: user.email,
+    sessionToken: sessionToken,
+    token: sessionToken,
+    version: activePlanVer,
+    extensionVersion: activePlanVer,
+    requiredVersion: activePlanVer,
     user: {
       id: user.id,
       name: user.name,
@@ -952,9 +996,18 @@ app.get('/api/extension/session', async (req, res) => {
   const isUltraOrUnlimited = user.plan === 'ultra' || user.plan === 'unlimited';
   const planDaysLeft = user.planDaysLeft ?? 0;
 
+  const sessionPlanVer = getActiveExtensionVersion(user.plan);
+
   res.json({
     success: true,
     serverOnline: true,
+    serverStatus: 'online',
+    email: user.email,
+    sessionToken: token,
+    token: token,
+    version: sessionPlanVer,
+    extensionVersion: sessionPlanVer,
+    requiredVersion: sessionPlanVer,
     user: {
       id: user.id,
       name: user.name,
@@ -983,7 +1036,7 @@ app.post('/api/extension/prompts', async (req, res) => {
   const clientVersion = req.body.version || req.body.extensionVersion || '';
 
   // Get freshest required version, servers, and costs from db or Supabase
-  let requiredVer = db.promptConfig?.extensionVersion || 'v1.0.1';
+  let requiredVer = getActiveExtensionVersion('ultra');
   let servers = db.promptConfig?.servers || [
     { id: 'server1', label: 'Server 1', prompt: '' },
     { id: 'server2', label: 'Server 2', prompt: '' },
@@ -993,17 +1046,32 @@ app.post('/api/extension/prompts', async (req, res) => {
   const supa = getServerSupabase();
   if (supa) {
     try {
+      // 1. Check live admin_config_extensions in Supabase first (configured via Admin Extension Modal)
+      const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+      if (extRow?.name) {
+        try {
+          const parsedExt = JSON.parse(extRow.name);
+          if (parsedExt?.ultra?.version && String(parsedExt.ultra.version).trim()) {
+            if (!db.planExtensions) db.planExtensions = {};
+            db.planExtensions.ultra = parsedExt.ultra;
+          }
+        } catch {}
+      }
+
+      // 2. Check admin_config_prompts in Supabase (configured via Prompt Config)
       const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
       if (promptRow?.name) {
         try {
           const parsed = JSON.parse(promptRow.name);
           if (parsed?.servers) servers = parsed.servers;
-          if (parsed?.extensionVersion) requiredVer = parsed.extensionVersion;
           if (parsed?.costs) costs = parsed.costs;
         } catch {}
       }
     } catch {}
   }
+
+  // Authoritative version from Admin Panel (planExtensions.ultra.version or promptConfig)
+  requiredVer = getActiveExtensionVersion('ultra');
 
   const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
   const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
@@ -1084,6 +1152,9 @@ app.post('/api/extension/prompts', async (req, res) => {
           success: true, 
           serverOnline: true, 
           serverStatus: 'online',
+          email: supaUser.email,
+          sessionToken: sessionToken,
+          token: sessionToken,
           version: requiredVer,
           extensionVersion: requiredVer,
           requiredVersion: requiredVer,
@@ -1131,6 +1202,9 @@ app.post('/api/extension/prompts', async (req, res) => {
     success: true, 
     serverOnline: true, 
     serverStatus: 'online',
+    email: user.email,
+    sessionToken: sessionToken,
+    token: sessionToken,
     version: requiredVer,
     extensionVersion: requiredVer,
     requiredVersion: requiredVer,
@@ -1295,7 +1369,7 @@ app.get('/api/extension/servers', async (req, res) => {
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
 
-  const ver = db.promptConfig?.extensionVersion || 'v1.0.1';
+  const ver = getActiveExtensionVersion();
   const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
   const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
@@ -1442,7 +1516,7 @@ app.get('/api/extension/prompts', async (req, res) => {
     { id: 'server2', label: 'Server 2', prompt: '' },
   ];
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
-  const ver = db.promptConfig?.extensionVersion || 'v1.0.1';
+  const ver = getActiveExtensionVersion();
   const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
   const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
@@ -1807,12 +1881,27 @@ app.post('/api/telegram/test', async (req, res) => {
 // POST config
 app.post('/api/config', async (req, res) => {
   const { planExtensions, tutorialConfig, promptConfig, supabaseConfig } = req.body;
-  if (planExtensions) db.planExtensions = planExtensions;
+  if (planExtensions) {
+    db.planExtensions = planExtensions;
+    // Keep promptConfig.extensionVersion aligned with ultra extension version
+    if (planExtensions.ultra?.version && String(planExtensions.ultra.version).trim()) {
+      if (!db.promptConfig) db.promptConfig = {};
+      db.promptConfig.extensionVersion = String(planExtensions.ultra.version).trim();
+    }
+  }
   if (tutorialConfig) db.tutorialConfig = tutorialConfig;
   
   if (promptConfig) {
     const oldPromptConfig = db.promptConfig;
     db.promptConfig = promptConfig;
+
+    // Keep planExtensions.ultra.version aligned if extensionVersion signal is updated
+    if (promptConfig.extensionVersion && String(promptConfig.extensionVersion).trim()) {
+      const trimmedVer = String(promptConfig.extensionVersion).trim();
+      if (!db.planExtensions) db.planExtensions = {};
+      if (!db.planExtensions.ultra) db.planExtensions.ultra = {};
+      db.planExtensions.ultra.version = trimmedVer;
+    }
 
     // Check for any server that was previously missed and has now been updated -> Send Recovery Telegram Alert!
     const tgConfig = promptConfig.telegramAlerts || oldPromptConfig?.telegramAlerts;

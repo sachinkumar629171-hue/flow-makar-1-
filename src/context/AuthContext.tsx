@@ -2648,23 +2648,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     lastConfigUpdateRef.current = Date.now() + 30000;
     setPlanExtensions(prev => {
       const mergedConfig: ExtensionConfig = {
-        ...prev.basic,
-        ...prev.ultra,
         ...prev[plan],
         ...newConfig,
         updatedAt: new Date().toISOString(),
       };
       const updated = {
-        basic: mergedConfig,
-        ultra: mergedConfig,
+        ...prev,
+        [plan]: mergedConfig,
       };
 
       syncConfigToSupabase('admin_config_extensions', updated);
 
+      const newVer = newConfig.version?.trim();
+      if (newVer) {
+        setPromptConfig(p => ({ ...p, extensionVersion: newVer }));
+        syncConfigToSupabase('admin_config_prompts', { ...promptConfig, extensionVersion: newVer });
+      }
+
       fetch(apiUrl('/api/config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planExtensions: updated }),
+        body: JSON.stringify({
+          planExtensions: updated,
+          promptConfig: newVer ? { extensionVersion: newVer } : undefined,
+        }),
       }).catch(() => {});
 
       return updated;
