@@ -319,7 +319,7 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
     }
   };
 
-  // Test Cloudflare Worker integration from Admin tab (Direct Edge + Server Fallback)
+  // Test Cloudflare Worker integration from Admin tab (Direct 100% Pure Client-Side Fetch)
   const handleTestCloudflare = async () => {
     const cleanUrl = cloudflareUrl.trim();
     if (!cleanUrl) {
@@ -335,134 +335,58 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
 
     const startTime = Date.now();
 
-    // Strategy 1: Direct Browser Ping to Cloudflare Worker (Fastest, zero proxy bottleneck)
     try {
-      const directRes = await fetch(cleanUrl, {
-        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
-        signal: AbortSignal.timeout(4000),
+      const urlWithTimestamp = `${cleanUrl}${cleanUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      const res = await fetch(urlWithTimestamp);
+
+      if (!res.ok) {
+        throw new Error(`Cloudflare Worker returned HTTP ${res.status}: ${res.statusText}`);
+      }
+
+      const cfData = await res.json();
+      const latencyMs = Date.now() - startTime;
+      const keysFound = Object.keys(cfData).filter(k => k.startsWith('server') && Boolean(cfData[k]));
+
+      setCloudflareTestResult({
+        success: true,
+        message: `Live Connection Successful! Found ${keysFound.length} active server keys (${keysFound.join(', ')}).`,
+        latencyMs,
+        serversFound: keysFound,
+        updatedAt: cfData.updatedAt || new Date().toISOString(),
       });
 
-      if (directRes.ok) {
-        const directText = await directRes.text();
-        let cfData: any = null;
-        try {
-          cfData = JSON.parse(directText);
-        } catch (e) {
-          throw new Error('Cloudflare Worker response was not valid JSON');
-        }
-
-        const latencyMs = Date.now() - startTime;
-        const keysFound = Object.keys(cfData).filter(k => k.startsWith('server') && Boolean(cfData[k]));
-
-        setCloudflareTestResult({
-          success: true,
-          message: `Live Connection Successful! Found ${keysFound.length} active server keys (${keysFound.join(', ')}).`,
-          latencyMs,
-          serversFound: keysFound,
-          updatedAt: cfData.updatedAt || new Date().toISOString(),
-        });
-
-        // Automatically sync latest prompts from Cloudflare into local server boxes
-        setLocalServers(prev => {
-          let updated = [...prev];
-          updated = updated.map((srv, idx) => {
-            const keyNum = idx + 1;
-            const cfKey = `server${keyNum}`;
-            if (cfData[cfKey] !== undefined && cfData[cfKey] !== '') {
-              const promptVal = typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]);
-              return { ...srv, prompt: promptVal, lastUpdatedAt: cfData.updatedAt || new Date().toISOString() };
-            }
-            return srv;
-          });
-
-          for (let i = 1; i <= 8; i++) {
-            const key = `server${i}`;
-            if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
-              const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
-              updated.push({
-                id: key,
-                label: `Server ${i}`,
-                prompt: promptVal,
-                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
-                updatedBy: 'Cloudflare Worker',
-              });
-            }
+      // Automatically sync latest prompts from Cloudflare into local server boxes
+      setLocalServers(prev => {
+        let updated = [...prev];
+        updated = updated.map((srv, idx) => {
+          const keyNum = idx + 1;
+          const cfKey = `server${keyNum}`;
+          if (cfData[cfKey] !== undefined && cfData[cfKey] !== '') {
+            const promptVal = typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]);
+            return { ...srv, prompt: promptVal, lastUpdatedAt: cfData.updatedAt || new Date().toISOString() };
           }
-          return updated;
+          return srv;
         });
 
-        setIsTestingCloudflare(false);
-        return;
-      }
-    } catch (directErr: any) {
-      console.warn('Direct Cloudflare fetch failed, trying backend proxy:', directErr?.message);
-    }
-
-    // Strategy 2: Backend Proxy Fallback via apiUrl
-    try {
-      const res = await fetch(apiUrl('/api/cloudflare/test'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cloudflareUrl: cleanUrl }),
-      });
-      const rawText = await res.text();
-      let data: any = null;
-      try {
-        data = JSON.parse(rawText);
-      } catch (e) {
-        throw new Error(`Server returned non-JSON response: ${rawText.slice(0, 120)}`);
-      }
-
-      if (data.success) {
-        setCloudflareTestResult({
-          success: true,
-          message: `Live Connection Successful! Found ${data.serverCount} active server keys (${(data.serversFound || []).join(', ')}).`,
-          latencyMs: data.latencyMs,
-          serversFound: data.serversFound,
-          updatedAt: data.updatedAt,
-        });
-
-        if (data.data) {
-          const cfData = data.data;
-          setLocalServers(prev => {
-            let updated = [...prev];
-            updated = updated.map((srv, idx) => {
-              const keyNum = idx + 1;
-              const cfKey = `server${keyNum}`;
-              if (cfData[cfKey] !== undefined && cfData[cfKey] !== '') {
-                const promptVal = typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]);
-                return { ...srv, prompt: promptVal, lastUpdatedAt: cfData.updatedAt || new Date().toISOString() };
-              }
-              return srv;
+        for (let i = 1; i <= 8; i++) {
+          const key = `server${i}`;
+          if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
+            const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
+            updated.push({
+              id: key,
+              label: `Server ${i}`,
+              prompt: promptVal,
+              lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+              updatedBy: 'Cloudflare Worker',
             });
-
-            for (let i = 1; i <= 8; i++) {
-              const key = `server${i}`;
-              if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
-                const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
-                updated.push({
-                  id: key,
-                  label: `Server ${i}`,
-                  prompt: promptVal,
-                  lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
-                  updatedBy: 'Cloudflare Worker',
-                });
-              }
-            }
-            return updated;
-          });
+          }
         }
-      } else {
-        setCloudflareTestResult({
-          success: false,
-          message: data.error || 'Failed to connect to Cloudflare Worker.',
-          latencyMs: data.latencyMs,
-        });
-      }
+        return updated;
+      });
     } catch (err: any) {
       setCloudflareTestResult({
         success: false,
-        message: err?.message || 'Network error while connecting to Cloudflare Worker.',
+        message: `Connection Error: ${err?.message || 'Failed to reach Cloudflare Worker'}`,
       });
     } finally {
       setIsTestingCloudflare(false);
