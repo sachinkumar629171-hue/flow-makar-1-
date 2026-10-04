@@ -909,7 +909,17 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
                       </div>
 
                       <div className="flex-1 min-w-[200px] max-w-full lg:max-w-md xl:max-w-lg">
-                        {canEdit ? (
+                        {cloudflareEnabled ? (
+                          <div className="bg-[#070b14] border border-emerald-500/30 rounded-xl px-3 py-2 text-xs font-mono flex items-center justify-between gap-2">
+                            <span className="text-emerald-400 font-bold flex items-center gap-1.5 truncate">
+                              <Radio className="w-3.5 h-3.5 shrink-0" />
+                              <span>Live Streamed from Cloudflare Worker</span>
+                            </span>
+                            <span className="text-[10px] text-emerald-300 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-600/40 shrink-0">
+                              Real-Time 24/7
+                            </span>
+                          </div>
+                        ) : canEdit ? (
                           <div className="relative">
                             <textarea
                               value={server.prompt}

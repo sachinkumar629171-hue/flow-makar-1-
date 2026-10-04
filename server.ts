@@ -1847,9 +1847,15 @@ async function resolveActiveServers(): Promise<{
 
   if (cloudflareEnabled && cloudflareUrl) {
     try {
-      const resp = await fetch(cloudflareUrl, {
-        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
-        signal: AbortSignal.timeout(3500),
+      // Force real-time latest prompt from Cloudflare with timestamp cache-buster & no-cache headers
+      const fetchUrl = `${cloudflareUrl}${cloudflareUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
+      const resp = await fetch(fetchUrl, {
+        headers: { 
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        },
+        signal: AbortSignal.timeout(4000),
       });
       if (resp.ok) {
         const cfData = await resp.json();

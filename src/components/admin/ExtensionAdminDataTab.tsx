@@ -355,27 +355,16 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
         updatedAt: cfData.updatedAt || new Date().toISOString(),
       });
 
-      // Automatically sync latest prompts from Cloudflare into local server boxes
+      // Update server count/list structure without saving heavy raw cookie payloads
       setLocalServers(prev => {
         let updated = [...prev];
-        updated = updated.map((srv, idx) => {
-          const keyNum = idx + 1;
-          const cfKey = `server${keyNum}`;
-          if (cfData[cfKey] !== undefined && cfData[cfKey] !== '') {
-            const promptVal = typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]);
-            return { ...srv, prompt: promptVal, lastUpdatedAt: cfData.updatedAt || new Date().toISOString() };
-          }
-          return srv;
-        });
-
-        for (let i = 1; i <= 8; i++) {
+        for (let i = 1; i <= Math.max(prev.length, keysFound.length); i++) {
           const key = `server${i}`;
-          if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
-            const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
+          if (!updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
             updated.push({
               id: key,
               label: `Server ${i}`,
-              prompt: promptVal,
+              prompt: '',
               lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
               updatedBy: 'Cloudflare Worker',
             });
@@ -1360,39 +1349,58 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
                   </div>
                 </div>
 
-                <textarea
-                  rows={2}
-                  value={srv.prompt}
-                  onChange={e => handleUpdateServer(srv.id, { prompt: e.target.value })}
-                  onFocus={() => { isFocusedRef.current = true; }}
-                  onBlur={() => { isFocusedRef.current = false; }}
-                  placeholder={`Paste prompt here for ${srv.label}...`}
-                  className="w-full h-14 max-h-14 min-h-[56px] p-2 bg-[#07080b] border border-neutral-800/80 rounded-lg text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-purple-500 font-mono leading-relaxed select-text resize-none overflow-y-auto shadow-inner"
-                />
+                {cloudflareEnabled ? (
+                  <div className="bg-[#050811] border border-emerald-500/30 rounded-lg p-3 space-y-2 font-mono">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-emerald-400 font-bold flex items-center gap-1.5">
+                        <Zap className="w-3.5 h-3.5" />
+                        <span>Direct Cloudflare Live Relay</span>
+                      </span>
+                      <span className="text-[10px] text-emerald-300 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/50">
+                        ⚡ Real-Time Auto-Sync
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-neutral-400 leading-relaxed">
+                      Prompt is streamed directly from Cloudflare Worker in real-time when users request it. <b>Not stored in Supabase database</b> to prevent free tier quota exhaustion.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <textarea
+                      rows={2}
+                      value={srv.prompt}
+                      onChange={e => handleUpdateServer(srv.id, { prompt: e.target.value })}
+                      onFocus={() => { isFocusedRef.current = true; }}
+                      onBlur={() => { isFocusedRef.current = false; }}
+                      placeholder={`Paste prompt here for ${srv.label}...`}
+                      className="w-full h-14 max-h-14 min-h-[56px] p-2 bg-[#07080b] border border-neutral-800/80 rounded-lg text-xs text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-purple-500 font-mono leading-relaxed select-text resize-none overflow-y-auto shadow-inner"
+                    />
 
-                <div className="flex items-center justify-between text-[10px] font-mono pt-1">
-                  <span className="text-neutral-500">{srv.prompt ? `${srv.prompt.length} characters` : 'Empty prompt'}</span>
-                  
-                  {/* Dedicated Single Server Save & Reset Button */}
-                  <button
-                    onClick={() => handleSaveSingleServer(srv.id)}
-                    disabled={isSavingPrompts}
-                    className="flex items-center gap-1.5 px-3 py-1 bg-purple-950/70 hover:bg-purple-900 border border-purple-600/50 text-purple-200 hover:text-white rounded-lg text-[11px] font-bold transition-all cursor-pointer active:scale-95 shadow-sm"
-                    title={`Save only ${srv.label} prompt and restart its timer`}
-                  >
-                    {savedServerId === srv.id ? (
-                      <>
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span className="text-emerald-300">Saved & Reset!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Save className="w-3 h-3 text-purple-400" />
-                        <span>Save & Reset {srv.label} Timer</span>
-                      </>
-                    )}
-                  </button>
-                </div>
+                    <div className="flex items-center justify-between text-[10px] font-mono pt-1">
+                      <span className="text-neutral-500">{srv.prompt ? `${srv.prompt.length} characters` : 'Empty prompt'}</span>
+                      
+                      {/* Dedicated Single Server Save & Reset Button */}
+                      <button
+                        onClick={() => handleSaveSingleServer(srv.id)}
+                        disabled={isSavingPrompts}
+                        className="flex items-center gap-1.5 px-3 py-1 bg-purple-950/70 hover:bg-purple-900 border border-purple-600/50 text-purple-200 hover:text-white rounded-lg text-[11px] font-bold transition-all cursor-pointer active:scale-95 shadow-sm"
+                        title={`Save only ${srv.label} prompt and restart its timer`}
+                      >
+                        {savedServerId === srv.id ? (
+                          <>
+                            <Check className="w-3 h-3 text-emerald-400" />
+                            <span className="text-emerald-300">Saved & Reset!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-3 h-3 text-purple-400" />
+                            <span>Save & Reset {srv.label} Timer</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             );
           })}
