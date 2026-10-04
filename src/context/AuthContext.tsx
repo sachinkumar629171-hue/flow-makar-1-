@@ -1007,8 +1007,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     pollCentralServer();
-    // Real-Time Polling: 15 seconds interval for instant Live Online status & credit synchronization
-    const pollInterval = setInterval(pollCentralServer, 15000);
+    // Optimized Polling: 120 seconds interval (2 minutes) & pauses when tab is in background to save Vercel CDN limits
+    const pollInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      pollCentralServer();
+    }, 120000);
 
     // Immediate refresh on tab focus
     const handleTabFocus = () => {
@@ -1147,8 +1150,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     heartbeat();
-    // Optimized heartbeat: Every 30 seconds (or immediately on user activity/tab focus)
-    const interval = setInterval(heartbeat, 30000);
+    // Optimized heartbeat: Every 120 seconds (2 minutes), pauses in background tabs to save Vercel requests
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      heartbeat();
+    }, 120000);
 
     const onUserActivity = () => {
       (window as any)._lastSupaSessionCheck = 0; // Force immediate check on tab focus/activity

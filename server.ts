@@ -1800,45 +1800,72 @@ app.post('/api/extension/verify', async (req, res) => {
 });
 
 // GET /api/extension/servers
-// Secure Prompt Server Endpoint: Returns live prompts ONLY when authorized user credentials are provided
+// Returns live Server 1 & Server 2 prompts and costs directly to the Extension
 app.get('/api/extension/servers', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  const email = cleanEmailString(req.query.email as string || req.headers['x-user-email'] as string || '');
-  const sessionToken = ((req.query.token || req.query.sessionToken || req.headers['x-session-token'] || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
-
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
   const ver = getActiveExtensionVersion('ultra');
 
-  // If no credentials provided, return server status only (0 cookies/prompts leaked publicly)
-  if (!email || !sessionToken) {
-    const rawServers = Array.isArray(db.promptConfig?.servers) && db.promptConfig.servers.length > 0
-      ? db.promptConfig.servers.map((s: any) => ({ id: s.id, label: s.label, prompt: '', lastUpdatedAt: s.lastUpdatedAt }))
-      : [
-          { id: 'server1', label: 'Server 1', prompt: '' },
-          { id: 'server2', label: 'Server 2', prompt: '' },
-        ];
+  res.json({
+    success: true,
+    serverOnline: true,
+    serverStatus: 'online',
+    version: ver,
+    extensionVersion: ver,
+    requiredVersion: ver,
+    source,
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
+    cloudflareOnline,
+    servers,
+    server1: serverMap.server1 || '',
+    server2: serverMap.server2 || '',
+    server3: serverMap.server3 || '',
+    server4: serverMap.server4 || '',
+    costs,
+    promptReminderMinutes,
+    serverTimestamp: new Date().toISOString(),
+  });
+});
 
-    return res.json({
-      success: true,
+// POST /api/extension/servers
+// Secure POST endpoint for Extension to fetch Server 1 & Server 2 with Version check
+app.post('/api/extension/servers', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const email = cleanEmailString(req.body.email || '');
+  const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
+  const clientVersion = req.body.version || req.body.extensionVersion || '';
+
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
+  const costs = db.promptConfig?.costs || { image: 20, video: 30 };
+  const requiredVer = getActiveExtensionVersion('ultra');
+
+  if (!email || !sessionToken) {
+    return res.status(401).json({
+      success: false,
       serverOnline: true,
       serverStatus: 'online',
-      version: ver,
-      extensionVersion: ver,
-      requiredVersion: ver,
-      authenticated: false,
-      servers: rawServers,
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      error: 'Authentication failed: Active email and sessionToken are required.',
+      servers: [],
+      server1: '',
+      server2: '',
       costs,
-      promptReminderMinutes,
       serverTimestamp: new Date().toISOString(),
     });
   }
 
-  // Authenticate user against database / Supabase
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+
   const supa = getServerSupabase();
   if ((!user || user.sessionToken !== sessionToken) && supa) {
     try {
@@ -1858,8 +1885,10 @@ app.get('/api/extension/servers', async (req, res) => {
           maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
           planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
           role: supaUser.role || 'user',
+          resellerId: supaUser.reseller_id,
+          resellerName: supaUser.reseller_name,
           status: supaUser.status || 'active',
-          extensionAccess: supaUser.extension_access !== false,
+          extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
           sessionToken: supaUser.session_token || sessionToken,
           isOnline: true,
           lastActive: new Date().toISOString(),
@@ -1869,6 +1898,7 @@ app.get('/api/extension/servers', async (req, res) => {
         if (existingIdx >= 0) db.users[existingIdx] = freshUser;
         else db.users.push(freshUser);
         user = freshUser;
+        saveStorage();
       }
     } catch {}
   }
@@ -1876,16 +1906,37 @@ app.get('/api/extension/servers', async (req, res) => {
   if (!user || user.status === 'suspended' || user.sessionToken !== sessionToken) {
     return res.status(401).json({
       success: false,
-      authenticated: false,
-      error: 'Authentication failed: Invalid credentials or session token.',
+      serverOnline: true,
+      serverStatus: 'online',
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      error: 'Access Denied: Invalid or expired session token.',
       servers: [],
+      server1: '',
+      server2: '',
       costs,
       serverTimestamp: new Date().toISOString(),
     });
   }
 
-  // User is verified -> Deliver fresh Cloudflare or local prompt
-  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
+  // Version Check
+  if (clientVersion && clientVersion !== requiredVer) {
+    return res.status(426).json({
+      success: false,
+      updateRequired: true,
+      error: `Update Required: Please update your extension to version ${requiredVer}.`,
+      requiredVersion: requiredVer,
+      version: requiredVer,
+      clientVersion,
+      servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      serverTimestamp: new Date().toISOString(),
+    });
+  }
+
   const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
 
   res.json({
@@ -1893,9 +1944,9 @@ app.get('/api/extension/servers', async (req, res) => {
     authenticated: true,
     serverOnline: true,
     serverStatus: 'online',
-    version: ver,
-    extensionVersion: ver,
-    requiredVersion: ver,
+    version: requiredVer,
+    extensionVersion: requiredVer,
+    requiredVersion: requiredVer,
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
     cloudflareOnline,
@@ -1905,7 +1956,16 @@ app.get('/api/extension/servers', async (req, res) => {
     server3: isUltraUser ? (serverMap.server3 || '') : '',
     server4: isUltraUser ? (serverMap.server4 || '') : '',
     costs,
-    promptReminderMinutes,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      plan: user.plan,
+      credits: user.credits,
+      maxCredits: user.maxCredits,
+      planDaysLeft: user.planDaysLeft,
+      status: user.status,
+    },
     serverTimestamp: new Date().toISOString(),
   });
 });
