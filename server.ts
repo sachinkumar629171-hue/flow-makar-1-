@@ -257,10 +257,29 @@ async function safeServerSupabaseUserUpdate(
 
 async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptConfig: any): Promise<void> {
   if (!supa || !promptConfig) return;
+
+  // If Option 2 (Cloudflare) is active, do NOT store heavy dynamic prompts into Supabase.
+  // Supabase only stores the config settings (URL, ON/OFF toggle, costs, telegram) to protect free tier quota!
+  let payloadToSave = promptConfig;
+  if (promptConfig.cloudflareEnabled) {
+    payloadToSave = {
+      ...promptConfig,
+      server1Prompt: '',
+      server2Prompt: '',
+      servers: (promptConfig.servers || []).map((s: any) => ({
+        id: s.id,
+        label: s.label,
+        prompt: '', // Excluded from Supabase database to save quota
+        lastUpdatedAt: s.lastUpdatedAt,
+        updatedBy: s.updatedBy,
+      })),
+    };
+  }
+
   try {
     await supa.from('app_config').upsert({
       key: 'admin_config_prompts',
-      value: promptConfig,
+      value: payloadToSave,
       updated_at: new Date().toISOString()
     }, { onConflict: 'key' });
   } catch {}
@@ -269,7 +288,7 @@ async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptC
     const record: Record<string, any> = {
       id: 'admin_config_prompts',
       email: 'admin_config_prompts@system.local',
-      name: JSON.stringify(promptConfig),
+      name: JSON.stringify(payloadToSave),
       password: 'config_sys_admin_prompts_123',
       plan: 'basic',
       credits: 0,
@@ -559,12 +578,13 @@ app.get('/api/users', async (req, res) => {
         for (const supaU of supaUsers) {
           if (!supaU.id || supaU.id.startsWith('admin_config_')) continue;
           const existingIdx = db.users.findIndex(u => u.id === supaU.id || (u.email && supaU.email && u.email.toLowerCase() === supaU.email.toLowerCase()));
+          const existingUser = existingIdx !== -1 ? db.users[existingIdx] : null;
           const mappedUser = {
             id: supaU.id,
             name: supaU.name || 'User',
             email: supaU.email || '',
             password: supaU.password || 'user123',
-            sessionToken: supaU.session_token || supaU.sessionToken || (existingIdx !== -1 ? db.users[existingIdx]?.sessionToken : '') || '',
+            sessionToken: supaU.session_token || supaU.sessionToken || (existingUser ? existingUser.sessionToken : '') || '',
             plan: supaU.plan || 'basic',
             credits: Number(supaU.credits) ?? 100,
             maxCredits: Number(supaU.max_credits) ?? (supaU.plan === 'ultra' ? 45000 : 100),
@@ -575,8 +595,8 @@ app.get('/api/users', async (req, res) => {
             status: supaU.status || 'active',
             extensionAccess: supaU.extension_access !== undefined ? supaU.extension_access : true,
             canEditPrompts: supaU.can_edit_prompts === true,
-            isOnline: true,
-            lastActive: supaU.last_active || new Date().toISOString(),
+            isOnline: Boolean(existingUser?.isOnline || supaU.is_online),
+            lastActive: supaU.last_active || existingUser?.lastActive || '',
             createdAt: supaU.created_at || new Date().toISOString(),
             avatarColor: supaU.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
           };
@@ -612,12 +632,10 @@ app.get('/api/users', async (req, res) => {
         // Strict 2-minute (120,000 ms) window: if no response/request in 2 minutes, mark offline
         isLive = !isNaN(t) && (now - t < 120000 && now - t >= -60000);
       }
-    } else if (u.isOnline) {
-      isLive = true;
     }
 
-    if (!isLive && u.isOnline) {
-      u.isOnline = false;
+    if (u.isOnline !== isLive) {
+      u.isOnline = isLive;
       changed = true;
     }
 
@@ -1623,10 +1641,7 @@ app.post('/api/extension/verify', async (req, res) => {
   const planDaysLeft = user.planDaysLeft ?? 0;
   const extensionAllowed = user.extensionAccess !== false && user.status !== 'suspended' && planDaysLeft > 0;
 
-  const servers = db.promptConfig?.servers || [
-    { id: 'server1', label: 'Server 1', prompt: '' },
-    { id: 'server2', label: 'Server 2', prompt: '' },
-  ];
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
 
   const isUltraUser = user.plan === 'ultra';
@@ -1653,7 +1668,14 @@ app.post('/api/extension/verify', async (req, res) => {
       extensionAccess: user.extensionAccess !== false,
       isAllowed: extensionAllowed,
     },
+    source,
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled),
+    cloudflareOnline,
     servers: isUltraUser ? servers : [],
+    server1: isUltraUser ? (serverMap.server1 || '') : '',
+    server2: isUltraUser ? (serverMap.server2 || '') : '',
+    server3: isUltraUser ? (serverMap.server3 || '') : '',
+    server4: isUltraUser ? (serverMap.server4 || '') : '',
     costs,
     serverTimestamp: new Date().toISOString(),
   });
@@ -1666,18 +1688,10 @@ app.get('/api/extension/servers', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  await refreshSupabaseConfigIfNeeded();
-
-  const servers = db.promptConfig?.servers || [
-    { id: 'server1', label: 'Server 1', prompt: '' },
-    { id: 'server2', label: 'Server 2', prompt: '' },
-  ];
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
-
   const ver = getActiveExtensionVersion('ultra');
-  const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
-  const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
   res.json({
     success: true,
@@ -1686,9 +1700,14 @@ app.get('/api/extension/servers', async (req, res) => {
     version: ver,
     extensionVersion: ver,
     requiredVersion: ver,
+    source,
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled),
+    cloudflareOnline,
     servers,
-    server1: server1Prompt,
-    server2: server2Prompt,
+    server1: serverMap.server1 || '',
+    server2: serverMap.server2 || '',
+    server3: serverMap.server3 || '',
+    server4: serverMap.server4 || '',
     costs,
     promptReminderMinutes,
     serverTimestamp: new Date().toISOString(),
@@ -1804,19 +1823,146 @@ app.post('/api/extension/deduct-credits', async (req, res) => {
   });
 });
 
+// Helper to resolve active prompt servers (Option 1 Local vs Option 2 Cloudflare Worker Relay)
+async function resolveActiveServers(): Promise<{
+  servers: any[];
+  serverMap: Record<string, string>;
+  source: 'cloudflare' | 'local';
+  cloudflareOnline: boolean;
+}> {
+  await refreshSupabaseConfigIfNeeded();
+
+  let servers = Array.isArray(db.promptConfig?.servers) && db.promptConfig.servers.length > 0
+    ? JSON.parse(JSON.stringify(db.promptConfig.servers))
+    : [
+        { id: 'server1', label: 'Server 1', prompt: '' },
+        { id: 'server2', label: 'Server 2', prompt: '' },
+      ];
+
+  const cloudflareEnabled = Boolean(db.promptConfig?.cloudflareEnabled);
+  const cloudflareUrl = (db.promptConfig?.cloudflareUrl || '').trim();
+
+  let source: 'cloudflare' | 'local' = 'local';
+  let cloudflareOnline = false;
+
+  if (cloudflareEnabled && cloudflareUrl) {
+    try {
+      const resp = await fetch(cloudflareUrl, {
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+        signal: AbortSignal.timeout(3500),
+      });
+      if (resp.ok) {
+        const cfData = await resp.json();
+        if (cfData && typeof cfData === 'object') {
+          source = 'cloudflare';
+          cloudflareOnline = true;
+
+          // Map to local server boxes
+          servers = servers.map((srv: any, idx: number) => {
+            const keyNum = idx + 1;
+            const cfKey = `server${keyNum}`;
+            if (cfData[cfKey] !== undefined) {
+              return {
+                ...srv,
+                prompt: typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]),
+                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+                source: 'cloudflare'
+              };
+            }
+            if (srv.id && cfData[srv.id] !== undefined) {
+              return {
+                ...srv,
+                prompt: typeof cfData[srv.id] === 'object' ? JSON.stringify(cfData[srv.id]) : String(cfData[srv.id]),
+                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+                source: 'cloudflare'
+              };
+            }
+            return srv;
+          });
+
+          // If Cloudflare has more servers (e.g. server3, server4) that match, add them
+          for (let i = 1; i <= 8; i++) {
+            const key = `server${i}`;
+            if (cfData[key] && !servers.find((s: any) => s.id === key)) {
+              servers.push({
+                id: key,
+                label: `Server ${i}`,
+                prompt: typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]),
+                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+                source: 'cloudflare'
+              });
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('Cloudflare fetch error, falling back to local admin servers:', err?.message);
+    }
+  }
+
+  const serverMap: Record<string, string> = {};
+  servers.forEach((s: any, idx: number) => {
+    serverMap[`server${idx + 1}`] = s.prompt || '';
+    if (s.id) serverMap[s.id] = s.prompt || '';
+  });
+
+  return {
+    servers,
+    serverMap,
+    source,
+    cloudflareOnline,
+  };
+}
+
+// POST /api/cloudflare/test
+app.post('/api/cloudflare/test', async (req, res) => {
+  try {
+    const targetUrl = (req.body.cloudflareUrl || db.promptConfig?.cloudflareUrl || '').trim();
+    if (!targetUrl) {
+      return res.status(400).json({ success: false, error: 'No Cloudflare Worker URL provided' });
+    }
+
+    const startTime = Date.now();
+    const resp = await fetch(targetUrl, {
+      headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+      signal: AbortSignal.timeout(4000),
+    });
+    const latencyMs = Date.now() - startTime;
+
+    if (!resp.ok) {
+      return res.status(502).json({
+        success: false,
+        error: `Cloudflare Worker returned HTTP ${resp.status}: ${resp.statusText}`,
+        latencyMs,
+      });
+    }
+
+    const data = await resp.json();
+    const keysFound = Object.keys(data).filter(k => k.startsWith('server') && Boolean(data[k]));
+
+    return res.json({
+      success: true,
+      latencyMs,
+      status: 'online',
+      data,
+      serversFound: keysFound,
+      serverCount: keysFound.length,
+      updatedAt: data.updatedAt || new Date().toISOString(),
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Failed to reach Cloudflare Worker',
+    });
+  }
+});
+
 // GET /api/extension/prompts
 // Returns current Server 1 & Server 2 prompts and costs
 app.get('/api/extension/prompts', async (req, res) => {
-  await refreshSupabaseConfigIfNeeded();
-
-  const servers = db.promptConfig?.servers || [
-    { id: 'server1', label: 'Server 1', prompt: '' },
-    { id: 'server2', label: 'Server 2', prompt: '' },
-  ];
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const ver = getActiveExtensionVersion();
-  const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
-  const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
 
   res.json({
     success: true,
@@ -1825,11 +1971,99 @@ app.get('/api/extension/prompts', async (req, res) => {
     version: ver,
     extensionVersion: ver,
     requiredVersion: ver,
+    source, // 'cloudflare' | 'local'
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled),
+    cloudflareOnline,
     servers,
-    server1: server1Prompt,
-    server2: server2Prompt,
+    server1: serverMap.server1 || '',
+    server2: serverMap.server2 || '',
+    server3: serverMap.server3 || '',
+    server4: serverMap.server4 || '',
     costs,
     serverTimestamp: new Date().toISOString(),
+  });
+});
+
+// POST /api/webhook/prompt (Direct Webhook from 2nd Website to update prompts with permanent persistence)
+app.post('/api/webhook/prompt', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const incomingPrompt = body.promptData || body.prompt || body.server1 || body.text || body.data || '';
+    const serverId = Number(body.serverId) || (body.server2 ? 2 : 1);
+    const targetServerKey = serverId === 2 ? 'server2' : 'server1';
+
+    if (!db.promptConfig) {
+      db.promptConfig = {
+        extensionVersion: '3.2.0',
+        promptReminderMinutes: 120,
+        costs: { image: 20, video: 30 },
+        servers: [
+          { id: 'server1', label: 'Server 1', prompt: '' },
+          { id: 'server2', label: 'Server 2', prompt: '' },
+        ]
+      };
+    }
+
+    if (!Array.isArray(db.promptConfig.servers) || db.promptConfig.servers.length === 0) {
+      db.promptConfig.servers = [
+        { id: 'server1', label: 'Server 1', prompt: '' },
+        { id: 'server2', label: 'Server 2', prompt: '' },
+      ];
+    }
+
+    if (body.server1 !== undefined) {
+      const s1 = db.promptConfig.servers.find(s => s.id === 'server1');
+      if (s1) s1.prompt = String(body.server1);
+    }
+    if (body.server2 !== undefined) {
+      const s2 = db.promptConfig.servers.find(s => s.id === 'server2');
+      if (s2) s2.prompt = String(body.server2);
+    }
+    if (incomingPrompt && !body.server1 && !body.server2) {
+      const targetServer = db.promptConfig.servers.find(s => s.id === targetServerKey) || db.promptConfig.servers[0];
+      if (targetServer) {
+        targetServer.prompt = String(incomingPrompt);
+      }
+    }
+
+    saveStorage();
+
+    const supa = getServerSupabase();
+    if (supa) {
+      safeSaveSupabasePromptConfig(supa, db.promptConfig).catch(() => {});
+    }
+
+    const s1 = db.promptConfig.servers.find(s => s.id === 'server1')?.prompt || '';
+    const s2 = db.promptConfig.servers.find(s => s.id === 'server2')?.prompt || '';
+
+    return res.json({
+      success: true,
+      message: 'Prompt updated successfully and saved permanently in portal server!',
+      server1: s1,
+      server2: s2,
+      servers: db.promptConfig.servers,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to update prompt' });
+  }
+});
+
+// GET /api/webhook/prompt
+app.get('/api/webhook/prompt', async (req, res) => {
+  await refreshSupabaseConfigIfNeeded();
+  const servers = db.promptConfig?.servers || [
+    { id: 'server1', label: 'Server 1', prompt: '' },
+    { id: 'server2', label: 'Server 2', prompt: '' },
+  ];
+  const s1 = servers.find(s => s.id === 'server1')?.prompt || '';
+  const s2 = servers.find(s => s.id === 'server2')?.prompt || '';
+  res.json({
+    success: true,
+    server1: s1,
+    server2: s2,
+    servers,
+    updatedAt: new Date().toISOString()
   });
 });
 
@@ -2107,15 +2341,21 @@ async function checkPromptServerTelegramAlerts() {
   }
 }
 
-// Sweep and mark inactive users as offline if no ping in > 2.5 minutes
+// Sweep and mark inactive users as offline if no ping in > 2 minutes (120,000 ms)
 function cleanUserOnlineStatus() {
   const now = Date.now();
   let dbChanged = false;
   for (const u of db.users) {
     if (u.isOnline) {
-      if (!u.lastActive || (now - new Date(u.lastActive).getTime() > 150000)) {
+      if (!u.lastActive) {
         u.isOnline = false;
         dbChanged = true;
+      } else {
+        const t = new Date(u.lastActive).getTime();
+        if (isNaN(t) || (now - t >= 120000 || now - t < -60000)) {
+          u.isOnline = false;
+          dbChanged = true;
+        }
       }
     }
   }

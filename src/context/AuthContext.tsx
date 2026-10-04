@@ -805,7 +805,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
                   canEditPrompts: su.can_edit_prompts === true,
                   isOnline: isRecent,
-                  lastActive: su.last_active || new Date().toISOString(),
+                  lastActive: su.last_active || '',
                 };
               });
             
@@ -907,8 +907,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 if (srv) {
                   return {
                     ...u,
-                    isOnline: Boolean(u.isOnline || srv.isOnline),
-                    lastActive: srv.isOnline || (srv.lastActive && (!u.lastActive || new Date(srv.lastActive).getTime() > new Date(u.lastActive).getTime())) ? srv.lastActive : u.lastActive,
+                    isOnline: Boolean(srv.isOnline),
+                    lastActive: srv.lastActive || u.lastActive || '',
                     credits: srv.credits !== undefined ? srv.credits : u.credits,
                     sessionToken: srv.sessionToken || u.sessionToken,
                   };

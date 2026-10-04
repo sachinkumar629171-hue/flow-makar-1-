@@ -60,6 +60,18 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
   const [videoCost, setVideoCost] = useState<number>(promptConfig?.costs?.video ?? 30);
   const [reminderMinutes, setReminderMinutes] = useState<number>(promptConfig?.promptReminderMinutes ?? 120);
   
+  // Option 2: Cloudflare Dynamic Worker Relay State
+  const [cloudflareEnabled, setCloudflareEnabled] = useState<boolean>(promptConfig?.cloudflareEnabled ?? false);
+  const [cloudflareUrl, setCloudflareUrl] = useState<string>(promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev');
+  const [isTestingCloudflare, setIsTestingCloudflare] = useState<boolean>(false);
+  const [cloudflareTestResult, setCloudflareTestResult] = useState<{
+    success: boolean;
+    message: string;
+    latencyMs?: number;
+    serversFound?: string[];
+    updatedAt?: string;
+  } | null>(null);
+
   // Telegram Bot State
   const [telegramEnabled, setTelegramEnabled] = useState<boolean>(promptConfig?.telegramAlerts?.enabled ?? false);
   const [botToken, setBotToken] = useState<string>(promptConfig?.telegramAlerts?.botToken ?? '');
@@ -105,6 +117,12 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     if (promptConfig?.promptReminderMinutes !== undefined && !isFocusedRef.current) {
       setReminderMinutes(promptConfig.promptReminderMinutes);
     }
+    if (promptConfig?.cloudflareEnabled !== undefined && !isFocusedRef.current) {
+      setCloudflareEnabled(promptConfig.cloudflareEnabled);
+    }
+    if (promptConfig?.cloudflareUrl && !isFocusedRef.current) {
+      setCloudflareUrl(promptConfig.cloudflareUrl);
+    }
     if (promptConfig?.telegramAlerts && !isFocusedRef.current) {
       setTelegramEnabled(promptConfig.telegramAlerts.enabled ?? false);
       setBotToken(promptConfig.telegramAlerts.botToken ?? '');
@@ -113,6 +131,87 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       setMissedAlertMinutesAfter(promptConfig.telegramAlerts.missedAlertMinutesAfter ?? 5);
     }
   }, [promptConfig]);
+
+  // Test Cloudflare Worker integration
+  const handleTestCloudflare = async () => {
+    const cleanUrl = cloudflareUrl.trim();
+    if (!cleanUrl) {
+      setCloudflareTestResult({
+        success: false,
+        message: 'Please enter a valid Cloudflare Worker URL (e.g. https://flowmaker-prompts.sachinkumar23406.workers.dev)',
+      });
+      return;
+    }
+
+    setIsTestingCloudflare(true);
+    setCloudflareTestResult(null);
+
+    try {
+      const res = await fetch('/api/cloudflare/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cloudflareUrl: cleanUrl }),
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        setCloudflareTestResult({
+          success: true,
+          message: `Live Connection Successful! Found ${data.serverCount} active server keys (${(data.serversFound || []).join(', ')}).`,
+          latencyMs: data.latencyMs,
+          serversFound: data.serversFound,
+          updatedAt: data.updatedAt,
+        });
+
+        // Automatically sync latest prompts from Cloudflare into local server boxes
+        if (data.data) {
+          const cfData = data.data;
+          setLocalServers(prev => {
+            let updated = [...prev];
+            // Update existing boxes
+            updated = updated.map((srv, idx) => {
+              const keyNum = idx + 1;
+              const cfKey = `server${keyNum}`;
+              if (cfData[cfKey] !== undefined && cfData[cfKey] !== '') {
+                const promptVal = typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]);
+                return { ...srv, prompt: promptVal, lastUpdatedAt: cfData.updatedAt || new Date().toISOString() };
+              }
+              return srv;
+            });
+
+            // If Cloudflare has more servers (e.g. server3, server4) that aren't in local list, add them!
+            for (let i = 1; i <= 8; i++) {
+              const key = `server${i}`;
+              if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
+                const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
+                updated.push({
+                  id: key,
+                  label: `Server ${i}`,
+                  prompt: promptVal,
+                  lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+                  updatedBy: 'Cloudflare Worker',
+                });
+              }
+            }
+            return updated;
+          });
+        }
+      } else {
+        setCloudflareTestResult({
+          success: false,
+          message: data.error || 'Failed to connect to Cloudflare Worker.',
+          latencyMs: data.latencyMs,
+        });
+      }
+    } catch (err: any) {
+      setCloudflareTestResult({
+        success: false,
+        message: err?.message || 'Network error while connecting to Cloudflare Worker.',
+      });
+    } finally {
+      setIsTestingCloudflare(false);
+    }
+  };
 
   // SMART GLOBAL SAVE: Only servers whose prompt was actually modified get their timer restarted!
   const handleSaveAll = async () => {
@@ -158,27 +257,6 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       missedAlertMinutesAfter: Number(missedAlertMinutesAfter) || 5,
     };
 
-    // Check for any server that was previously missed and has now been updated -> Send Recovery Telegram Alert!
-    if (tgAlertConfig.enabled && tgAlertConfig.botToken && tgAlertConfig.chatId) {
-      for (const srv of updatedServers) {
-        const prev = previousServers.find(p => p.id === srv.id);
-        if (prev && prev.wasMissed && prev.prompt !== srv.prompt) {
-          const oldLastUpdatedMs = new Date(prev.lastUpdatedAt || Date.now()).getTime();
-          const cycleMinutes = Number(reminderMinutes) || 120;
-          const oldExpiryTime = oldLastUpdatedMs + cycleMinutes * 60 * 1000;
-          const delayMinutes = Math.max(1, Math.floor((Date.now() - oldExpiryTime) / 60000));
-          const recoveryMsg = generateRecoveryMessage(
-            srv.label || 'Server',
-            srv.id,
-            delayMinutes,
-            updaterName,
-            cycleMinutes
-          );
-          sendTelegramNotification(tgAlertConfig.botToken, tgAlertConfig.chatId, recoveryMsg).catch(() => {});
-        }
-      }
-    }
-
     try {
       await updatePromptConfig({
         servers: updatedServers,
@@ -187,6 +265,8 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
           video: Number(videoCost) || 30,
         },
         promptReminderMinutes: Number(reminderMinutes) || 120,
+        cloudflareEnabled,
+        cloudflareUrl: cloudflareUrl.trim(),
         telegramAlerts: tgAlertConfig,
         server1Prompt: updatedServers[0]?.prompt || '',
         server2Prompt: updatedServers[1]?.prompt || '',
@@ -624,6 +704,132 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
             </div>
           )}
         </div>
+        )}
+
+        {/* OPTION 2: CLOUDFLARE DYNAMIC WORKER RELAY HUB */}
+        {isAdmin && (
+          <div className={`border rounded-2xl p-5 sm:p-6 shadow-2xl transition-all space-y-4 ${
+            cloudflareEnabled 
+              ? 'bg-gradient-to-r from-[#0d1c24] via-[#0f172a] to-[#131127] border-emerald-500/50 shadow-emerald-950/20' 
+              : 'bg-[#10121a] border-neutral-800'
+          }`}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-neutral-800/80 pb-4">
+              <div className="flex items-start gap-3.5">
+                <div className={`p-3 rounded-xl border shrink-0 mt-0.5 ${
+                  cloudflareEnabled 
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400' 
+                    : 'bg-neutral-800 border-neutral-700 text-neutral-400'
+                }`}>
+                  <Radio className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-white tracking-tight">Option 2: Cloudflare Dynamic Server Relay</h3>
+                    <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border flex items-center gap-1 ${
+                      cloudflareEnabled 
+                        ? 'bg-emerald-950/90 text-emerald-300 border-emerald-500/60' 
+                        : 'bg-neutral-900 text-neutral-400 border-neutral-700'
+                    }`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${cloudflareEnabled ? 'bg-emerald-400 animate-ping' : 'bg-neutral-500'}`}></span>
+                      {cloudflareEnabled ? '● Option 2 ON (Live Cloudflare Relay Active)' : '○ Option 2 OFF (Option 1 Admin Local Active)'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-300 mt-1 leading-relaxed">
+                    Jab <b>Option 2 ON</b> rahega, toh Chrome Extensions live prompts seedha aapke Cloudflare Worker URL se dynamic fetch karengi. Aapke jitne servers wahan configured hain (`server1`, `server2`, `server3`...), automatically dynamically link ho jayenge!
+                  </p>
+                </div>
+              </div>
+
+              {canEdit && (
+                <div className="flex items-center gap-3 shrink-0 self-start sm:self-auto">
+                  <label className="relative inline-flex items-center cursor-pointer bg-black/50 px-3.5 py-2 rounded-xl border border-neutral-700 hover:border-neutral-600 transition-all">
+                    <input
+                      type="checkbox"
+                      checked={cloudflareEnabled}
+                      onChange={e => setCloudflareEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-neutral-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[10px] after:left-[16px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                    <span className="ml-3 text-xs font-bold text-white">
+                      {cloudflareEnabled ? 'OPTION 2 ON' : 'OPTION 2 OFF'}
+                    </span>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {/* Cloudflare URL Configuration & Test Action */}
+            <div className="space-y-3 pt-1">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                <div className="flex-1 space-y-1">
+                  <label className="text-xs font-semibold text-neutral-300 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Cloudflare Worker Live Endpoint URL (Saved to Supabase):</span>
+                    </span>
+                    <span className="text-[10px] text-neutral-400 font-mono">Real-time sync to all extensions</span>
+                  </label>
+                  <div className="relative flex items-center">
+                    <input
+                      type="text"
+                      value={cloudflareUrl}
+                      onChange={e => setCloudflareUrl(e.target.value)}
+                      placeholder="https://flowmaker-prompts.YOUR-SUBDOMAIN.workers.dev"
+                      className="w-full bg-[#080c14] border border-neutral-700 focus:border-emerald-500 rounded-xl px-3.5 py-2.5 text-xs font-mono text-emerald-300 focus:outline-none pr-24"
+                    />
+                    <div className="absolute right-2 flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(cloudflareUrl)}
+                        className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] font-mono text-neutral-300 transition-colors"
+                        title="Copy URL"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-end pt-5 sm:pt-0">
+                  <button
+                    type="button"
+                    onClick={handleTestCloudflare}
+                    disabled={isTestingCloudflare || !cloudflareUrl.trim()}
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-950/40 cursor-pointer active:scale-95"
+                  >
+                    {isTestingCloudflare ? (
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    ) : (
+                      <Radio className="w-4 h-4" />
+                    )}
+                    <span>Test & Sync Live Prompts</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Cloudflare Test Result Banner */}
+              {cloudflareTestResult && (
+                <div className={`p-3.5 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 font-mono ${
+                  cloudflareTestResult.success 
+                    ? 'bg-emerald-950/80 border border-emerald-500 text-emerald-200' 
+                    : 'bg-rose-950/80 border border-rose-500 text-rose-200'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    {cloudflareTestResult.success ? <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" /> : <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />}
+                    <span>{cloudflareTestResult.message}</span>
+                  </div>
+                  {cloudflareTestResult.latencyMs !== undefined && (
+                    <div className="flex items-center gap-3 text-[11px] text-emerald-400">
+                      <span>⚡ Latency: {cloudflareTestResult.latencyMs}ms</span>
+                      {cloudflareTestResult.updatedAt && (
+                        <span>🕒 Updated: {new Date(cloudflareTestResult.updatedAt).toLocaleTimeString()}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {/* PROMPT REMINDER & TIMING CONFIGURATION BANNER */}

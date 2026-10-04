@@ -182,6 +182,10 @@ export interface PromptConfig {
   websiteFaviconUrl?: string; // Custom browser tab favicon/logo URL
   websiteTitle?: string; // Custom browser tab title
   extensionVersion?: string; // Required extension version signal
+  cloudflareEnabled?: boolean; // Option 2 Toggle: Fetch dynamically from Cloudflare Worker
+  cloudflareUrl?: string; // Option 2 URL: e.g. https://flowmaker-prompts.sachinkumar23406.workers.dev
+  cloudflareLastStatus?: 'online' | 'offline' | 'error';
+  cloudflareLastSyncAt?: string;
 }
 
 

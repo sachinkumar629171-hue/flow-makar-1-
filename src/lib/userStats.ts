@@ -11,24 +11,18 @@ export function isUserLive(
 ): boolean {
   if (!user) return false;
 
-  // The active logged-in user is always live
+  // The active logged-in user viewing the dashboard is live
   if (currentUserId && user.id === currentUserId) return true;
   if (currentUserEmail && user.email && user.email.toLowerCase() === currentUserEmail.toLowerCase()) return true;
 
-  // If lastActive timestamp exists, strictly enforce the 2-minute (120s) threshold
+  // Real-time verification: User is ONLY LIVE if they have sent a request/heartbeat within the last 2 minutes (120,000 ms)
   if (user.lastActive) {
     if (typeof user.lastActive === 'string' && user.lastActive.toLowerCase().includes('now')) return true;
     const time = new Date(user.lastActive).getTime();
     if (!isNaN(time)) {
       const diffMs = Date.now() - time;
-      // Active only if a server request / heartbeat was received within 2 minutes (120,000 ms)
       return diffMs < 120000 && diffMs >= -60000;
     }
-  }
-
-  // If explicitly flagged online with no timestamp
-  if (user.isOnline === true && !user.lastActive) {
-    return true;
   }
 
   return false;
