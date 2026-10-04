@@ -1678,6 +1678,128 @@ app.get('/api/extension/verify', async (req, res) => {
   });
 });
 
+// POST /api/extension/cf-verify
+// Dedicated Gatekeeper Verification endpoint for Cloudflare Worker
+app.post('/api/extension/cf-verify', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const email = cleanEmailString(req.body.email || '');
+  const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
+  const clientVersion = req.body.version || req.body.extensionVersion || '';
+  const requiredVer = getActiveExtensionVersion('ultra');
+  const costs = db.promptConfig?.costs || { image: 20, video: 30 };
+
+  if (!email || !sessionToken) {
+    return res.status(401).json({
+      allowed: false,
+      success: false,
+      error: 'Missing email or sessionToken.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  // Check version first
+  if (clientVersion && clientVersion !== requiredVer) {
+    return res.status(426).json({
+      allowed: false,
+      updateRequired: true,
+      error: `Update Required: Please update your extension to version ${requiredVer}.`,
+      requiredVersion: requiredVer,
+      clientVersion,
+    });
+  }
+
+  // Fast RAM auth check (0 Supabase DB queries)
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+  const supa = getServerSupabase();
+  if ((!user || user.sessionToken !== sessionToken) && supa) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
+      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        const freshUser = {
+          id: supaUser.id,
+          name: supaUser.name,
+          email: supaUser.email,
+          password: supaUser.password,
+          plan: supaUser.plan || 'basic',
+          credits: Number(supaUser.credits) ?? 0,
+          maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
+          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+          role: supaUser.role || 'user',
+          status: supaUser.status || 'active',
+          extensionAccess: supaUser.extension_access !== false,
+          sessionToken: supaUser.session_token || sessionToken,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+          createdAt: supaUser.created_at || new Date().toISOString(),
+        };
+        const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === email));
+        if (existingIdx >= 0) db.users[existingIdx] = freshUser;
+        else db.users.push(freshUser);
+        user = freshUser;
+        saveStorage();
+      }
+    } catch {}
+  }
+
+  if (!user) {
+    return res.status(404).json({
+      allowed: false,
+      success: false,
+      error: 'User not registered. Please log in on FlowMaker portal.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  if (user.sessionToken && user.sessionToken !== sessionToken) {
+    return res.status(401).json({
+      allowed: false,
+      success: false,
+      error: 'Invalid or expired session token.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  if (user.status === 'suspended') {
+    return res.status(403).json({
+      allowed: false,
+      success: false,
+      error: 'Account suspended. Please contact support.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  const isUltraOrAdmin = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
+  const planDaysLeft = user.planDaysLeft ?? 0;
+  if (!isUltraOrAdmin || planDaysLeft <= 0) {
+    return res.status(403).json({
+      allowed: false,
+      success: false,
+      error: 'Ultra VIP Plan required to access live servers.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  // All checks passed!
+  return res.json({
+    allowed: true,
+    success: true,
+    requiredVersion: requiredVer,
+    costs,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      plan: user.plan,
+      credits: user.credits,
+      maxCredits: user.maxCredits,
+      planDaysLeft: user.planDaysLeft,
+    }
+  });
+});
+
 // POST /api/extension/verify
 app.post('/api/extension/verify', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
