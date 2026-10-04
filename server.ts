@@ -1096,9 +1096,11 @@ async function refreshSupabaseConfigIfNeeded() {
 }
 
 // GET /api/extension/user?email=...&token=...
-// Verifies member Gmail ID, returns profile, plan, credits, validity, and Server 1 & Server 2 prompts
+// Verifies member Gmail ID, returns profile, plan, credits, validity, and live dynamic Server Prompts (Cloudflare Option 2 or Option 1)
 app.get('/api/extension/user', async (req, res) => {
-  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
 
   await refreshSupabaseConfigIfNeeded();
 
@@ -1132,12 +1134,6 @@ app.get('/api/extension/user', async (req, res) => {
 
   // Mark user as actively online in memory and Supabase
   markUserOnline(email, reqToken);
-
-  const cacheKey = `${email}_${reqToken || ''}`;
-  const cached = extensionUserCache.get(cacheKey);
-  if (cached && (Date.now() - cached.time < 15000)) {
-    return res.json(cached.payload);
-  }
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
 
@@ -1201,10 +1197,8 @@ app.get('/api/extension/user', async (req, res) => {
   const planDaysLeft = user.planDaysLeft ?? 0;
   const extensionAllowed = user.extensionAccess !== false && user.status !== 'suspended' && planDaysLeft > 0;
 
-  const servers = db.promptConfig?.servers || [
-    { id: 'server1', label: 'Server 1', prompt: '' },
-    { id: 'server2', label: 'Server 2', prompt: '' },
-  ];
+  // Dynamically resolve real-time Option 2 (Cloudflare) or Option 1 (Local) servers
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
 
   const isUltraOrUnlimited = user.plan === 'ultra' || user.plan === 'unlimited';
@@ -1227,6 +1221,12 @@ app.get('/api/extension/user', async (req, res) => {
     version: activePlanVer,
     extensionVersion: activePlanVer,
     requiredVersion: activePlanVer,
+    source,
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
+    cloudflareOnline,
+    cloudflareUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
+    directPromptUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
+    relayMode: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? 'direct_cloudflare' : 'portal_local',
     user: {
       id: user.id,
       name: user.name,
@@ -1246,11 +1246,14 @@ app.get('/api/extension/user', async (req, res) => {
       isAllowed: extensionAllowed,
     },
     servers: canAccessPrompts ? servers : [],
+    server1: canAccessPrompts ? (serverMap.server1 || '') : '',
+    server2: canAccessPrompts ? (serverMap.server2 || '') : '',
+    server3: canAccessPrompts ? (serverMap.server3 || '') : '',
+    server4: canAccessPrompts ? (serverMap.server4 || '') : '',
     costs,
     serverTimestamp: new Date().toISOString(),
   };
 
-  extensionUserCache.set(cacheKey, { time: Date.now(), payload: responsePayload });
   res.json(responsePayload);
 });
 
@@ -1563,6 +1566,118 @@ app.post('/api/extension/prompts', async (req, res) => {
   });
 });
 
+// GET /api/extension/verify
+app.get('/api/extension/verify', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  const email = cleanEmailString(req.query.email as string || req.headers['x-user-email'] as string || '');
+  if (!email) {
+    return res.status(400).json({ success: false, error: 'Gmail ID (email) is required in query params.' });
+  }
+
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+
+  const supa = getServerSupabase();
+  if (supa) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
+      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        const freshUser = {
+          id: supaUser.id,
+          name: supaUser.name,
+          email: supaUser.email,
+          password: supaUser.password,
+          whatsapp: supaUser.whatsapp || '',
+          telegram: supaUser.telegram || '',
+          referralCode: supaUser.referral_code || '',
+          referredBy: supaUser.referred_by || '',
+          plan: supaUser.plan || 'basic',
+          credits: Number(supaUser.credits) ?? 0,
+          maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
+          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+          role: supaUser.role || 'user',
+          resellerId: supaUser.reseller_id,
+          resellerName: supaUser.reseller_name,
+          status: supaUser.status || 'active',
+          extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
+          canEditPrompts: supaUser.can_edit_prompts === true,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+          createdAt: supaUser.created_at || new Date().toISOString(),
+          avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+        };
+        const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === email));
+        if (existingIdx >= 0) {
+          db.users[existingIdx] = freshUser;
+        } else {
+          db.users.push(freshUser);
+        }
+        user = freshUser;
+        saveStorage();
+      }
+    } catch (err) {
+      console.error('Supabase verify user fetch error:', err);
+    }
+  }
+
+  if (!user) {
+    return res.status(404).json({ success: false, error: `No user found registered with Gmail ID: ${email}` });
+  }
+
+  if (checkAndConvertToBasic(user)) {
+    saveStorage();
+  }
+
+  const maxCredits = user.maxCredits || (user.plan === 'ultra' ? 45000 : 100);
+  const credits = user.credits ?? 0;
+  const creditsUsed = Math.max(0, maxCredits - credits);
+  const planDaysLeft = user.planDaysLeft ?? 0;
+  const extensionAllowed = user.extensionAccess !== false && user.status !== 'suspended' && planDaysLeft > 0;
+
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
+  const costs = db.promptConfig?.costs || { image: 20, video: 30 };
+  const isUltraUser = user.plan === 'ultra';
+  const verifyToken = user.sessionToken || '';
+  const canAccessPromptsVerify = isUltraUser && user.status === 'active';
+
+  res.json({
+    success: true,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      plan: user.plan,
+      planName: isUltraUser ? 'Ultra VIP Plan' : 'Basic Plan',
+      credits,
+      creditsLeft: credits,
+      maxCredits,
+      totalCredits: maxCredits,
+      creditsUsed,
+      sessionToken: verifyToken,
+      canAccessPrompts: canAccessPromptsVerify,
+      planDaysLeft,
+      status: user.status,
+      extensionAccess: user.extensionAccess !== false,
+      isAllowed: extensionAllowed,
+    },
+    source,
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
+    cloudflareOnline,
+    cloudflareUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
+    directPromptUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
+    relayMode: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? 'direct_cloudflare' : 'portal_local',
+    servers: isUltraUser ? servers : [],
+    server1: isUltraUser ? (serverMap.server1 || '') : '',
+    server2: isUltraUser ? (serverMap.server2 || '') : '',
+    server3: isUltraUser ? (serverMap.server3 || '') : '',
+    server4: isUltraUser ? (serverMap.server4 || '') : '',
+    costs,
+    serverTimestamp: new Date().toISOString(),
+  });
+});
+
 // POST /api/extension/verify
 app.post('/api/extension/verify', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
@@ -1685,19 +1800,97 @@ app.post('/api/extension/verify', async (req, res) => {
 });
 
 // GET /api/extension/servers
-// Returns the latest live Server 1 & Server 2 prompts and credit deduction costs
+// Secure Prompt Server Endpoint: Returns live prompts ONLY when authorized user credentials are provided
 app.get('/api/extension/servers', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
+  const email = cleanEmailString(req.query.email as string || req.headers['x-user-email'] as string || '');
+  const sessionToken = ((req.query.token || req.query.sessionToken || req.headers['x-session-token'] || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
+
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
   const ver = getActiveExtensionVersion('ultra');
 
+  // If no credentials provided, return server status only (0 cookies/prompts leaked publicly)
+  if (!email || !sessionToken) {
+    const rawServers = Array.isArray(db.promptConfig?.servers) && db.promptConfig.servers.length > 0
+      ? db.promptConfig.servers.map((s: any) => ({ id: s.id, label: s.label, prompt: '', lastUpdatedAt: s.lastUpdatedAt }))
+      : [
+          { id: 'server1', label: 'Server 1', prompt: '' },
+          { id: 'server2', label: 'Server 2', prompt: '' },
+        ];
+
+    return res.json({
+      success: true,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: ver,
+      extensionVersion: ver,
+      requiredVersion: ver,
+      authenticated: false,
+      servers: rawServers,
+      costs,
+      promptReminderMinutes,
+      serverTimestamp: new Date().toISOString(),
+    });
+  }
+
+  // Authenticate user against database / Supabase
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+  const supa = getServerSupabase();
+  if ((!user || user.sessionToken !== sessionToken) && supa) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
+      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        const freshUser = {
+          id: supaUser.id,
+          name: supaUser.name,
+          email: supaUser.email,
+          password: supaUser.password,
+          whatsapp: supaUser.whatsapp || '',
+          telegram: supaUser.telegram || '',
+          referralCode: supaUser.referral_code || '',
+          referredBy: supaUser.referred_by || '',
+          plan: supaUser.plan || 'basic',
+          credits: Number(supaUser.credits) ?? 0,
+          maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
+          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+          role: supaUser.role || 'user',
+          status: supaUser.status || 'active',
+          extensionAccess: supaUser.extension_access !== false,
+          sessionToken: supaUser.session_token || sessionToken,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+          createdAt: supaUser.created_at || new Date().toISOString(),
+        };
+        const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === email));
+        if (existingIdx >= 0) db.users[existingIdx] = freshUser;
+        else db.users.push(freshUser);
+        user = freshUser;
+      }
+    } catch {}
+  }
+
+  if (!user || user.status === 'suspended' || user.sessionToken !== sessionToken) {
+    return res.status(401).json({
+      success: false,
+      authenticated: false,
+      error: 'Authentication failed: Invalid credentials or session token.',
+      servers: [],
+      costs,
+      serverTimestamp: new Date().toISOString(),
+    });
+  }
+
+  // User is verified -> Deliver fresh Cloudflare or local prompt
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
+  const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
+
   res.json({
     success: true,
+    authenticated: true,
     serverOnline: true,
     serverStatus: 'online',
     version: ver,
@@ -1706,14 +1899,11 @@ app.get('/api/extension/servers', async (req, res) => {
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
     cloudflareOnline,
-    cloudflareUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
-    directPromptUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
-    relayMode: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? 'direct_cloudflare' : 'portal_local',
-    servers,
-    server1: serverMap.server1 || '',
-    server2: serverMap.server2 || '',
-    server3: serverMap.server3 || '',
-    server4: serverMap.server4 || '',
+    servers: isUltraUser ? servers : [],
+    server1: isUltraUser ? (serverMap.server1 || '') : '',
+    server2: isUltraUser ? (serverMap.server2 || '') : '',
+    server3: isUltraUser ? (serverMap.server3 || '') : '',
+    server4: isUltraUser ? (serverMap.server4 || '') : '',
     costs,
     promptReminderMinutes,
     serverTimestamp: new Date().toISOString(),
