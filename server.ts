@@ -1341,25 +1341,17 @@ app.get('/api/extension/session', async (req, res) => {
 // Returns servers, prompts, server online status, and extension version all together in ONE unified response!
 app.post('/api/extension/prompts', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const email = cleanEmailString(req.body.email || '');
   const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
   const clientVersion = req.body.version || req.body.extensionVersion || '';
 
-  await refreshSupabaseConfigIfNeeded();
-
-  // Get freshest required version, servers, and costs from db or Supabase
-  let requiredVer = getActiveExtensionVersion('ultra');
-  let servers = db.promptConfig?.servers || [
-    { id: 'server1', label: 'Server 1', prompt: '' },
-    { id: 'server2', label: 'Server 2', prompt: '' },
-  ];
-  let costs = db.promptConfig?.costs || { image: 20, video: 30 };
-
-  // Authoritative version from Admin Panel (planExtensions.ultra.version or promptConfig)
-  requiredVer = getActiveExtensionVersion('ultra');
-
-  const server1Prompt = servers.find(s => s.id === 'server1')?.prompt || servers[0]?.prompt || '';
-  const server2Prompt = servers.find(s => s.id === 'server2')?.prompt || servers[1]?.prompt || '';
+  // Dynamically resolve real-time prompts from Cloudflare Worker or local servers
+  const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
+  const costs = db.promptConfig?.costs || { image: 20, video: 30 };
+  const requiredVer = getActiveExtensionVersion('ultra');
 
   if (!email || !sessionToken) {
     return res.status(401).json({
@@ -1545,9 +1537,14 @@ app.post('/api/extension/prompts', async (req, res) => {
     extensionVersion: finalRequiredVer,
     requiredVersion: finalRequiredVer,
     clientVersion,
+    source,
+    cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
+    cloudflareOnline,
     servers, 
-    server1: server1Prompt,
-    server2: server2Prompt,
+    server1: serverMap.server1 || '',
+    server2: serverMap.server2 || '',
+    server3: serverMap.server3 || '',
+    server4: serverMap.server4 || '',
     costs,
     user: {
       id: user.id,
@@ -1832,16 +1829,13 @@ async function resolveActiveServers(): Promise<{
 }> {
   await refreshSupabaseConfigIfNeeded();
 
-  let servers = Array.isArray(db.promptConfig?.servers) && db.promptConfig.servers.length > 0
-    ? JSON.parse(JSON.stringify(db.promptConfig.servers))
-    : [
-        { id: 'server1', label: 'Server 1', prompt: '' },
-        { id: 'server2', label: 'Server 2', prompt: '' },
-      ];
+  const cloudflareEnabled = db.promptConfig?.cloudflareEnabled !== undefined
+    ? Boolean(db.promptConfig.cloudflareEnabled)
+    : true;
+  const cloudflareUrl = (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim();
 
-  const cloudflareEnabled = Boolean(db.promptConfig?.cloudflareEnabled);
-  const cloudflareUrl = (db.promptConfig?.cloudflareUrl || '').trim();
-
+  let servers: any[] = [];
+  const serverMap: Record<string, string> = {};
   let source: 'cloudflare' | 'local' = 'local';
   let cloudflareOnline = false;
 
@@ -1857,48 +1851,43 @@ async function resolveActiveServers(): Promise<{
         },
         signal: AbortSignal.timeout(4000),
       });
+
       if (resp.ok) {
         const cfData = await resp.json();
         if (cfData && typeof cfData === 'object') {
           source = 'cloudflare';
           cloudflareOnline = true;
 
-          // Map to local server boxes
-          servers = servers.map((srv: any, idx: number) => {
-            const keyNum = idx + 1;
-            const cfKey = `server${keyNum}`;
-            if (cfData[cfKey] !== undefined) {
-              return {
-                ...srv,
-                prompt: typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]),
-                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
-                source: 'cloudflare'
-              };
-            }
-            if (srv.id && cfData[srv.id] !== undefined) {
-              return {
-                ...srv,
-                prompt: typeof cfData[srv.id] === 'object' ? JSON.stringify(cfData[srv.id]) : String(cfData[srv.id]),
-                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
-                source: 'cloudflare'
-              };
-            }
-            return srv;
-          });
-
-          // If Cloudflare has more servers (e.g. server3, server4) that match, add them
+          // Directly map all active servers from live Cloudflare Worker
           for (let i = 1; i <= 8; i++) {
             const key = `server${i}`;
-            if (cfData[key] && !servers.find((s: any) => s.id === key)) {
+            if (cfData[key] !== undefined && cfData[key] !== '') {
+              const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
               servers.push({
                 id: key,
                 label: `Server ${i}`,
-                prompt: typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]),
+                prompt: promptVal,
                 lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
                 source: 'cloudflare'
               });
+              serverMap[key] = promptVal;
             }
           }
+
+          // Also capture any non-indexed server keys
+          Object.keys(cfData).forEach(k => {
+            if (k.startsWith('server') && !serverMap[k] && cfData[k]) {
+              const promptVal = typeof cfData[k] === 'object' ? JSON.stringify(cfData[k]) : String(cfData[k]);
+              servers.push({
+                id: k,
+                label: k.toUpperCase(),
+                prompt: promptVal,
+                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+                source: 'cloudflare'
+              });
+              serverMap[k] = promptVal;
+            }
+          });
         }
       }
     } catch (err: any) {
@@ -1906,11 +1895,20 @@ async function resolveActiveServers(): Promise<{
     }
   }
 
-  const serverMap: Record<string, string> = {};
-  servers.forEach((s: any, idx: number) => {
-    serverMap[`server${idx + 1}`] = s.prompt || '';
-    if (s.id) serverMap[s.id] = s.prompt || '';
-  });
+  // Fallback to local admin prompt boxes if Cloudflare failed or is explicitly disabled
+  if (servers.length === 0) {
+    const localSrvs = Array.isArray(db.promptConfig?.servers) && db.promptConfig.servers.length > 0
+      ? JSON.parse(JSON.stringify(db.promptConfig.servers))
+      : [
+          { id: 'server1', label: 'Server 1', prompt: '' },
+          { id: 'server2', label: 'Server 2', prompt: '' },
+        ];
+    servers = localSrvs;
+    servers.forEach((s: any, idx: number) => {
+      serverMap[`server${idx + 1}`] = s.prompt || '';
+      if (s.id) serverMap[s.id] = s.prompt || '';
+    });
+  }
 
   return {
     servers,
