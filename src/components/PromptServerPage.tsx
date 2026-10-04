@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiUrl } from '../config/api';
 import { 
   X, 
   Save, 
@@ -132,7 +133,7 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     }
   }, [promptConfig]);
 
-  // Test Cloudflare Worker integration
+  // Test Cloudflare Worker integration (Direct Edge + Server Fallback)
   const handleTestCloudflare = async () => {
     const cleanUrl = cloudflareUrl.trim();
     if (!cleanUrl) {
@@ -146,13 +147,85 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     setIsTestingCloudflare(true);
     setCloudflareTestResult(null);
 
+    const startTime = Date.now();
+
+    // Strategy 1: Direct Browser Ping to Cloudflare Worker (Fastest, zero proxy bottleneck)
     try {
-      const res = await fetch('/api/cloudflare/test', {
+      const directRes = await fetch(cleanUrl, {
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' },
+        signal: AbortSignal.timeout(4000),
+      });
+
+      if (directRes.ok) {
+        const directText = await directRes.text();
+        let cfData: any = null;
+        try {
+          cfData = JSON.parse(directText);
+        } catch (e) {
+          throw new Error('Cloudflare Worker response was not valid JSON');
+        }
+
+        const latencyMs = Date.now() - startTime;
+        const keysFound = Object.keys(cfData).filter(k => k.startsWith('server') && Boolean(cfData[k]));
+
+        setCloudflareTestResult({
+          success: true,
+          message: `Live Connection Successful! Found ${keysFound.length} active server keys (${keysFound.join(', ')}).`,
+          latencyMs,
+          serversFound: keysFound,
+          updatedAt: cfData.updatedAt || new Date().toISOString(),
+        });
+
+        // Automatically map servers
+        setLocalServers(prev => {
+          let updated = [...prev];
+          updated = updated.map((srv, idx) => {
+            const keyNum = idx + 1;
+            const cfKey = `server${keyNum}`;
+            if (cfData[cfKey] !== undefined && cfData[cfKey] !== '') {
+              const promptVal = typeof cfData[cfKey] === 'object' ? JSON.stringify(cfData[cfKey]) : String(cfData[cfKey]);
+              return { ...srv, prompt: promptVal, lastUpdatedAt: cfData.updatedAt || new Date().toISOString() };
+            }
+            return srv;
+          });
+
+          for (let i = 1; i <= 8; i++) {
+            const key = `server${i}`;
+            if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
+              const promptVal = typeof cfData[key] === 'object' ? JSON.stringify(cfData[key]) : String(cfData[key]);
+              updated.push({
+                id: key,
+                label: `Server ${i}`,
+                prompt: promptVal,
+                lastUpdatedAt: cfData.updatedAt || new Date().toISOString(),
+                updatedBy: 'Cloudflare Worker',
+              });
+            }
+          }
+          return updated;
+        });
+
+        setIsTestingCloudflare(false);
+        return;
+      }
+    } catch (directErr: any) {
+      console.warn('Direct Cloudflare fetch failed, trying backend proxy:', directErr?.message);
+    }
+
+    // Strategy 2: Backend Proxy Fallback via apiUrl
+    try {
+      const res = await fetch(apiUrl('/api/cloudflare/test'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cloudflareUrl: cleanUrl }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch (e) {
+        throw new Error(`Server returned non-JSON response: ${rawText.slice(0, 120)}`);
+      }
 
       if (data.success) {
         setCloudflareTestResult({
@@ -163,12 +236,10 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
           updatedAt: data.updatedAt,
         });
 
-        // Automatically sync latest prompts from Cloudflare into local server boxes
         if (data.data) {
           const cfData = data.data;
           setLocalServers(prev => {
             let updated = [...prev];
-            // Update existing boxes
             updated = updated.map((srv, idx) => {
               const keyNum = idx + 1;
               const cfKey = `server${keyNum}`;
@@ -179,7 +250,6 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
               return srv;
             });
 
-            // If Cloudflare has more servers (e.g. server3, server4) that aren't in local list, add them!
             for (let i = 1; i <= 8; i++) {
               const key = `server${i}`;
               if (cfData[key] && !updated.find(s => s.id === key || s.label.toLowerCase() === `server ${i}`)) {
