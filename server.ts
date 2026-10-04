@@ -67,6 +67,126 @@ function getServerSupabase(): SupabaseClient | null {
   return null;
 }
 
+const SERVER_ALLOWED_USER_COLUMNS = new Set([
+  'id',
+  'name',
+  'email',
+  'password',
+  'plan',
+  'max_credits',
+  'credits',
+  'plan_days_left',
+  'session_token',
+  'is_online',
+  'whatsapp',
+  'telegram',
+  'referral_code',
+  'referred_by',
+  'reseller_id',
+  'created_at'
+]);
+
+const serverKnownMissingCols = new Set<string>();
+
+function serverExtractMissingColumn(error: any): string | null {
+  if (!error) return null;
+  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`;
+  const match = msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
+                msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? of relation/i) ||
+                msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i);
+  return match ? match[1] : null;
+}
+
+function formatServerSupabaseUserPayload(user: Record<string, any>): Record<string, any> {
+  const payload: Record<string, any> = {};
+  if (user.id !== undefined) payload.id = String(user.id);
+  if (user.name !== undefined) payload.name = String(user.name);
+  if (user.email !== undefined) payload.email = String(user.email).toLowerCase().trim();
+  if (user.password !== undefined) payload.password = String(user.password || '123456');
+  if (user.plan !== undefined) payload.plan = String(user.plan || 'basic');
+  
+  if (user.maxCredits !== undefined) payload.max_credits = Number(user.maxCredits) || 100;
+  else if (user.max_credits !== undefined) payload.max_credits = Number(user.max_credits) || 100;
+
+  if (user.credits !== undefined) payload.credits = Number(user.credits) ?? 0;
+  
+  if (user.planDaysLeft !== undefined) payload.plan_days_left = Number(user.planDaysLeft) ?? 30;
+  else if (user.plan_days_left !== undefined) payload.plan_days_left = Number(user.plan_days_left) ?? 30;
+
+  if (user.sessionToken !== undefined) payload.session_token = String(user.sessionToken || '');
+  else if (user.session_token !== undefined) payload.session_token = String(user.session_token || '');
+
+  if (user.isOnline !== undefined) payload.is_online = Boolean(user.isOnline);
+  else if (user.is_online !== undefined) payload.is_online = Boolean(user.is_online);
+
+  if (user.whatsapp !== undefined && user.whatsapp !== null) payload.whatsapp = String(user.whatsapp);
+  if (user.telegram !== undefined && user.telegram !== null) payload.telegram = String(user.telegram);
+  
+  if (user.referralCode !== undefined && user.referralCode !== null) payload.referral_code = String(user.referralCode);
+  else if (user.referral_code !== undefined && user.referral_code !== null) payload.referral_code = String(user.referral_code);
+
+  if (user.referredBy !== undefined && user.referredBy !== null) payload.referred_by = String(user.referredBy);
+  else if (user.referred_by !== undefined && user.referred_by !== null) payload.referred_by = String(user.referred_by);
+
+  if (user.resellerId !== undefined && user.resellerId !== null) payload.reseller_id = String(user.resellerId);
+  else if (user.reseller_id !== undefined && user.reseller_id !== null) payload.reseller_id = String(user.reseller_id);
+
+  if (user.createdAt !== undefined) payload.created_at = String(user.createdAt);
+  else if (user.created_at !== undefined) payload.created_at = String(user.created_at);
+
+  for (const col of serverKnownMissingCols) {
+    delete payload[col];
+  }
+
+  return payload;
+}
+
+async function safeServerSupabaseUserUpsert(
+  supa: SupabaseClient,
+  user: Record<string, any>
+): Promise<boolean> {
+  if (!supa || !user) return false;
+
+  let payload = formatServerSupabaseUserPayload(user);
+  if (!payload.email && !payload.id) return false;
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const { error } = await supa.from('users').upsert(payload, { onConflict: 'id' });
+      if (!error) return true;
+
+      const missingCol = serverExtractMissingColumn(error);
+      if (missingCol && payload[missingCol] !== undefined) {
+        serverKnownMissingCols.add(missingCol);
+        delete payload[missingCol];
+        continue;
+      }
+
+      if (payload.email) {
+        const { id, ...updateFields } = payload;
+        const { error: updateErr } = await supa.from('users').update(updateFields).eq('email', payload.email.toLowerCase());
+        if (!updateErr) return true;
+        const missingUpdateCol = serverExtractMissingColumn(updateErr);
+        if (missingUpdateCol && payload[missingUpdateCol] !== undefined) {
+          serverKnownMissingCols.add(missingUpdateCol);
+          delete payload[missingUpdateCol];
+          continue;
+        }
+      }
+      break;
+    } catch (err: any) {
+      const missingCol = serverExtractMissingColumn(err);
+      if (missingCol && payload[missingCol] !== undefined) {
+        serverKnownMissingCols.add(missingCol);
+        delete payload[missingCol];
+        continue;
+      }
+      break;
+    }
+  }
+  return false;
+}
+
 async function safeServerSupabaseUserUpdate(
   supa: SupabaseClient,
   userId: string,
@@ -75,37 +195,105 @@ async function safeServerSupabaseUserUpdate(
 ): Promise<boolean> {
   if (!supa || (!userId && !userEmail)) return false;
   const fullUser = db.users.find(u => u.id === userId || (userEmail && u.email && cleanEmailString(u.email) === cleanEmailString(userEmail)));
-  if (!fullUser) return false;
 
-  const recordToUpsert: Record<string, any> = {
-    id: fullUser.id,
-    email: fullUser.email,
-    name: fullUser.name,
-    password: fullUser.password || 'user123',
-    plan: fullUser.plan || 'basic',
-    credits: fullUser.credits ?? 0,
-    max_credits: fullUser.maxCredits ?? 100,
-    plan_days_left: fullUser.planDaysLeft ?? 30,
-    session_token: fullUser.sessionToken || '',
-    is_online: fullUser.isOnline ?? true,
-    whatsapp: fullUser.whatsapp || '',
-    telegram: fullUser.telegram || '',
-    referral_code: fullUser.referralCode || '',
-    referred_by: fullUser.referredBy || '',
-    reseller_id: fullUser.resellerId || null,
-    created_at: fullUser.createdAt || new Date().toISOString(),
-    last_active: fullUser.lastActive || new Date().toISOString(),
-    ...fields
-  };
+  const cleanFields: Record<string, any> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined && SERVER_ALLOWED_USER_COLUMNS.has(k) && !serverKnownMissingCols.has(k)) {
+      cleanFields[k] = v;
+    }
+  }
 
-  try {
-    const { error } = await supa.from('users').upsert(recordToUpsert, { onConflict: 'id' });
-    if (!error) return true;
-    console.error('Supabase upsert error in safeServerSupabaseUserUpdate:', error);
-  } catch (err) {
-    console.error('safeServerSupabaseUserUpdate upsert catch error:', err);
+  if (Object.keys(cleanFields).length === 0 && !fullUser) return true;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      if (userId) {
+        const { error, data } = await supa.from('users').update(cleanFields).eq('id', userId).select('id');
+        if (!error && data && data.length > 0) return true;
+        if (error) {
+          const missingCol = serverExtractMissingColumn(error);
+          if (missingCol && cleanFields[missingCol] !== undefined) {
+            serverKnownMissingCols.add(missingCol);
+            delete cleanFields[missingCol];
+            continue;
+          }
+        }
+      }
+
+      if (userEmail) {
+        const { error, data } = await supa.from('users').update(cleanFields).eq('email', userEmail.toLowerCase().trim()).select('id');
+        if (!error && data && data.length > 0) return true;
+        if (error) {
+          const missingCol = serverExtractMissingColumn(error);
+          if (missingCol && cleanFields[missingCol] !== undefined) {
+            serverKnownMissingCols.add(missingCol);
+            delete cleanFields[missingCol];
+            continue;
+          }
+        }
+      }
+
+      if (fullUser) {
+        return await safeServerSupabaseUserUpsert(supa, {
+          ...fullUser,
+          ...cleanFields,
+          id: userId || fullUser.id,
+          email: userEmail || fullUser.email,
+        });
+      }
+      return false;
+    } catch (err: any) {
+      const missingCol = serverExtractMissingColumn(err);
+      if (missingCol && cleanFields[missingCol] !== undefined) {
+        serverKnownMissingCols.add(missingCol);
+        delete cleanFields[missingCol];
+        continue;
+      }
+      break;
+    }
   }
   return false;
+}
+
+async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptConfig: any): Promise<void> {
+  if (!supa || !promptConfig) return;
+  try {
+    await supa.from('app_config').upsert({
+      key: 'admin_config_prompts',
+      value: promptConfig,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'key' });
+  } catch {}
+
+  try {
+    const record: Record<string, any> = {
+      id: 'admin_config_prompts',
+      email: 'admin_config_prompts@system.local',
+      name: JSON.stringify(promptConfig),
+      password: 'config_sys_admin_prompts_123',
+      plan: 'basic',
+      credits: 0,
+      max_credits: 0,
+      plan_days_left: 0,
+      session_token: 'sys_prompts',
+      is_online: false,
+      created_at: '2025-01-01T00:00:00.000Z'
+    };
+    for (const col of serverKnownMissingCols) {
+      delete record[col];
+    }
+    const { error } = await supa.from('users').upsert(record, { onConflict: 'id' });
+    if (error) {
+      const missingCol = serverExtractMissingColumn(error);
+      if (missingCol) {
+        serverKnownMissingCols.add(missingCol);
+        delete record[missingCol];
+        await supa.from('users').upsert(record, { onConflict: 'id' });
+      }
+    }
+  } catch (err) {
+    console.error('safeSaveSupabasePromptConfig error:', err);
+  }
 }
 
 const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
@@ -306,6 +494,51 @@ app.get('/api/extension/profile/:userId', (req, res) => {
   });
 });
 
+// In-memory debounce cache to protect Supabase free tier quota from repeated writes
+const lastOnlineSupabaseSync = new Map<string, number>();
+
+// Helper to mark a user as Live / Online whenever a server request or credit deduction happens
+function markUserOnline(emailOrId?: string, sessionToken?: string): void {
+  if (!emailOrId && !sessionToken) return;
+  const cleanEmail = emailOrId ? cleanEmailString(emailOrId) : '';
+  const now = new Date().toISOString();
+
+  let user = db.users.find(u => 
+    (emailOrId && u.id === emailOrId) || 
+    (cleanEmail && u.email && cleanEmailString(u.email) === cleanEmail) ||
+    (sessionToken && u.sessionToken === sessionToken)
+  );
+
+  if (user) {
+    user.isOnline = true;
+    user.lastActive = now;
+    if (sessionToken && (!user.sessionToken || user.sessionToken.length < 5)) {
+      user.sessionToken = sessionToken;
+    }
+    saveStorage();
+  }
+
+  // Quota Protection: Sync online status to Supabase at most once every 90 seconds per user
+  const syncKey = (user?.id || cleanEmail || sessionToken || '').toLowerCase();
+  const lastSync = lastOnlineSupabaseSync.get(syncKey) || 0;
+  const nowMs = Date.now();
+
+  if (nowMs - lastSync > 90000) {
+    lastOnlineSupabaseSync.set(syncKey, nowMs);
+    const supa = getServerSupabase();
+    if (supa) {
+      const targetId = user?.id || (emailOrId && !emailOrId.includes('@') ? emailOrId : '');
+      const targetEmail = cleanEmail || (user?.email ? cleanEmailString(user.email) : '');
+      if (targetId || targetEmail) {
+        safeServerSupabaseUserUpdate(supa, targetId, targetEmail, {
+          is_online: true,
+          ...(sessionToken ? { session_token: sessionToken } : {})
+        }).catch(() => {});
+      }
+    }
+  }
+}
+
 // ======================== API ROUTES ========================
 
 // Health check
@@ -371,20 +604,21 @@ app.get('/api/users', async (req, res) => {
       changed = true;
     }
     let isLive = false;
-    if (u.isOnline) {
-      if (!u.lastActive || (typeof u.lastActive === 'string' && u.lastActive.toLowerCase().includes('now'))) {
-        isLive = true;
-      } else {
-        const t = new Date(u.lastActive).getTime();
-        isLive = isNaN(t) || (now - t < 180000 && now - t > -60000);
-      }
-    } else if (u.lastActive) {
+    if (u.lastActive) {
       if (typeof u.lastActive === 'string' && u.lastActive.toLowerCase().includes('now')) {
         isLive = true;
       } else {
         const t = new Date(u.lastActive).getTime();
+        // Strict 2-minute (120,000 ms) window: if no response/request in 2 minutes, mark offline
         isLive = !isNaN(t) && (now - t < 120000 && now - t >= -60000);
       }
+    } else if (u.isOnline) {
+      isLive = true;
+    }
+
+    if (!isLive && u.isOnline) {
+      u.isOnline = false;
+      changed = true;
     }
 
     const maxCredits = u.maxCredits || (u.plan === 'ultra' ? 45000 : 100);
@@ -429,29 +663,9 @@ app.post('/api/users/signup', async (req, res) => {
 
     const supa = getServerSupabase();
     if (supa) {
-      try {
-        await supa.from('users').upsert({
-          id: existing.id,
-          email: existing.email,
-          name: existing.name,
-          password: existing.password,
-          plan: existing.plan,
-          credits: existing.credits,
-          max_credits: existing.maxCredits,
-          plan_days_left: existing.planDaysLeft,
-          session_token: existing.sessionToken || '',
-          is_online: existing.isOnline ?? true,
-          whatsapp: existing.whatsapp || '',
-          telegram: existing.telegram || '',
-          referral_code: existing.referralCode || '',
-          referred_by: existing.referredBy || '',
-          reseller_id: existing.resellerId || null,
-          created_at: existing.createdAt,
-          last_active: existing.lastActive || new Date().toISOString(),
-        });
-      } catch (err) {
+      safeServerSupabaseUserUpsert(supa, existing).catch(err => {
         console.error('Supabase signup update error:', err);
-      }
+      });
     }
 
     return res.json({ success: true, user: existing });
@@ -501,29 +715,9 @@ app.post('/api/users/signup', async (req, res) => {
 
   const supa = getServerSupabase();
   if (supa) {
-    try {
-      await supa.from('users').upsert({
-        id: newUser.id,
-        email: newUser.email,
-        name: newUser.name,
-        password: newUser.password,
-        plan: newUser.plan,
-        credits: newUser.credits,
-        max_credits: newUser.maxCredits,
-        plan_days_left: newUser.planDaysLeft,
-        session_token: newUser.sessionToken || '',
-        is_online: newUser.isOnline ?? true,
-        whatsapp: newUser.whatsapp || '',
-        telegram: newUser.telegram || '',
-        referral_code: newUser.referralCode || '',
-        referred_by: newUser.referredBy || '',
-        reseller_id: newUser.resellerId || null,
-        created_at: newUser.createdAt,
-        last_active: newUser.lastActive || new Date().toISOString(),
-      });
-    } catch (err) {
+    safeServerSupabaseUserUpsert(supa, newUser).catch(err => {
       console.error('Supabase signup insert error:', err);
-    }
+    });
   }
 
   res.json({ success: true, user: newUser });
@@ -747,6 +941,7 @@ app.post('/api/users/update', async (req, res) => {
     if (data.telegram !== undefined) supaData.telegram = data.telegram;
     if (data.resellerId !== undefined) supaData.reseller_id = data.resellerId;
     if (data.resellerName !== undefined) supaData.reseller_name = data.resellerName;
+    if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
 
     safeServerSupabaseUserUpdate(supa, currentUser.id, currentUser.email, supaData).catch(err => {
       console.error('Server Supabase user update error:', err);
@@ -804,6 +999,11 @@ function getActiveExtensionVersion(plan: string = 'ultra'): string {
   return db.planExtensions?.ultra?.version || '3.2.0';
 }
 
+function normalizeVersion(v: any): string {
+  if (!v) return '';
+  return String(v).trim().toLowerCase().replace(/^v/, '');
+}
+
 // ======================== EXTENSION API ENDPOINTS ========================
 
 // In-memory cache to debounce and stop repeated spam requests from extensions
@@ -830,12 +1030,48 @@ async function refreshSupabaseConfigIfNeeded() {
       } catch {}
     }
 
-    const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-    if (promptRow?.name) {
+    // 1. First check app_config table for prompt config
+    let promptParsed: any = null;
+    try {
+      const { data: appConfigRow } = await supa.from('app_config').select('value').eq('key', 'admin_config_prompts').maybeSingle();
+      if (appConfigRow?.value) {
+        promptParsed = typeof appConfigRow.value === 'string' ? JSON.parse(appConfigRow.value) : appConfigRow.value;
+      }
+    } catch {}
+
+    // 2. Fallback check users table
+    if (!promptParsed) {
       try {
-        db.promptConfig = JSON.parse(promptRow.name);
-        saveStorage();
+        const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+        if (promptRow?.name) {
+          promptParsed = JSON.parse(promptRow.name);
+        }
       } catch {}
+    }
+
+    if (promptParsed && Array.isArray(promptParsed.servers)) {
+      const localHasPrompts = db.promptConfig?.servers?.some((s: any) => s.prompt && s.prompt.trim());
+      const incomingHasPrompts = promptParsed.servers.some((s: any) => s.prompt && s.prompt.trim());
+
+      if (incomingHasPrompts || !localHasPrompts) {
+        // Merge without losing non-empty prompts
+        const mergedServers = promptParsed.servers.map((inSrv: any) => {
+          const localSrv = db.promptConfig?.servers?.find((ls: any) => ls.id === inSrv.id);
+          if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
+            return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
+          }
+          return inSrv;
+        });
+        db.promptConfig = {
+          ...db.promptConfig,
+          ...promptParsed,
+          servers: mergedServers,
+        };
+        saveStorage();
+      } else if (localHasPrompts && !incomingHasPrompts) {
+        // Local memory has active prompts, but Supabase has empty ones. Push to Supabase to self-heal!
+        safeSaveSupabasePromptConfig(supa, db.promptConfig);
+      }
     }
     lastSupabaseConfigFetchTime = Date.now();
   } catch {}
@@ -845,6 +1081,8 @@ async function refreshSupabaseConfigIfNeeded() {
 // Verifies member Gmail ID, returns profile, plan, credits, validity, and Server 1 & Server 2 prompts
 app.get('/api/extension/user', async (req, res) => {
   res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+
+  await refreshSupabaseConfigIfNeeded();
 
   let email = cleanEmailString(req.query.email as string || '');
   const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
@@ -873,6 +1111,9 @@ app.get('/api/extension/user', async (req, res) => {
       error: 'Authentication failed: Both Gmail ID (email) and session token (token number) are required.' 
     });
   }
+
+  // Mark user as actively online in memory and Supabase
+  markUserOnline(email, reqToken);
 
   const cacheKey = `${email}_${reqToken || ''}`;
   const cached = extensionUserCache.get(cacheKey);
@@ -942,18 +1183,6 @@ app.get('/api/extension/user', async (req, res) => {
   const planDaysLeft = user.planDaysLeft ?? 0;
   const extensionAllowed = user.extensionAccess !== false && user.status !== 'suspended' && planDaysLeft > 0;
 
-  // Check if Supabase has fresher promptConfig
-  if (supa) {
-    try {
-      const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-      if (promptRow?.name) {
-        try {
-          db.promptConfig = JSON.parse(promptRow.name);
-        } catch {}
-      }
-    } catch {}
-  }
-
   const servers = db.promptConfig?.servers || [
     { id: 'server1', label: 'Server 1', prompt: '' },
     { id: 'server2', label: 'Server 2', prompt: '' },
@@ -1016,6 +1245,8 @@ app.get('/api/extension/session', async (req, res) => {
   if (!token) {
     return res.status(400).json({ success: false, error: 'Session token is required.' });
   }
+
+  markUserOnline('', token);
 
   let user = db.users.find(u => u.sessionToken === token);
   const supa = getServerSupabase();
@@ -1130,94 +1361,70 @@ app.post('/api/extension/prompts', async (req, res) => {
   }
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
-  if (supa) {
+
+  // Quota Protection: If user exists in fast RAM with matching session token, authenticate instantly with 0 database hits
+  const supa = getServerSupabase();
+  if ((!user || user.sessionToken !== sessionToken) && supa) {
     try {
       const { data: supaUser } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
       if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
-        const liveToken = supaUser.session_token || supaUser.sessionToken || '';
-        if (liveToken && liveToken !== sessionToken) {
-          return res.status(403).json({
-            success: false,
-            serverOnline: true,
-            serverStatus: 'online',
-            version: requiredVer,
-            extensionVersion: requiredVer,
-            requiredVersion: requiredVer,
-            error: 'Access Denied: Invalid or expired session token. Please log in to the portal.',
-            servers: [],
-            server1: '',
-            server2: '',
-            costs,
-            serverTimestamp: new Date().toISOString(),
-          });
-        }
-        if (supaUser.status === 'suspended') {
-          return res.status(403).json({ 
-            success: false, 
-            serverOnline: true, 
-            serverStatus: 'online',
-            version: requiredVer,
-            extensionVersion: requiredVer,
-            requiredVersion: requiredVer,
-            error: 'Account suspended.', 
-            servers: [],
-            server1: '',
-            server2: '',
-            costs,
-            serverTimestamp: new Date().toISOString(),
-          });
-        }
-        if (supaUser.plan !== 'ultra' && supaUser.plan !== 'unlimited' && supaUser.role !== 'admin') {
-          return res.status(403).json({ 
-            success: false, 
-            serverOnline: true, 
-            serverStatus: 'online',
-            version: requiredVer,
-            extensionVersion: requiredVer,
-            requiredVersion: requiredVer,
-            error: 'Prompts are exclusive to Ultra VIP members.', 
-            servers: [],
-            server1: '',
-            server2: '',
-            costs,
-            serverTimestamp: new Date().toISOString(),
-          });
-        }
-        
-        return res.json({ 
-          success: true, 
-          serverOnline: true, 
-          serverStatus: 'online',
+        const freshUser = {
+          id: supaUser.id,
+          name: supaUser.name,
           email: supaUser.email,
-          sessionToken: sessionToken,
-          token: sessionToken,
-          version: requiredVer,
-          extensionVersion: requiredVer,
-          requiredVersion: requiredVer,
-          clientVersion,
-          servers, 
-          server1: server1Prompt,
-          server2: server2Prompt,
-          costs,
-          user: {
-            id: supaUser.id,
-            name: supaUser.name,
-            email: supaUser.email,
-            plan: supaUser.plan || 'ultra',
-            credits: Number(supaUser.credits) || 0,
-            maxCredits: Number(supaUser.max_credits) || 45000,
-            planDaysLeft: Number(supaUser.plan_days_left) || 30,
-            status: supaUser.status || 'active',
-          },
-          serverTimestamp: new Date().toISOString() 
-        });
+          password: supaUser.password,
+          whatsapp: supaUser.whatsapp || '',
+          telegram: supaUser.telegram || '',
+          referralCode: supaUser.referral_code || '',
+          referredBy: supaUser.referred_by || '',
+          plan: supaUser.plan || 'basic',
+          credits: Number(supaUser.credits) ?? 0,
+          maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
+          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+          role: supaUser.role || 'user',
+          resellerId: supaUser.reseller_id,
+          resellerName: supaUser.reseller_name,
+          status: supaUser.status || 'active',
+          extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
+          canEditPrompts: supaUser.can_edit_prompts === true,
+          sessionToken: supaUser.session_token || sessionToken,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+          createdAt: supaUser.created_at || new Date().toISOString(),
+          avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+        };
+        const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === email));
+        if (existingIdx >= 0) {
+          db.users[existingIdx] = freshUser;
+        } else {
+          db.users.push(freshUser);
+        }
+        user = freshUser;
+        saveStorage();
       }
     } catch (e) {
       console.error('Prompt fetch error:', e);
     }
   }
 
-  if (!user || (user.sessionToken && user.sessionToken !== sessionToken) || (user.plan !== 'ultra' && user.plan !== 'unlimited')) {
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      error: 'Account not found. Please log in to the portal.',
+      servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      serverTimestamp: new Date().toISOString(),
+    });
+  }
+
+  if (user.sessionToken && user.sessionToken !== sessionToken) {
     return res.status(403).json({
       success: false,
       serverOnline: true,
@@ -1225,12 +1432,87 @@ app.post('/api/extension/prompts', async (req, res) => {
       version: requiredVer,
       extensionVersion: requiredVer,
       requiredVersion: requiredVer,
-      error: 'Access Denied: You must be logged into an Ultra account on the portal to access server prompts.',
+      error: 'Access Denied: Invalid or expired session token. Please log in to the portal.',
       servers: [],
       server1: '',
       server2: '',
       costs,
       serverTimestamp: new Date().toISOString(),
+    });
+  }
+
+  if (user.status === 'suspended') {
+    return res.status(403).json({ 
+      success: false, 
+      serverOnline: true, 
+      serverStatus: 'online',
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      error: 'Account suspended.', 
+      servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      serverTimestamp: new Date().toISOString(),
+    });
+  }
+
+  if (user.plan !== 'ultra' && user.plan !== 'unlimited' && user.role !== 'admin') {
+    return res.status(403).json({ 
+      success: false, 
+      serverOnline: true, 
+      serverStatus: 'online',
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      error: 'Prompts are exclusive to Ultra VIP members.', 
+      servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      serverTimestamp: new Date().toISOString(),
+    });
+  }
+
+  // Mark user as actively live/online in server and Supabase
+  markUserOnline(email, sessionToken);
+
+  // Check if extension version matches the Admin Panel required version
+  const userPlan = user.plan || 'ultra';
+  const finalRequiredVer = getActiveExtensionVersion(userPlan);
+  const isOutdated = clientVersion && (normalizeVersion(clientVersion) !== normalizeVersion(finalRequiredVer));
+
+  if (isOutdated) {
+    return res.status(426).json({
+      success: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: finalRequiredVer,
+      extensionVersion: finalRequiredVer,
+      requiredVersion: finalRequiredVer,
+      clientVersion,
+      downloadUrl: `/api/extensions/download/${userPlan}`,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Please download the latest update (${finalRequiredVer}) from the portal to access server prompts.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Please download the latest update (${finalRequiredVer}) from the portal to access server prompts.`,
+      servers: [],
+      server1: '',
+      server2: '',
+      costs,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        plan: userPlan,
+        credits: Number(user.credits) || 0,
+        maxCredits: Number(user.maxCredits) || 45000,
+        planDaysLeft: Number(user.planDaysLeft) || 30,
+        status: user.status || 'active',
+      },
+      serverTimestamp: new Date().toISOString()
     });
   }
 
@@ -1241,9 +1523,9 @@ app.post('/api/extension/prompts', async (req, res) => {
     email: user.email,
     sessionToken: sessionToken,
     token: sessionToken,
-    version: requiredVer,
-    extensionVersion: requiredVer,
-    requiredVersion: requiredVer,
+    version: finalRequiredVer,
+    extensionVersion: finalRequiredVer,
+    requiredVersion: finalRequiredVer,
     clientVersion,
     servers, 
     server1: server1Prompt,
@@ -1331,6 +1613,9 @@ app.post('/api/extension/verify', async (req, res) => {
   if (user.password && password && user.password !== password) {
     return res.status(401).json({ success: false, error: 'Incorrect password. Please check your Gmail ID and password.' });
   }
+
+  // Mark user as actively live/online in server and Supabase
+  markUserOnline(email, user.sessionToken);
 
   const maxCredits = user.maxCredits || (user.plan === 'ultra' ? 45000 : 100);
   const credits = user.credits ?? 0;
@@ -1493,11 +1778,11 @@ app.post('/api/extension/deduct-credits', async (req, res) => {
 
   // Also sync to Supabase database in real-time
   if (supa) {
-    supa.from('users').update({
+    safeServerSupabaseUserUpdate(supa, user.id, cleanEmail, { 
       credits: newCredits,
-      last_active: new Date().toISOString(),
-    }).ilike('email', cleanEmail).then(({ error }) => {
-      if (error) console.error('Supabase credit deduction update error:', error);
+      is_online: true 
+    }).catch(err => {
+      console.error('Supabase credit deduction update error:', err);
     });
   }
 
@@ -1522,15 +1807,7 @@ app.post('/api/extension/deduct-credits', async (req, res) => {
 // GET /api/extension/prompts
 // Returns current Server 1 & Server 2 prompts and costs
 app.get('/api/extension/prompts', async (req, res) => {
-  const supa = getServerSupabase();
-  if (supa && (!db.promptConfig?.servers || db.promptConfig.servers.length === 0)) {
-    try {
-      const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-      if (promptRow?.name) {
-        db.promptConfig = JSON.parse(promptRow.name);
-      }
-    } catch {}
-  }
+  await refreshSupabaseConfigIfNeeded();
 
   const servers = db.promptConfig?.servers || [
     { id: 'server1', label: 'Server 1', prompt: '' },
@@ -1825,12 +2102,7 @@ async function checkPromptServerTelegramAlerts() {
     saveStorage();
     const supa = getServerSupabase();
     if (supa) {
-      Promise.resolve(supa.from('users').upsert({
-        id: 'admin_config_prompts',
-        email: 'admin_config_prompts@system.local',
-        name: JSON.stringify(db.promptConfig),
-        plan: 'basic',
-      }, { onConflict: 'id' })).catch(() => {});
+      safeSaveSupabasePromptConfig(supa, db.promptConfig).catch(() => {});
     }
   }
 }
@@ -1914,7 +2186,21 @@ app.post('/api/config', async (req, res) => {
   
   if (promptConfig) {
     const oldPromptConfig = db.promptConfig;
-    db.promptConfig = promptConfig;
+    let mergedPromptConfig = { ...oldPromptConfig, ...promptConfig };
+
+    // Merge servers without wiping active prompts with empty values
+    if (Array.isArray(promptConfig.servers)) {
+      const mergedServers = promptConfig.servers.map((newSrv: any) => {
+        const oldSrv = oldPromptConfig?.servers?.find((os: any) => os.id === newSrv.id);
+        if (!newSrv.prompt?.trim() && oldSrv?.prompt?.trim()) {
+          return { ...newSrv, prompt: oldSrv.prompt, lastUpdatedAt: oldSrv.lastUpdatedAt };
+        }
+        return newSrv;
+      });
+      mergedPromptConfig.servers = mergedServers;
+    }
+
+    db.promptConfig = mergedPromptConfig;
 
     // Keep planExtensions.ultra.version aligned if extensionVersion signal is updated
     if (promptConfig.extensionVersion && String(promptConfig.extensionVersion).trim()) {
@@ -1925,11 +2211,11 @@ app.post('/api/config', async (req, res) => {
     }
 
     // Check for any server that was previously missed and has now been updated -> Send Recovery Telegram Alert!
-    const tgConfig = promptConfig.telegramAlerts || oldPromptConfig?.telegramAlerts;
-    if (tgConfig && tgConfig.enabled && tgConfig.botToken && tgConfig.chatId && Array.isArray(promptConfig.servers)) {
-      const intervalMinutes = Math.max(1, Number(promptConfig.promptReminderMinutes) || 120);
+    const tgConfig = mergedPromptConfig.telegramAlerts || oldPromptConfig?.telegramAlerts;
+    if (tgConfig && tgConfig.enabled && tgConfig.botToken && tgConfig.chatId && Array.isArray(mergedPromptConfig.servers)) {
+      const intervalMinutes = Math.max(1, Number(mergedPromptConfig.promptReminderMinutes) || 120);
 
-      for (const newSrv of promptConfig.servers) {
+      for (const newSrv of mergedPromptConfig.servers) {
         const oldSrv = oldPromptConfig?.servers?.find(s => s.id === newSrv.id);
         // If it was previously missed (wasMissed === true) and now prompt or timer updated
         if (oldSrv && oldSrv.wasMissed && (!newSrv.wasMissed || oldSrv.prompt !== newSrv.prompt || oldSrv.lastUpdatedAt !== newSrv.lastUpdatedAt)) {
@@ -1956,14 +2242,7 @@ app.post('/api/config', async (req, res) => {
     // Also sync to Supabase if connected
     const supa = getServerSupabase();
     if (supa) {
-      supa.from('users').upsert({
-        id: 'admin_config_prompts',
-        email: 'admin_config_prompts@system.local',
-        name: JSON.stringify(promptConfig),
-        plan: 'basic',
-      }, { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error("Server Supabase prompt sync error:", error);
-      });
+      safeSaveSupabasePromptConfig(supa, mergedPromptConfig).catch(() => {});
     }
   }
   if (supabaseConfig) {

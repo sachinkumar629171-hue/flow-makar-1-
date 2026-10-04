@@ -15,25 +15,20 @@ export function isUserLive(
   if (currentUserId && user.id === currentUserId) return true;
   if (currentUserEmail && user.email && user.email.toLowerCase() === currentUserEmail.toLowerCase()) return true;
 
-  // Check if explicitly flagged online
-  if (user.isOnline === true) {
-    if (!user.lastActive) return true;
-    if (typeof user.lastActive === 'string' && user.lastActive.toLowerCase().includes('now')) return true;
-    const time = new Date(user.lastActive).getTime();
-    if (isNaN(time)) return true;
-    const diffMs = Date.now() - time;
-    // Heartbeat sends every 5-10s, allow up to 5 minutes window
-    return diffMs < 300000 && diffMs > -60000;
-  }
-
-  // If lastActive is fresh (within 5 minutes), consider live
+  // If lastActive timestamp exists, strictly enforce the 2-minute (120s) threshold
   if (user.lastActive) {
     if (typeof user.lastActive === 'string' && user.lastActive.toLowerCase().includes('now')) return true;
     const time = new Date(user.lastActive).getTime();
     if (!isNaN(time)) {
       const diffMs = Date.now() - time;
-      if (diffMs >= -60000 && diffMs < 300000) return true;
+      // Active only if a server request / heartbeat was received within 2 minutes (120,000 ms)
+      return diffMs < 120000 && diffMs >= -60000;
     }
+  }
+
+  // If explicitly flagged online with no timestamp
+  if (user.isOnline === true && !user.lastActive) {
+    return true;
   }
 
   return false;

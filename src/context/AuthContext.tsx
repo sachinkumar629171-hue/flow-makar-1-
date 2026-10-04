@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import { User, PlanType, Generation, ShowcaseVideo, ExtensionConfig, PlanExtensionsConfig, TutorialConfig, HeroConfig, Reseller, PromptConfig } from '../types';
 import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIAL_SHOWCASE, INITIAL_RESELLERS } from '../data/initialData';
 import { apiUrl } from '../config/api';
-import { getSupabase, getSupabaseConfig, saveSupabaseConfig, safeSupabaseUserUpdate } from '../lib/supabase';
+import { getSupabase, getSupabaseConfig, saveSupabaseConfig, safeSupabaseUserUpdate, safeSupabaseUserUpsert } from '../lib/supabase';
 import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
 import { setUserExpiryMs } from '../lib/userStats';
 
@@ -731,47 +731,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (sysConfigPrompts && sysConfigPrompts.name && configUpdateSafe) {
               try {
                 const parsed = JSON.parse(sysConfigPrompts.name);
-                if (parsed.servers !== undefined) {
-                  setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
+                if (parsed && Array.isArray(parsed.servers)) {
+                  setPromptConfig(prev => {
+                    const localHasPrompts = prev.servers?.some(s => s.prompt && s.prompt.trim());
+                    const incomingHasPrompts = parsed.servers.some((s: any) => s.prompt && s.prompt.trim());
+                    if (!incomingHasPrompts && localHasPrompts) {
+                      return prev;
+                    }
+                    const mergedServers = parsed.servers.map((inSrv: any) => {
+                      const localSrv = prev.servers?.find(ls => ls.id === inSrv.id);
+                      if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
+                        return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
+                      }
+                      return inSrv;
+                    });
+                    const merged = { ...prev, ...parsed, servers: mergedServers };
+                    return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
+                  });
                 }
               } catch (e) {
                 console.error("Failed to parse prompt config from Supabase", e);
               }
             }
 
-            // Auto-initialize missing configs to Supabase so that all settings stay permanently backed up
+            // Auto-initialize missing configs to Supabase only if filled to prevent overwriting with blanks
             if (currentUser?.role === 'admin') {
-              if (!sysConfigPrompts) {
-                supabase.from('users').upsert({
-                  id: 'admin_config_prompts',
-                  email: 'admin_config_prompts@system.local',
-                  name: JSON.stringify(promptConfig),
-                  plan: 'basic',
-                }, { onConflict: 'id' }).then(() => {});
+              const hasPrompts = promptConfig.servers?.some(s => s.prompt && s.prompt.trim());
+              if (!sysConfigPrompts && hasPrompts) {
+                syncConfigToSupabase('admin_config_prompts', promptConfig);
               }
               if (!sysConfigHero) {
-                supabase.from('users').upsert({
-                  id: 'admin_config_hero',
-                  email: 'admin_config_hero@system.local',
-                  name: JSON.stringify(heroConfig),
-                  plan: 'basic',
-                }, { onConflict: 'id' }).then(() => {});
+                syncConfigToSupabase('admin_config_hero', heroConfig);
               }
               if (!sysConfigTutorial) {
-                supabase.from('users').upsert({
-                  id: 'admin_config_tutorial',
-                  email: 'admin_config_tutorial@system.local',
-                  name: JSON.stringify(tutorialConfig),
-                  plan: 'basic',
-                }, { onConflict: 'id' }).then(() => {});
+                syncConfigToSupabase('admin_config_tutorial', tutorialConfig);
               }
               if (!sysConfigExtensions) {
-                supabase.from('users').upsert({
-                  id: 'admin_config_extensions',
-                  email: 'admin_config_extensions@system.local',
-                  name: JSON.stringify(planExtensions),
-                  plan: 'basic',
-                }, { onConflict: 'id' }).then(() => {});
+                syncConfigToSupabase('admin_config_extensions', planExtensions);
               }
             }
 
@@ -784,7 +780,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               )
               .map((su: any) => {
                 const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
-                const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime < 180000);
+                const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime < 120000 && Date.now() - lastActiveTime >= -60000);
                 return {
                   id: su.id,
                   name: su.name,
@@ -808,7 +804,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   status: (su.status as any) || 'active',
                   extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
                   canEditPrompts: su.can_edit_prompts === true,
-                  isOnline: Boolean(su.is_online) || isRecent,
+                  isOnline: isRecent,
                   lastActive: su.last_active || new Date().toISOString(),
                 };
               });
@@ -886,24 +882,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           fetch(apiUrl('/api/config')),
         ]);
 
-        if (!supabase && usersRes.ok) {
+        if (usersRes.ok) {
           const data = await usersRes.json();
           if (data.users && Array.isArray(data.users) && isMounted) {
             const now = Date.now();
-            const mergedUsers = data.users.map((u: User) => {
-              if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
-                return { ...u, isOnline: true, lastActive: new Date().toISOString() };
-              }
-              const pending = lastUpdatedUsersRef.current.get(u.id);
-              if (pending && now - pending.timestamp < 10000) {
-                return { ...u, ...pending.data };
-              }
-              return u;
-            });
-            setUsers(mergedUsers);
+            if (!supabase) {
+              const mergedUsers = data.users.map((u: User) => {
+                if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
+                  return { ...u, isOnline: true, lastActive: new Date().toISOString() };
+                }
+                const pending = lastUpdatedUsersRef.current.get(u.id);
+                if (pending && now - pending.timestamp < 10000) {
+                  return { ...u, ...pending.data };
+                }
+                return u;
+              });
+              setUsers(mergedUsers);
+            } else {
+              // Merge real-time server online status and credit deductions into current users list
+              const serverUsersMap = new Map<string, User>(data.users.map((u: User) => [u.id, u]));
+              const serverUsersEmailMap = new Map<string, User>(data.users.map((u: User) => [(u.email || '').toLowerCase(), u]));
+              setUsers(prev => prev.map((u: User) => {
+                const srv: User | undefined = serverUsersMap.get(u.id) || (u.email ? serverUsersEmailMap.get(u.email.toLowerCase()) : undefined);
+                if (srv) {
+                  return {
+                    ...u,
+                    isOnline: Boolean(u.isOnline || srv.isOnline),
+                    lastActive: srv.isOnline || (srv.lastActive && (!u.lastActive || new Date(srv.lastActive).getTime() > new Date(u.lastActive).getTime())) ? srv.lastActive : u.lastActive,
+                    credits: srv.credits !== undefined ? srv.credits : u.credits,
+                    sessionToken: srv.sessionToken || u.sessionToken,
+                  };
+                }
+                return u;
+              }));
+            }
             // If current user is logged in, refresh their status if updated from admin
             if (currentUser) {
-              const currentInList = mergedUsers.find((u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase());
+              const currentInList = data.users.find((u: User) => u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()));
               const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
               
               if (currentInList && (
@@ -961,10 +976,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           if (cfgData.promptConfig && isMounted && Date.now() - lastConfigUpdateRef.current > 10000) {
             setPromptConfig(prev => {
+              const localHasPrompts = prev.servers?.some(s => s.prompt && s.prompt.trim());
+              const incomingHasPrompts = cfgData.promptConfig.servers?.some((s: any) => s.prompt && s.prompt.trim());
+              if (!incomingHasPrompts && localHasPrompts) {
+                return prev;
+              }
+              const mergedServers = (cfgData.promptConfig.servers || prev.servers || []).map((inSrv: any) => {
+                const localSrv = prev.servers?.find(ls => ls.id === inSrv.id);
+                if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
+                  return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
+                }
+                return inSrv;
+              });
               const merged = {
                 ...DEFAULT_PROMPT_CONFIG,
                 ...prev,
                 ...cfgData.promptConfig,
+                servers: mergedServers,
               };
               if (prev && JSON.stringify(prev) === JSON.stringify(merged)) {
                 return prev;
@@ -979,8 +1007,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     pollCentralServer();
-    // Smart Polling: 90 seconds for admin, 180 seconds for normal user to preserve Supabase quota
-    const pollInterval = setInterval(pollCentralServer, 90000);
+    // Real-Time Polling: 15 seconds interval for instant Live Online status & credit synchronization
+    const pollInterval = setInterval(pollCentralServer, 15000);
 
     // Immediate refresh on tab focus
     const handleTabFocus = () => {
@@ -1145,7 +1173,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const supabase = getSupabase();
         if (supabase && currentUser.email) {
           supabase.from('users')
-            .update({ is_online: false, last_active: new Date().toISOString() })
+            .update({ is_online: false })
             .eq('email', currentUser.email.toLowerCase())
             .then(() => {}, () => {});
         }
@@ -1550,24 +1578,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Supabase direct database insert
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').upsert({
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        password: newUser.password,
-        plan: newUser.plan,
-        credits: newUser.credits,
-        max_credits: newUser.maxCredits,
-        plan_days_left: newUser.planDaysLeft,
-        role: newUser.role,
-        reseller_id: newUser.resellerId,
-        reseller_name: targetReseller.portalName,
-        status: newUser.status,
-        is_online: false,
-        last_active: newUser.lastActive,
-        created_at: newUser.createdAt,
-      }).then(({ error }) => {
-        if (error) console.error('Supabase reseller user insert error:', error);
+      safeSupabaseUserUpsert(supabase, newUser).catch(err => {
+        console.error('Supabase reseller user insert error:', err);
       });
     }
 
@@ -1667,8 +1679,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (supabase) {
       safeSupabaseUserUpdate(supabase, userId, userEmail, {
         plan_days_left: newDays,
-        plan_expires_at: calculatedExpiresAt,
-      }).catch(() => {});
+      }, user).catch(() => {});
     }
   };
 
@@ -1714,7 +1725,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (supabase) {
       safeSupabaseUserUpdate(supabase, userId, userEmail, {
         credits: targetCredits,
-      }).catch(() => {});
+      }, user).catch(() => {});
     }
   };
 
@@ -2095,26 +2106,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Supabase direct database insert
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').upsert({
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        password: newUser.password,
-        whatsapp: newUser.whatsapp,
-        telegram: newUser.telegram,
-        referral_code: newUser.referralCode,
-        referred_by: newUser.referredBy,
-        plan: newUser.plan,
-        credits: newUser.credits,
-        max_credits: newUser.maxCredits,
-        plan_days_left: newUser.planDaysLeft,
-        role: newUser.role,
-        status: newUser.status,
-        is_online: true,
-        last_active: newUser.lastActive,
-        created_at: newUser.createdAt,
-      }).then(({ error }) => {
-        if (error) console.error('Supabase user insert error:', error);
+      safeSupabaseUserUpsert(supabase, newUser).catch(err => {
+        console.error('Supabase user insert error:', err);
       });
     }
 
@@ -2205,25 +2198,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').upsert({
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        password: newUser.password,
-        whatsapp: newUser.whatsapp,
-        telegram: newUser.telegram,
-        referral_code: newUser.referralCode,
-        plan: newUser.plan,
-        credits: newUser.credits,
-        max_credits: newUser.maxCredits,
-        plan_days_left: newUser.planDaysLeft,
-        role: newUser.role,
-        can_edit_prompts: newUser.canEditPrompts,
-        extension_access: newUser.extensionAccess,
-        status: newUser.status,
-        created_at: newUser.createdAt,
-      }).then(({ error }) => {
-        if (error) console.error("Supabase user create error:", error);
+      safeSupabaseUserUpsert(supabase, newUser).catch(err => {
+        console.error("Supabase user create error:", err);
       });
     }
 
@@ -2331,7 +2307,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         credits: defaultCredits,
         max_credits: defaultCredits,
         plan_days_left: targetDays,
-      }).catch(() => {});
+      }, targetUser).catch(() => {});
     }
   };
 
@@ -2453,14 +2429,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.credits !== undefined) supaData.credits = data.credits;
       if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
       if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
-      if (calculatedExpiresAt) supaData.plan_expires_at = calculatedExpiresAt;
-      if (data.status !== undefined) supaData.status = data.status;
-      if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
-      if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
       if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
       if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
 
-      safeSupabaseUserUpdate(supabase, userId, userEmail, supaData).catch(err => {
+      safeSupabaseUserUpdate(supabase, userId, userEmail, supaData, userToUpdate).catch(err => {
         console.error('Failed to sync update to Supabase:', err);
       });
     }
@@ -2572,7 +2544,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       safeSupabaseUserUpdate(supabase, userId, userEmail, {
         credits: newCredits,
         ...(newMax !== undefined ? { max_credits: newMax } : {}),
-      }).catch(() => {});
+      }, userToUpdate).catch(() => {});
     }
   };
 
@@ -2627,14 +2599,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
 
     try {
-      supa.from('users').upsert({
+      safeSupabaseUserUpsert(supa, {
         id: key,
         email: `${key}@system.local`,
         name: JSON.stringify(data),
-        password: 'config_no_login',
+        password: 'config_no_login_123',
         plan: 'basic',
-      }, { onConflict: 'id' }).then(({ error }) => {
-        if (error) console.error(`Supabase ${key} config update error:`, error);
+        credits: 0,
+        max_credits: 0,
+        plan_days_left: 0,
+        session_token: 'sys_config',
+        is_online: false,
+        created_at: '2025-01-01T00:00:00.000Z'
+      }).catch(err => {
+        console.error(`Supabase ${key} config update error:`, err);
       });
     } catch {}
   };

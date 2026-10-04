@@ -91,6 +91,14 @@ create policy "Allow all operations on resellers" on public.resellers for all us
 
     try {
       saveSupabaseConfig(url, anonKey);
+      
+      // Also sync Supabase config with backend server so server.ts can immediately connect
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ supabaseConfig: { url: url.trim(), anonKey: anonKey.trim() } })
+      }).catch(() => {});
+
       const supabase = getSupabase();
       if (!supabase) {
         throw new Error('Failed to initialize Supabase client');
@@ -135,6 +143,11 @@ create policy "Allow all operations on resellers" on public.resellers for all us
 
   const handleDisconnect = () => {
     clearSupabaseConfig();
+    fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ supabaseConfig: { url: '', anonKey: '' } })
+    }).catch(() => {});
     setUrl('');
     setAnonKey('');
     setTestResult({ success: false, message: 'Supabase disconnected. Using local/fallback server.' });
