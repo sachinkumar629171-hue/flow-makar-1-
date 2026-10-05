@@ -106,7 +106,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      // Everything verified!
+      // Everything verified! Mark user as online/live in Supabase
+      const cfVerifyNow = new Date().toISOString();
+      supabase.from('users').update({
+        is_online: true,
+        last_active: cfVerifyNow,
+      }).eq('id', supaUser.id).then(() => {});
+
       return res.status(200).json({
         allowed: true,
         success: true,

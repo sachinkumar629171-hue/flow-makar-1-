@@ -41,6 +41,7 @@ export interface Reseller {
   status: 'active' | 'expired' | 'suspended';
   createdAt: string;
   notes?: string;
+  apiKey?: string;
 }
 
 export interface Generation {

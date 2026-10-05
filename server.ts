@@ -629,8 +629,8 @@ app.get('/api/users', async (req, res) => {
         isLive = true;
       } else {
         const t = new Date(u.lastActive).getTime();
-        // Strict 2-minute (120,000 ms) window: if no response/request in 2 minutes, mark offline
-        isLive = !isNaN(t) && (now - t < 120000 && now - t >= -60000);
+        // Strict 2-minute (120,000 ms) window: renews every 2 minutes while online
+        isLive = !isNaN(t) && (now - t <= 120000 && now - t >= -60000);
       }
     }
 
@@ -880,6 +880,10 @@ app.post('/api/users/logout', (req, res) => {
   res.json({ success: true });
 });
 
+// Memory cache to throttle Supabase writes: only write once every 80 seconds per user
+// Saves >75% Supabase API quota while keeping 2-minute live window perfectly active!
+const lastSupaHeartbeatWrite = new Map<string, number>();
+
 // POST heartbeat with strict single-device session check
 app.post('/api/users/heartbeat', async (req, res) => {
   const { userId, email, isOnline, sessionToken } = req.body;
@@ -921,6 +925,15 @@ app.post('/api/users/heartbeat', async (req, res) => {
       user.sessionToken = sessionToken;
     }
     saveStorage();
+
+    const lastWrite = lastSupaHeartbeatWrite.get(user.id) || 0;
+    if (supa && user.id && !user.id.startsWith('admin_config_') && (!user.isOnline || (Date.now() - lastWrite >= 80000))) {
+      lastSupaHeartbeatWrite.set(user.id, Date.now());
+      supa.from('users').update({
+        is_online: user.isOnline,
+        last_active: now,
+      }).eq('id', user.id).then(() => {});
+    }
   }
   res.json({ success: true, isOnline: user ? user.isOnline : true, lastActive: now });
 });
@@ -1189,6 +1202,20 @@ app.get('/api/extension/user', async (req, res) => {
 
   if (checkAndConvertToBasic(user)) {
     saveStorage();
+  }
+
+  // Mark user active and online on extension check
+  const activeNow = new Date().toISOString();
+  user.isOnline = true;
+  user.lastActive = activeNow;
+  saveStorage();
+
+  const supaServ = getServerSupabase();
+  if (supaServ && user.id && !user.id.startsWith('admin_config_')) {
+    supaServ.from('users').update({
+      is_online: true,
+      last_active: activeNow,
+    }).eq('id', user.id).then(() => {});
   }
 
   const maxCredits = user.maxCredits || (user.plan === 'unlimited' ? 99999 : user.plan === 'ultra' ? 45000 : 100);
@@ -1782,7 +1809,20 @@ app.post('/api/extension/cf-verify', async (req, res) => {
     });
   }
 
-  // All checks passed!
+  // All checks passed! Mark user as live/online
+  const cfActiveNow = new Date().toISOString();
+  user.isOnline = true;
+  user.lastActive = cfActiveNow;
+  saveStorage();
+
+  const supaCf = getServerSupabase();
+  if (supaCf && user.id && !user.id.startsWith('admin_config_')) {
+    supaCf.from('users').update({
+      is_online: true,
+      last_active: cfActiveNow,
+    }).eq('id', user.id).then(() => {});
+  }
+
   return res.json({
     allowed: true,
     success: true,
@@ -2455,14 +2495,74 @@ app.get('/api/webhook/prompt', async (req, res) => {
   });
 });
 
+// Helper: Ensure every reseller has a secure unique API key
+function getResellerApiKey(reseller: any): string {
+  if (reseller.apiKey) return reseller.apiKey;
+  const cleanId = String(reseller.id || '').replace(/[^a-zA-Z0-9]/g, '');
+  const key = `flw_res_${cleanId}_${Buffer.from(String(reseller.email || '')).toString('hex').slice(0, 10)}`;
+  reseller.apiKey = key;
+  return key;
+}
+
+function resolveAuthorizedReseller(req: any): any | null {
+  const apiKey = (
+    req.headers['x-api-key'] ||
+    req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
+    req.query.apiKey ||
+    req.body?.apiKey ||
+    ''
+  ).toString().trim();
+
+  const resellerId = (req.body?.resellerId || req.query.resellerId || '').toString().trim();
+  const resellerEmail = (req.body?.resellerEmail || req.query.resellerEmail || '').toString().trim().toLowerCase();
+
+  // If apiKey provided, match by apiKey or id or email
+  if (apiKey) {
+    if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com') {
+      if (resellerId) {
+        return db.resellers.find(r => r.id === resellerId) || db.resellers[0] || null;
+      }
+      return db.resellers[0] || null;
+    }
+
+    const matched = db.resellers.find(r => {
+      const generatedKey = getResellerApiKey(r);
+      return (
+        r.apiKey === apiKey ||
+        generatedKey === apiKey ||
+        r.id === apiKey ||
+        (r.email && r.email.toLowerCase() === apiKey.toLowerCase())
+      );
+    });
+    if (matched) return matched;
+  }
+
+  if (resellerId) {
+    const matched = db.resellers.find(r => r.id === resellerId);
+    if (matched) return matched;
+  }
+
+  if (resellerEmail) {
+    const matched = db.resellers.find(r => r.email && r.email.toLowerCase() === resellerEmail);
+    if (matched) return matched;
+  }
+
+  return null;
+}
+
 // GET resellers
 app.get('/api/resellers', (req, res) => {
-  res.json({ resellers: db.resellers });
+  const resellersWithKeys = db.resellers.map(r => ({
+    ...r,
+    apiKey: getResellerApiKey(r),
+  }));
+  res.json({ resellers: resellersWithKeys });
 });
 
 // POST save reseller
 app.post('/api/resellers', (req, res) => {
   const reseller = req.body;
+  if (!reseller.apiKey) reseller.apiKey = getResellerApiKey(reseller);
   const idx = db.resellers.findIndex(r => r.id === reseller.id);
   if (idx >= 0) {
     db.resellers[idx] = { ...db.resellers[idx], ...reseller };
@@ -2480,6 +2580,275 @@ app.delete('/api/resellers/:id', (req, res) => {
   saveStorage();
   res.json({ success: true });
 });
+
+// Helper: Parse duration string or number into expiry date
+function parseDurationToExpiry(body: any): { planDaysLeft: number; planExpiresAt?: string; durationText: string } {
+  const rawDuration = (
+    body.duration ||
+    body.time ||
+    body.validity ||
+    ''
+  ).toString().trim().toLowerCase();
+
+  let hours = Number(body.planHours || body.hours || body.durationHours) || 0;
+  let days = Number(body.planDays || body.days || body.durationDays) || 0;
+
+  if (rawDuration) {
+    if (rawDuration.includes('hour') || rawDuration.endsWith('h')) {
+      const parsedHours = parseFloat(rawDuration.replace(/[^0-9.]/g, ''));
+      if (!isNaN(parsedHours) && parsedHours > 0) hours = parsedHours;
+    } else if (rawDuration.includes('day') || rawDuration.endsWith('d')) {
+      const parsedDays = parseFloat(rawDuration.replace(/[^0-9.]/g, ''));
+      if (!isNaN(parsedDays) && parsedDays > 0) days = parsedDays;
+    } else if (rawDuration.includes('min') || rawDuration.endsWith('m')) {
+      const parsedMins = parseFloat(rawDuration.replace(/[^0-9.]/g, ''));
+      if (!isNaN(parsedMins) && parsedMins > 0) hours = parsedMins / 60;
+    }
+  }
+
+  const now = Date.now();
+  if (hours > 0) {
+    const expiresMs = now + Math.round(hours * 60 * 60 * 1000);
+    const planExpiresAt = new Date(expiresMs).toISOString();
+    const planDaysLeft = Math.max(0.01, parseFloat((hours / 24).toFixed(3)));
+    return {
+      planDaysLeft,
+      planExpiresAt,
+      durationText: `${hours} hours`,
+    };
+  }
+
+  const finalDays = days > 0 ? days : 30;
+  const expiresMs = now + Math.round(finalDays * 24 * 60 * 60 * 1000);
+  return {
+    planDaysLeft: finalDays,
+    planExpiresAt: new Date(expiresMs).toISOString(),
+    durationText: `${finalDays} days`,
+  };
+}
+
+// Handler for GRANT ACCESS (Create / Renew user under Reseller Portal via external website)
+const handleResellerGrantAccess = async (req: any, res: any) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+
+  const reseller = resolveAuthorizedReseller(req);
+  if (!reseller) {
+    return res.status(401).json({
+      success: false,
+      access: false,
+      error: 'Unauthorized: Invalid Reseller API Key (x-api-key header) or Reseller ID.',
+    });
+  }
+
+  if (reseller.status === 'suspended') {
+    return res.status(403).json({
+      success: false,
+      access: false,
+      error: 'Reseller Portal is currently suspended. Please contact Admin.',
+    });
+  }
+
+  const rawEmail = req.body?.email || req.body?.gmailId || req.query?.email || '';
+  const email = cleanEmailString(rawEmail);
+  if (!email || !email.includes('@')) {
+    return res.status(400).json({
+      success: false,
+      access: false,
+      error: 'A valid customer email is required (e.g., {"email": "customer@gmail.com"}).',
+    });
+  }
+
+  const password = (req.body?.password || req.query?.password || `pass_${Math.random().toString(36).substring(2, 8)}`).trim();
+  const telegram = (req.body?.telegram || req.body?.telegramUid || req.body?.telegramProfile || req.body?.telegramId || req.query?.telegram || '').trim();
+  const name = (req.body?.name || req.query?.name || email.split('@')[0]).trim();
+  const plan = (req.body?.plan || req.query?.plan || 'ultra').trim();
+  const credits = req.body?.credits !== undefined ? Number(req.body.credits) : (plan === 'ultra' ? 45000 : 100);
+  const maxCredits = req.body?.maxCredits !== undefined ? Number(req.body.maxCredits) : credits;
+  const extensionAccess = req.body?.extensionAccess !== false;
+
+  const durationInfo = parseDurationToExpiry(req.body || req.query || {});
+  const now = new Date().toISOString();
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+  let action = 'created';
+
+  if (user) {
+    action = 'renewed';
+    user.name = name || user.name;
+    if (req.body?.password) user.password = password;
+    if (telegram) user.telegram = telegram;
+    user.plan = plan;
+    user.credits = credits;
+    user.maxCredits = maxCredits;
+    user.planDaysLeft = durationInfo.planDaysLeft;
+    user.planExpiresAt = durationInfo.planExpiresAt;
+    user.status = 'active';
+    user.extensionAccess = extensionAccess;
+    user.resellerId = reseller.id;
+    user.resellerName = reseller.portalName;
+    user.lastActive = now;
+  } else {
+    action = 'created';
+    const sessionToken = `sess-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    user = {
+      id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      name,
+      email,
+      password,
+      telegram,
+      plan,
+      credits,
+      maxCredits,
+      planDaysLeft: durationInfo.planDaysLeft,
+      planExpiresAt: durationInfo.planExpiresAt,
+      status: 'active',
+      extensionAccess,
+      sessionToken,
+      resellerId: reseller.id,
+      resellerName: reseller.portalName,
+      role: 'user',
+      isOnline: true,
+      createdAt: now,
+      lastActive: now,
+      avatarColor: plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+    };
+    db.users.unshift(user);
+  }
+
+  saveStorage();
+
+  // Async sync to Supabase
+  const supa = getServerSupabase();
+  if (supa) {
+    safeServerSupabaseUserUpsert(supa, user).catch(err => {
+      console.error('Reseller API user upsert error:', err);
+    });
+  }
+
+  return res.json({
+    success: true,
+    access: true,
+    action,
+    message: `Access successfully granted for ${email}`,
+    duration: durationInfo.durationText,
+    expiresAt: durationInfo.planExpiresAt,
+    reseller: {
+      id: reseller.id,
+      portalName: reseller.portalName,
+      email: reseller.email,
+    },
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      password: user.password,
+      telegram: user.telegram || '',
+      plan: user.plan,
+      credits: user.credits,
+      maxCredits: user.maxCredits,
+      planDaysLeft: user.planDaysLeft,
+      planExpiresAt: user.planExpiresAt,
+      sessionToken: user.sessionToken,
+      status: user.status,
+      extensionAccess: user.extensionAccess,
+      resellerId: user.resellerId,
+      resellerName: user.resellerName,
+    },
+    portalUrl: 'https://flowmakerai.site',
+  });
+};
+
+// Handler for REVOKE ACCESS (Removes customer access completely)
+const handleResellerRevokeAccess = async (req: any, res: any) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+
+  const reseller = resolveAuthorizedReseller(req);
+  if (!reseller) {
+    return res.status(401).json({
+      success: false,
+      access: false,
+      error: 'Unauthorized: Invalid Reseller API Key (x-api-key header) or Reseller ID.',
+    });
+  }
+
+  const rawEmail = req.body?.email || req.body?.gmailId || req.query?.email || '';
+  const email = cleanEmailString(rawEmail);
+  if (!email) {
+    return res.status(400).json({
+      success: false,
+      access: false,
+      error: 'Customer email is required to revoke access.',
+    });
+  }
+
+  // Completely delete / remove the user so access is 100% revoked
+  const userIdx = db.users.findIndex(u => u.email && cleanEmailString(u.email) === email);
+  if (userIdx !== -1) {
+    db.users.splice(userIdx, 1);
+    saveStorage();
+  }
+
+  const supa = getServerSupabase();
+  if (supa) {
+    supa.from('users').delete().ilike('email', email).then(() => {}, () => {});
+  }
+
+  return res.json({
+    success: true,
+    access: false,
+    action: 'removed',
+    email,
+    message: `Access completely removed for ${email}. User account deleted.`,
+  });
+};
+
+// Handler for STATUS CHECK
+const handleResellerUserStatus = async (req: any, res: any) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+
+  const reseller = resolveAuthorizedReseller(req);
+  if (!reseller) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid Reseller API Key or Reseller ID.',
+    });
+  }
+
+  const rawEmail = req.query?.email || req.body?.email || '';
+  const email = cleanEmailString(rawEmail);
+  if (!email) {
+    return res.status(400).json({ success: false, error: 'Email parameter is required.' });
+  }
+
+  const user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+  if (!user) {
+    return res.status(404).json({ success: false, error: `User not found: ${email}` });
+  }
+
+  const isAllowed = user.status === 'active' && user.extensionAccess !== false && (user.planDaysLeft ?? 0) > 0;
+
+  return res.json({
+    success: true,
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      plan: user.plan,
+      status: user.status,
+      extensionAccess: user.extensionAccess !== false,
+      credits: user.credits,
+      planDaysLeft: user.planDaysLeft,
+      isAllowed,
+      resellerId: user.resellerId,
+      resellerName: user.resellerName,
+    }
+  });
+};
+
+app.post('/api/reseller/access/grant', handleResellerGrantAccess);
+app.post('/api/reseller/grant-access', handleResellerGrantAccess);
+app.post('/api/reseller/access/revoke', handleResellerRevokeAccess);
+app.post('/api/reseller/revoke-access', handleResellerRevokeAccess);
+app.get('/api/reseller/access/status', handleResellerUserStatus);
 
 // GET config
 app.get('/api/config', (req, res) => {

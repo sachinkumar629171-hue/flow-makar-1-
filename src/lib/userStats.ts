@@ -15,13 +15,14 @@ export function isUserLive(
   if (currentUserId && user.id === currentUserId) return true;
   if (currentUserEmail && user.email && user.email.toLowerCase() === currentUserEmail.toLowerCase()) return true;
 
-  // Real-time verification: User is ONLY LIVE if they have sent a request/heartbeat within the last 2 minutes (120,000 ms)
+  // Real-time verification: User is LIVE strictly within 2 minutes (120,000 ms)
+  // Continuous 2-minute cycle: While user remains online, heartbeat refreshes this every 25s
   if (user.lastActive) {
     if (typeof user.lastActive === 'string' && user.lastActive.toLowerCase().includes('now')) return true;
     const time = new Date(user.lastActive).getTime();
     if (!isNaN(time)) {
       const diffMs = Date.now() - time;
-      return diffMs < 120000 && diffMs >= -60000;
+      return diffMs <= 120000 && diffMs >= -60000;
     }
   }
 

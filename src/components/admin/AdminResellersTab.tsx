@@ -15,7 +15,10 @@ import {
   PlusCircle, 
   MinusCircle,
   Copy,
-  Calendar
+  Calendar,
+  Key,
+  RefreshCw,
+  ShieldAlert
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Reseller } from '../../types';
@@ -31,7 +34,31 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingReseller, setEditingReseller] = useState<Reseller | null>(null);
   const [resellerToDelete, setResellerToDelete] = useState<Reseller | null>(null);
+  const [apiKeyModalReseller, setApiKeyModalReseller] = useState<Reseller | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  const handleGenerateApiKey = (reseller: Reseller) => {
+    const cleanId = reseller.id.replace(/[^a-zA-Z0-9]/g, '');
+    const rand = Math.random().toString(36).substring(2, 9);
+    const newKey = `flw_res_${cleanId}_${rand}`;
+    updateReseller(reseller.id, { apiKey: newKey });
+    setApiKeyModalReseller(prev => prev && prev.id === reseller.id ? { ...prev, apiKey: newKey } : prev);
+    setEditingReseller(prev => prev && prev.id === reseller.id ? { ...prev, apiKey: newKey } : prev);
+    showToast(`Generated new API Key for ${reseller.portalName}!`);
+  };
+
+  const handleRevokeApiKey = (reseller: Reseller) => {
+    updateReseller(reseller.id, { apiKey: '' });
+    setApiKeyModalReseller(prev => prev && prev.id === reseller.id ? { ...prev, apiKey: '' } : prev);
+    setEditingReseller(prev => prev && prev.id === reseller.id ? { ...prev, apiKey: '' } : prev);
+    showToast(`Revoked API Key for ${reseller.portalName}. External API access blocked.`);
+  };
 
   // Form states for Add Reseller
   const [portalName, setPortalName] = useState('');
@@ -300,6 +327,19 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                             {copiedId === reseller.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-neutral-400" />}
                           </button>
 
+                          {/* Manage API Key (Admin Only) */}
+                          <button
+                            onClick={() => setApiKeyModalReseller(reseller)}
+                            className={`p-1.5 rounded-lg border text-xs transition-colors cursor-pointer ${
+                              reseller.apiKey 
+                                ? 'bg-purple-950/40 hover:bg-purple-900/60 border-purple-500/40 text-purple-300 hover:text-white' 
+                                : 'bg-neutral-900 hover:bg-neutral-800 border-neutral-800 text-neutral-500 hover:text-neutral-300'
+                            }`}
+                            title={reseller.apiKey ? "Admin Only: View / Regenerate API Key" : "Admin Only: Generate API Key"}
+                          >
+                            <Key className="w-3.5 h-3.5 text-purple-400" />
+                          </button>
+
                           {/* Edit */}
                           <button
                             onClick={() => setEditingReseller(reseller)}
@@ -530,6 +570,44 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                 />
               </div>
 
+              {/* Admin API Key Generation */}
+              <div className="p-3 bg-[#0a0b0e] border border-purple-500/20 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-semibold text-purple-300 flex items-center gap-1.5">
+                    <Key className="w-3.5 h-3.5" />
+                    External API Key (Admin Controlled):
+                  </label>
+                  {editingReseller.apiKey && (
+                    <button
+                      type="button"
+                      onClick={() => handleRevokeApiKey(editingReseller)}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 hover:underline cursor-pointer"
+                    >
+                      Revoke Key
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={editingReseller.apiKey || 'No API key generated yet'}
+                    className="w-full px-3 py-1.5 bg-[#12131a] border border-neutral-800 rounded-lg text-neutral-300 font-mono text-xs select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleGenerateApiKey(editingReseller)}
+                    className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-semibold shrink-0 transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    <span>{editingReseller.apiKey ? 'Regenerate' : 'Generate Key'}</span>
+                  </button>
+                </div>
+                <p className="text-[10px] text-neutral-500">
+                  Only Admins can generate or change this key. Used by external websites/AI Studio to automatically create/revoke users.
+                </p>
+              </div>
+
               <div className="flex items-center justify-end gap-3 pt-3 border-t border-neutral-800/80">
                 <button
                   type="button"
@@ -576,6 +654,94 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                 className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
               >
                 Delete Reseller
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="fixed top-5 right-5 z-50 bg-purple-600 text-white px-4 py-2.5 rounded-xl shadow-2xl flex items-center gap-2 text-xs font-semibold animate-in fade-in slide-in-from-top-3">
+          <Check className="w-4 h-4 shrink-0" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
+      {/* Admin API Key Management Modal */}
+      {apiKeyModalReseller && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-text">
+          <div className="bg-[#12131a] border border-neutral-800 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-400">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">Reseller API Key (Admin Only)</h3>
+                  <p className="text-[11px] text-neutral-400">{apiKeyModalReseller.portalName} ({apiKeyModalReseller.email})</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setApiKeyModalReseller(null)}
+                className="text-neutral-400 hover:text-white p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-neutral-400 mb-1 font-semibold">Active API Key for External Access:</label>
+                <div className="flex items-center gap-2 bg-[#090a0e] p-2 rounded-xl border border-neutral-800 font-mono text-xs">
+                  <span className="text-purple-300 font-semibold select-all break-all flex-1">
+                    {apiKeyModalReseller.apiKey || 'No API key generated yet'}
+                  </span>
+                  {apiKeyModalReseller.apiKey && (
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(apiKeyModalReseller.apiKey || '');
+                        showToast('Copied API Key to clipboard!');
+                      }}
+                      className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-colors cursor-pointer shrink-0"
+                      title="Copy Key"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <button
+                  onClick={() => handleGenerateApiKey(apiKeyModalReseller)}
+                  className="flex-1 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-md"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>{apiKeyModalReseller.apiKey ? 'Regenerate New Key' : 'Generate API Key'}</span>
+                </button>
+
+                {apiKeyModalReseller.apiKey && (
+                  <button
+                    onClick={() => handleRevokeApiKey(apiKeyModalReseller)}
+                    className="px-3.5 py-2 bg-red-950/40 hover:bg-red-950/70 border border-red-500/40 text-red-300 hover:text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+                  >
+                    Revoke Key
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[10px] text-neutral-500 leading-relaxed bg-[#0a0b0e] p-2.5 rounded-lg border border-neutral-900">
+                🔒 <strong>Admin Control:</strong> Only Admins can generate or revoke this key. Once generated, the reseller can copy it in their portal and connect their external website (AI Studio, WordPress, etc.).
+              </p>
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                onClick={() => setApiKeyModalReseller(null)}
+                className="px-4 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Close
               </button>
             </div>
           </div>

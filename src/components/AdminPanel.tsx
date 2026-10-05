@@ -97,11 +97,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [, setTimeTick] = useState(0);
 
-  // Auto-tick every 30 seconds for live dynamic countdown updates
+  // Auto-tick every 10 seconds for live dynamic countdown and online status updates
   useEffect(() => {
     const timer = setInterval(() => {
       setTimeTick(t => t + 1);
-    }, 30000);
+    }, 10000);
     return () => clearInterval(timer);
   }, []);
 

@@ -780,7 +780,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               )
               .map((su: any) => {
                 const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
-                const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime < 120000 && Date.now() - lastActiveTime >= -60000);
+                const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime <= 120000 && Date.now() - lastActiveTime >= -60000);
                 return {
                   id: su.id,
                   name: su.name,
@@ -1007,11 +1007,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     pollCentralServer();
-    // Optimized Polling: 120 seconds interval (2 minutes) & pauses when tab is in background to save Vercel CDN limits
+    // Balanced Polling: 60s fallback interval (Supabase Realtime WebSocket handles instant live pushes)
     const pollInterval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
       pollCentralServer();
-    }, 120000);
+    }, 60000);
+
+    // Instant Supabase Realtime channel for live user presence
+    let usersRealtimeChannel: any = null;
+    try {
+      const supaForRealtime = getSupabase();
+      if (supaForRealtime) {
+        usersRealtimeChannel = supaForRealtime.channel('users_realtime_presence')
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, (payload: any) => {
+            const row = payload.new;
+            if (row && row.id && !row.id.startsWith('admin_config_')) {
+              setUsers(prev => prev.map(u => {
+                if (u.id === row.id || (u.email && row.email && u.email.toLowerCase() === row.email.toLowerCase())) {
+                  return {
+                    ...u,
+                    isOnline: row.is_online !== undefined ? row.is_online : u.isOnline,
+                    lastActive: row.last_active || u.lastActive,
+                  };
+                }
+                return u;
+              }));
+            }
+          })
+          .subscribe();
+      }
+    } catch {}
 
     // Immediate refresh on tab focus
     const handleTabFocus = () => {
@@ -1023,6 +1048,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isMounted = false;
       clearInterval(pollInterval);
       window.removeEventListener('focus', handleTabFocus);
+      if (usersRealtimeChannel) {
+        try {
+          const s = getSupabase();
+          if (s) s.removeChannel(usersRealtimeChannel);
+        } catch {}
+      }
     };
   }, []); // Run only once on mount to prevent infinite poll cycles
 
@@ -1127,7 +1158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch {}
       }
 
-      // Central server sync with session token verification (Runs on server - 0 Supabase cost)
+      // Central server sync with session token verification (throttled smart quota saver)
       fetch(apiUrl('/api/users/heartbeat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1150,11 +1181,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     heartbeat();
-    // Optimized heartbeat: Every 120 seconds (2 minutes), pauses in background tabs to save Vercel requests
+    // Heartbeat every 35 seconds (server throttles Supabase writes to 80s)
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
       heartbeat();
-    }, 120000);
+    }, 35000);
 
     const onUserActivity = () => {
       (window as any)._lastSupaSessionCheck = 0; // Force immediate check on tab focus/activity

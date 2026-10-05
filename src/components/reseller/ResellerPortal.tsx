@@ -30,6 +30,7 @@ import { ResellerEditUserModal } from './ResellerEditUserModal';
 import { ResellerPasswordModal } from './ResellerPasswordModal';
 import { ResellerEmailModal } from './ResellerEmailModal';
 import { CustomTimeModal } from '../modals/CustomTimeModal';
+import { ResellerApiDocsModal } from './ResellerApiDocsModal';
 
 interface ResellerPortalProps {
   onBackToApp?: () => void;
@@ -56,15 +57,16 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
   const [selectedUserForPassword, setSelectedUserForPassword] = useState<User | null>(null);
   const [selectedUserForEmail, setSelectedUserForEmail] = useState<User | null>(null);
   const [selectedUserForCustomTime, setSelectedUserForCustomTime] = useState<User | null>(null);
+  const [showApiDocs, setShowApiDocs] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
   const [, setTimeTick] = useState(0);
 
-  // Auto-tick every 30 seconds for live dynamic countdown updates
+  // Auto-tick every 10 seconds for live dynamic countdown and online updates
   React.useEffect(() => {
     const timer = setInterval(() => {
       setTimeTick(t => t + 1);
-    }, 30000);
+    }, 10000);
     return () => clearInterval(timer);
   }, []);
 
@@ -231,6 +233,15 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setShowApiDocs(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-purple-900/60 to-indigo-900/60 hover:from-purple-800/80 hover:to-indigo-800/80 border border-purple-500/40 text-purple-200 hover:text-white rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
+              title="Automated API and Webhooks to grant/revoke access from external website"
+            >
+              <Key className="w-3.5 h-3.5 text-purple-400" />
+              <span>API & Webhooks</span>
+            </button>
+
             {onBackToApp && (
               <button
                 onClick={onBackToApp}
@@ -660,6 +671,15 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
             </div>
           </div>
         </div>
+      )}
+
+      {/* API & Webhooks Docs Modal */}
+      {showApiDocs && currentReseller && (
+        <ResellerApiDocsModal
+          reseller={currentReseller}
+          onClose={() => setShowApiDocs(false)}
+          showToast={showToast}
+        />
       )}
     </div>
   );
