@@ -18,7 +18,7 @@ export const ResellerApiDocsModal: React.FC<ResellerApiDocsModalProps> = ({
   const { updateReseller } = useAuth();
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedCurl, setCopiedCurl] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'curl' | 'node' | 'php' | 'python'>('curl');
+  const [activeTab, setActiveTab] = useState<'curl' | 'cloudflare' | 'supabase' | 'node' | 'php' | 'python'>('curl');
 
   // Interactive Test State
   const [testEmail, setTestEmail] = useState('testuser@gmail.com');
@@ -98,22 +98,301 @@ export const ResellerApiDocsModal: React.FC<ResellerApiDocsModalProps> = ({
     }
   };
 
-  const curlSnippet = `# 1. Give Access (supports 30 days OR 2 hours duration, password & telegram optional):
+  const curlSnippet = `# 1. Give Access via cURL / Webhook (supports exact Supabase schema):
 curl -X POST "${grantUrl}" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: ${apiKey || 'YOUR_ADMIN_GENERATED_API_KEY'}" \\
   -d '{
-    "email": "customer@gmail.com",
-    "password": "customerPass123",
-    "telegram": "@customer_tg",
-    "duration": "2 hours"
+    "id": "usr-res-mujhzif0-mfrv",
+    "name": "Rahul (Telegram Name)",
+    "email": "rahul@gmail.com",
+    "password": "Flow@1122",
+    "plan": "ultra",
+    "max_credits": 45000,
+    "credits": 45000,
+    "plan_days_left": 30,
+    "whatsapp": "+919876543210",
+    "telegram": "@rahul_tg",
+    "reseller_id": "${reseller.id}"
   }'
 
 # 2. Revoke / Remove Access (completely removes customer):
 curl -X POST "${revokeUrl}" \\
   -H "Content-Type: application/json" \\
   -H "x-api-key: ${apiKey || 'YOUR_ADMIN_GENERATED_API_KEY'}" \\
-  -d '{"email": "customer@gmail.com"}'`;
+  -d '{"email": "rahul@gmail.com"}'`;
+
+  const cloudflareSnippet = `// Cloudflare Worker: Multi-Role Master Handler (Prompt Receiver + User Access/Supabase Sync + Secure Extension Deliverer)
+
+// Memory Storage (Agar KV nahi bhi ho tab bhi memory me store rahega)
+let STORED_PROMPTS = {
+  server1: \`\`,
+  server2: \`\`,
+  lastUpdatedAt: new Date().toISOString()
+};
+
+// Portal Verification & Access URLs
+const PRIMARY_PORTAL_URL = 'https://flowmakerai.site';
+const BACKUP_PORTAL_URL = 'https://ais-dev-5exjtxig2elwz3zx6tao76-596472864147.asia-east1.run.app';
+
+// 1-Minute Cache (User verification quota bachaane ke liye)
+const AUTH_CACHE = new Map();
+const CACHE_TTL_MS = 60 * 1000;
+
+export default {
+  async fetch(request, env, ctx) {
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, x-session-token, x-reseller-id',
+    };
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    // 1. 🚫 Direct Browser GET Link Block (No public leak)
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Direct access restricted! Prompt is private."
+      }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // JSON Body Read
+    let body = {};
+    try {
+      body = await request.json();
+    } catch {
+      return new Response(JSON.stringify({ success: false, error: "Invalid JSON format" }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // =========================================================================
+    // 🌟 ROLE 1: DUSRI WEBSITE / ADMIN SE NAYA PROMPT AAYA (UPDATE & STORE - ZERO DISTURBANCE)
+    // =========================================================================
+    const isPromptUpdate = body.server1 !== undefined || body.server2 !== undefined || body.prompt !== undefined || body.servers !== undefined;
+
+    if (isPromptUpdate) {
+      if (body.server1 !== undefined) STORED_PROMPTS.server1 = body.server1;
+      if (body.server2 !== undefined) STORED_PROMPTS.server2 = body.server2;
+      if (body.prompt !== undefined && !STORED_PROMPTS.server1) STORED_PROMPTS.server1 = body.prompt;
+
+      // Agar Cloudflare KV bind ho toh usme bhi persist kar do
+      if (env && env.PROMPTS_KV) {
+        if (body.server1 !== undefined) await env.PROMPTS_KV.put('server1', body.server1);
+        if (body.server2 !== undefined) await env.PROMPTS_KV.put('server2', body.server2);
+      }
+
+      STORED_PROMPTS.lastUpdatedAt = new Date().toISOString();
+
+      // Dusri website ko turant SUCCESS return karo!
+      return new Response(JSON.stringify({
+        success: true,
+        status: "delivered",
+        message: "Server prompt updated successfully in Cloudflare Worker!",
+        updatedAt: STORED_PROMPTS.lastUpdatedAt
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // =========================================================================
+    // 🌟 ROLE 2: DUSRI WEBSITE / BOT SE NAYA USER / ORDER AAYA (SUPABASE & ACCESS SYNC)
+    // =========================================================================
+    const isUserAccessGrant = (
+      body.action === 'grant' ||
+      body.action === 'add_user' ||
+      body.plan_days_left !== undefined ||
+      body.planDaysLeft !== undefined ||
+      body.max_credits !== undefined ||
+      body.maxCredits !== undefined ||
+      body.reseller_id !== undefined ||
+      body.resellerId !== undefined ||
+      (body.email && !body.token && !body.sessionToken && (body.password || body.plan || body.telegram || body.whatsapp))
+    );
+
+    if (isUserAccessGrant) {
+      const grantUserData = async (baseUrl) => {
+        const resp = await fetch(\`\${baseUrl}/api/cloudflare/access\`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': request.headers.get('x-api-key') || body.apiKey || '${apiKey || ''}',
+            'x-reseller-id': request.headers.get('x-reseller-id') || body.reseller_id || body.resellerId || '${reseller.id}',
+          },
+          body: JSON.stringify({
+            id: body.id || undefined,                                     // e.g. usr-res-mujhzif0-mfrv
+            name: body.name || body.telegramProfile || "User",             // Telegram profile name
+            email: body.email,                                            // rahul@gmail.com
+            password: body.password || "Flow@1122",                       // Flow@1122
+            plan: body.plan || "ultra",                                   // ultra / basic
+            max_credits: body.max_credits !== undefined ? body.max_credits : (body.maxCredits !== undefined ? body.maxCredits : (body.plan === 'basic' ? 100 : 45000)),
+            credits: body.credits !== undefined ? body.credits : (body.plan === 'basic' ? 100 : 45000),
+            plan_days_left: body.plan_days_left !== undefined ? body.plan_days_left : (body.planDaysLeft !== undefined ? body.planDaysLeft : 30),
+            whatsapp: body.whatsapp || "",
+            telegram: body.telegram || "",
+            reseller_id: body.reseller_id || body.resellerId || "${reseller.id}",
+          })
+        });
+        const text = await resp.text();
+        return JSON.parse(text);
+      };
+
+      try {
+        let result = null;
+        try {
+          result = await grantUserData(PRIMARY_PORTAL_URL);
+        } catch (e1) {
+          result = await grantUserData(BACKUP_PORTAL_URL);
+        }
+
+        return new Response(JSON.stringify(result), {
+          status: result?.success ? 200 : 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: "Failed to sync user to Supabase: " + err.message
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    // =========================================================================
+    // 🌟 ROLE 3: EXTENSION SE USER AAYA HAI (PROMPT LENE KE LIYE - ZERO DISTURBANCE)
+    // =========================================================================
+    const email = (body.email || '').trim().toLowerCase();
+    const sessionToken = (body.token || body.sessionToken || '').trim();
+    const version = body.version || '';
+
+    if (!email || !sessionToken) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Authentication failed: Email and session token are required."
+      }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 1-Minute Cache Check
+    const cacheKey = \`\${email}::\${sessionToken}\`;
+    const now = Date.now();
+    const cachedEntry = AUTH_CACHE.get(cacheKey);
+    let authData = null;
+
+    if (cachedEntry && (now - cachedEntry.timestamp < CACHE_TTL_MS)) {
+      authData = cachedEntry.authData;
+    } else {
+      const tryVerify = async (baseUrl) => {
+        const resp = await fetch(\`\${baseUrl}/api/extension/cf-verify\`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, sessionToken, version })
+        });
+        const text = await resp.text();
+        return JSON.parse(text);
+      };
+
+      try {
+        authData = await tryVerify(PRIMARY_PORTAL_URL);
+      } catch (e1) {
+        try {
+          authData = await tryVerify(BACKUP_PORTAL_URL);
+        } catch (e2) {}
+      }
+
+      if (authData && authData.allowed) {
+        AUTH_CACHE.set(cacheKey, { authData, timestamp: now });
+      }
+    }
+
+    if (!authData) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Portal verification server unreachable. Please try again."
+      }), {
+        status: 502,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    if (!authData.allowed) {
+      AUTH_CACHE.delete(cacheKey);
+      return new Response(JSON.stringify({
+        success: false,
+        updateRequired: Boolean(authData.updateRequired),
+        requiredVersion: authData.requiredVersion || '3.2.0',
+        error: authData.error || "Permission Denied by FlowMaker Server."
+      }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Agar KV use kar rahe ho toh wahan se taaza utha lo
+    let activeServer1 = STORED_PROMPTS.server1;
+    let activeServer2 = STORED_PROMPTS.server2;
+    if (env && env.PROMPTS_KV) {
+      activeServer1 = (await env.PROMPTS_KV.get('server1')) || activeServer1;
+      activeServer2 = (await env.PROMPTS_KV.get('server2')) || activeServer2;
+    }
+
+    // ✅ Verified User ko Taaza Prompt Deliver Kiya!
+    return new Response(JSON.stringify({
+      success: true,
+      authenticated: true,
+      server1: activeServer1,
+      server2: activeServer2,
+      servers: [
+        { id: "server1", label: "Server 1", prompt: activeServer1 },
+        { id: "server2", label: "Server 2", prompt: activeServer2 }
+      ],
+      user: authData.user,
+      costs: authData.costs
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+};`;
+
+  const supabaseSnippet = `-- Supabase SQL: Exact Matching Table Structure
+-- Run this in your Supabase SQL Editor if creating or updating users table:
+create table if not exists public.users (
+  id text primary key,
+  name text,
+  email text unique not null,
+  password text default 'Flow@1122',
+  plan text default 'basic',
+  max_credits numeric default 100,
+  credits numeric default 100,
+  plan_days_left numeric default 30,
+  whatsapp text,
+  telegram text,
+  reseller_id text,
+  reseller_name text,
+  session_token text,
+  role text default 'user',
+  status text default 'active',
+  extension_access boolean default true,
+  is_online boolean default false,
+  last_active timestamp with time zone default timezone('utc'::text, now()),
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- Enable RLS and full operations
+alter table public.users enable row level security;
+create policy "Allow all operations on users" on public.users for all using (true) with check (true);`;
 
   const nodeSnippet = `// Node.js / AI Studio / Next.js Webhook Handler
 import fetch from 'node-fetch';
@@ -346,32 +625,34 @@ def revoke_access(customer_email):
                 Integration Code Snippets:
               </span>
               <div className="flex items-center gap-1 bg-[#141520] p-1 rounded-xl border border-neutral-800">
-                {(['curl', 'node', 'php', 'python'] as const).map(tab => (
+                {(['curl', 'cloudflare', 'supabase', 'node', 'php', 'python'] as const).map(tab => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
-                    className={`px-3 py-1 rounded-lg text-xs font-semibold capitalize transition-all cursor-pointer ${
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold capitalize transition-all cursor-pointer ${
                       activeTab === tab 
                         ? 'bg-purple-600 text-white shadow-sm' 
                         : 'text-neutral-400 hover:text-white'
                     }`}
                   >
-                    {tab === 'node' ? 'Node.js' : tab === 'curl' ? 'cURL' : tab.toUpperCase()}
+                    {tab === 'node' ? 'Node.js' : tab === 'curl' ? 'cURL / Webhook' : tab === 'cloudflare' ? 'Cloudflare Worker' : tab === 'supabase' ? 'Supabase SQL' : tab.toUpperCase()}
                   </button>
                 ))}
               </div>
             </div>
 
             <div className="relative">
-              <pre className="p-4 bg-[#07080b] border border-neutral-800/90 rounded-2xl font-mono text-[11px] text-purple-200 overflow-x-auto leading-relaxed shadow-inner max-h-56">
+              <pre className="p-4 bg-[#07080b] border border-neutral-800/90 rounded-2xl font-mono text-[11px] text-purple-200 overflow-x-auto leading-relaxed shadow-inner max-h-64">
                 {activeTab === 'curl' && curlSnippet}
+                {activeTab === 'cloudflare' && cloudflareSnippet}
+                {activeTab === 'supabase' && supabaseSnippet}
                 {activeTab === 'node' && nodeSnippet}
                 {activeTab === 'php' && phpSnippet}
                 {activeTab === 'python' && pythonSnippet}
               </pre>
               <button
                 onClick={() => {
-                  const text = activeTab === 'curl' ? curlSnippet : activeTab === 'node' ? nodeSnippet : activeTab === 'php' ? phpSnippet : pythonSnippet;
+                  const text = activeTab === 'curl' ? curlSnippet : activeTab === 'cloudflare' ? cloudflareSnippet : activeTab === 'supabase' ? supabaseSnippet : activeTab === 'node' ? nodeSnippet : activeTab === 'php' ? phpSnippet : pythonSnippet;
                   copyToClipboard(text, `${activeTab.toUpperCase()} Code`);
                 }}
                 className="absolute top-3 right-3 px-2.5 py-1 bg-neutral-800/90 hover:bg-neutral-700 text-white rounded-lg text-[10px] font-semibold flex items-center gap-1 transition-all cursor-pointer shadow"

@@ -33,20 +33,21 @@ export const SupabaseSettingsModal: React.FC<SupabaseSettingsModalProps> = ({
   const sqlSchema = `-- Run this in your Supabase SQL Editor:
 create table if not exists public.users (
   id text primary key,
-  name text not null,
+  name text,
   email text unique not null,
-  password text,
+  password text default 'Flow@1122',
+  plan text default 'basic',
+  max_credits numeric default 100,
+  credits numeric default 100,
+  plan_days_left numeric default 30,
   whatsapp text,
   telegram text,
   referral_code text,
   referred_by text,
-  plan text default 'basic',
-  credits numeric default 100,
-  max_credits numeric default 100,
-  plan_days_left integer default 30,
-  role text default 'user',
   reseller_id text,
   reseller_name text,
+  session_token text,
+  role text default 'user',
   status text default 'active',
   extension_access boolean default true,
   is_online boolean default false,
@@ -54,19 +55,26 @@ create table if not exists public.users (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- If users table already exists, run this to ensure extension_access column exists:
+-- If users table already exists, run this to ensure new columns exist:
 alter table public.users add column if not exists extension_access boolean default true;
+alter table public.users add column if not exists session_token text;
+alter table public.users add column if not exists reseller_id text;
+alter table public.users add column if not exists telegram text;
+alter table public.users add column if not exists whatsapp text;
 
 create table if not exists public.resellers (
   id text primary key,
   portal_name text not null,
-  code text unique not null,
-  pin text not null,
-  max_users integer default 50,
+  email text,
+  password text,
+  user_limit integer default 50,
+  days_left numeric default 30,
+  api_key text,
+  status text default 'active',
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Enable Read & Write permissions
+-- Enable Read & Write permissions (RLS)
 alter table public.users enable row level security;
 alter table public.resellers enable row level security;
 
