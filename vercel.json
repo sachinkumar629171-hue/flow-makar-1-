@@ -49,6 +49,26 @@
   ],
   "rewrites": [
     {
+      "source": "/api/reseller/access/grant",
+      "destination": "/api/reseller/access?action=grant"
+    },
+    {
+      "source": "/api/reseller/access/revoke",
+      "destination": "/api/reseller/access?action=revoke"
+    },
+    {
+      "source": "/api/reseller/access/status",
+      "destination": "/api/reseller/access?action=status"
+    },
+    {
+      "source": "/api/reseller/grant-access",
+      "destination": "/api/reseller/access?action=grant"
+    },
+    {
+      "source": "/api/reseller/revoke-access",
+      "destination": "/api/reseller/access?action=revoke"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/"
     }
