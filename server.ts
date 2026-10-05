@@ -76,6 +76,7 @@ const SERVER_ALLOWED_USER_COLUMNS = new Set([
   'max_credits',
   'credits',
   'plan_days_left',
+  'plan_expires_at',
   'session_token',
   'is_online',
   'whatsapp',
@@ -83,6 +84,7 @@ const SERVER_ALLOWED_USER_COLUMNS = new Set([
   'referral_code',
   'referred_by',
   'reseller_id',
+  'reseller_name',
   'created_at'
 ]);
 
@@ -113,6 +115,9 @@ function formatServerSupabaseUserPayload(user: Record<string, any>): Record<stri
   if (user.planDaysLeft !== undefined) payload.plan_days_left = Number(user.planDaysLeft) ?? 30;
   else if (user.plan_days_left !== undefined) payload.plan_days_left = Number(user.plan_days_left) ?? 30;
 
+  if (user.planExpiresAt !== undefined) payload.plan_expires_at = String(user.planExpiresAt);
+  else if (user.plan_expires_at !== undefined) payload.plan_expires_at = String(user.plan_expires_at);
+
   if (user.sessionToken !== undefined) payload.session_token = String(user.sessionToken || '');
   else if (user.session_token !== undefined) payload.session_token = String(user.session_token || '');
 
@@ -130,6 +135,9 @@ function formatServerSupabaseUserPayload(user: Record<string, any>): Record<stri
 
   if (user.resellerId !== undefined && user.resellerId !== null) payload.reseller_id = String(user.resellerId);
   else if (user.reseller_id !== undefined && user.reseller_id !== null) payload.reseller_id = String(user.reseller_id);
+
+  if (user.resellerName !== undefined && user.resellerName !== null) payload.reseller_name = String(user.resellerName);
+  else if (user.reseller_name !== undefined && user.reseller_name !== null) payload.reseller_name = String(user.reseller_name);
 
   if (user.createdAt !== undefined) payload.created_at = String(user.createdAt);
   else if (user.created_at !== undefined) payload.created_at = String(user.created_at);
@@ -2521,23 +2529,58 @@ function getResellerApiKey(reseller: any): string {
 async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   const apiKey = (
     req.headers['x-api-key'] ||
+    req.headers['api-key'] ||
+    req.headers['apikey'] ||
+    req.headers['x-api_key'] ||
+    req.headers['reseller-api-key'] ||
+    req.headers['x-reseller-key'] ||
     req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
     req.query.apiKey ||
+    req.query.api_key ||
+    req.query.key ||
+    req.query.token ||
+    req.query.auth ||
+    req.query.resellerApiKey ||
+    req.query.reseller_api_key ||
     req.body?.apiKey ||
+    req.body?.api_key ||
+    req.body?.key ||
+    req.body?.token ||
+    req.body?.auth ||
+    req.body?.resellerApiKey ||
+    req.body?.reseller_api_key ||
     ''
   ).toString().trim();
 
   const resellerId = (
     req.headers['x-reseller-id'] ||
+    req.headers['reseller-id'] ||
     req.body?.resellerId ||
+    req.body?.reseller_id ||
+    req.body?.reseller ||
     req.query.resellerId ||
+    req.query.reseller_id ||
+    req.query.reseller ||
     ''
   ).toString().trim();
 
   const resellerEmail = (
     req.headers['x-reseller-email'] ||
     req.body?.resellerEmail ||
+    req.body?.reseller_email ||
     req.query.resellerEmail ||
+    req.query.reseller_email ||
+    ''
+  ).toString().trim().toLowerCase();
+
+  const resellerName = (
+    req.headers['x-reseller-name'] ||
+    req.body?.portalName ||
+    req.body?.resellerName ||
+    req.body?.reseller_name ||
+    req.query.portalName ||
+    req.query.resellerName ||
+    req.query.reseller_name ||
     ''
   ).toString().trim().toLowerCase();
 
@@ -2595,17 +2638,19 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
 
   // Match by API Key
   if (apiKey) {
-    const cleanKey = apiKey.trim();
+    const cleanKey = apiKey.trim().toLowerCase();
     const matched = allResellers.find(r => {
-      const rId = String(r.id || '').trim();
+      const rId = String(r.id || '').trim().toLowerCase();
       const rCleanId = rId.replace(/[^a-zA-Z0-9]/g, '');
       const rEmail = String(r.email || '').trim().toLowerCase();
-      const rApiKey = String(r.apiKey || r.api_key || '').trim();
+      const rApiKey = String(r.apiKey || r.api_key || '').trim().toLowerCase();
+      const rPortalName = String(r.portalName || r.portal_name || '').trim().toLowerCase();
 
-      if (rApiKey && rApiKey === cleanKey) return true;
+      if (rApiKey && (rApiKey === cleanKey || rApiKey === apiKey.trim())) return true;
       if (rId && rId === cleanKey) return true;
-      if (rEmail && rEmail === cleanKey.toLowerCase()) return true;
-      if (rCleanId && cleanKey.startsWith(`flw_res_${rCleanId}`)) return true;
+      if (rEmail && rEmail === cleanKey) return true;
+      if (rPortalName && rPortalName === cleanKey) return true;
+      if (rCleanId && cleanKey.includes(rCleanId)) return true;
       return false;
     });
     if (matched) return matched;
@@ -2613,13 +2658,24 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
 
   // Match by Reseller ID
   if (resellerId) {
-    const matched = allResellers.find(r => r.id === resellerId || r.id.replace(/[^a-zA-Z0-9]/g, '') === resellerId.replace(/[^a-zA-Z0-9]/g, ''));
+    const cleanResId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    const matched = allResellers.find(r => {
+      const rId = String(r.id || '').trim().toLowerCase();
+      const rCleanId = rId.replace(/[^a-zA-Z0-9]/g, '');
+      return rId === resellerId.toLowerCase() || (cleanResId && rCleanId === cleanResId);
+    });
     if (matched) return matched;
   }
 
   // Match by Reseller Email
   if (resellerEmail) {
     const matched = allResellers.find(r => r.email && r.email.toLowerCase() === resellerEmail);
+    if (matched) return matched;
+  }
+
+  // Match by Reseller Name
+  if (resellerName) {
+    const matched = allResellers.find(r => (r.portalName && r.portalName.toLowerCase() === resellerName) || (r.portal_name && r.portal_name.toLowerCase() === resellerName));
     if (matched) return matched;
   }
 
@@ -2827,7 +2883,26 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     });
   }
 
-  const rawEmail = req.body?.email || req.body?.gmailId || req.query?.email || '';
+  const rawEmail = (
+    req.body?.email || 
+    req.body?.customerEmail || 
+    req.body?.customer_email || 
+    req.body?.userEmail || 
+    req.body?.user_email || 
+    req.body?.gmailId || 
+    req.body?.gmail || 
+    req.body?.mail ||
+    req.query?.email || 
+    req.query?.customerEmail || 
+    req.query?.customer_email || 
+    req.query?.userEmail || 
+    req.query?.user_email || 
+    req.query?.gmailId || 
+    req.query?.gmail || 
+    req.query?.mail ||
+    ''
+  ).toString().trim();
+
   const email = cleanEmailString(rawEmail);
   if (!email || !email.includes('@')) {
     return res.status(400).json({
@@ -2837,9 +2912,9 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     });
   }
 
-  const password = (req.body?.password || req.query?.password || 'Aass1122').trim();
+  const password = (req.body?.password || req.query?.password || req.body?.pass || req.query?.pass || 'Aass1122').trim();
   const telegram = (req.body?.telegram || req.body?.telegramUid || req.body?.telegramProfile || req.body?.telegramId || req.query?.telegram || '').trim();
-  const name = (req.body?.name || req.query?.name || email.split('@')[0]).trim();
+  const name = (req.body?.name || req.body?.userName || req.body?.customerName || req.query?.name || req.query?.userName || email.split('@')[0]).trim();
   const plan = (req.body?.plan || req.query?.plan || 'ultra').trim();
   const credits = req.body?.credits !== undefined ? Number(req.body.credits) : (plan === 'ultra' ? 45000 : 100);
   const maxCredits = req.body?.maxCredits !== undefined ? Number(req.body.maxCredits) : credits;
@@ -2853,7 +2928,7 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
   if (user) {
     action = 'renewed';
     user.name = name || user.name;
-    if (req.body?.password) user.password = password;
+    if (req.body?.password || req.query?.password) user.password = password;
     if (telegram) user.telegram = telegram;
     user.plan = plan;
     user.credits = credits;
@@ -2864,6 +2939,8 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     user.extensionAccess = extensionAccess;
     user.resellerId = reseller.id;
     user.resellerName = reseller.portalName;
+    user.sessionToken = ''; // Reset session token so fresh login succeeds
+    user.isOnline = false;
     user.lastActive = now;
   } else {
     action = 'created';
@@ -2955,7 +3032,21 @@ const handleResellerRevokeAccess = async (req: any, res: any) => {
     });
   }
 
-  const rawEmail = req.body?.email || req.body?.gmailId || req.query?.email || '';
+  const rawEmail = (
+    req.body?.email || 
+    req.body?.customerEmail || 
+    req.body?.customer_email || 
+    req.body?.userEmail || 
+    req.body?.user_email || 
+    req.body?.gmailId || 
+    req.body?.gmail || 
+    req.query?.email || 
+    req.query?.customerEmail || 
+    req.query?.userEmail || 
+    req.query?.gmailId || 
+    ''
+  ).toString().trim();
+
   const email = cleanEmailString(rawEmail);
   if (!email) {
     return res.status(400).json({
@@ -2975,6 +3066,13 @@ const handleResellerRevokeAccess = async (req: any, res: any) => {
   const supa = getServerSupabase();
   if (supa) {
     supa.from('users').delete().ilike('email', email).then(() => {}, () => {});
+    supa.from('users').upsert({
+      id: 'admin_config_all_users',
+      name: JSON.stringify(db.users),
+      email: 'all_users_backup@flowmaker.local',
+      role: 'system_config',
+      status: 'active',
+    }).then(() => {}, () => {});
   }
 
   return res.json({
@@ -3029,11 +3127,64 @@ const handleResellerUserStatus = async (req: any, res: any) => {
   });
 };
 
-app.post('/api/reseller/access/grant', handleResellerGrantAccess);
-app.post('/api/reseller/grant-access', handleResellerGrantAccess);
-app.post('/api/reseller/access/revoke', handleResellerRevokeAccess);
-app.post('/api/reseller/revoke-access', handleResellerRevokeAccess);
-app.get('/api/reseller/access/status', handleResellerUserStatus);
+// Handler for LISTING USERS for a Reseller
+const handleResellerGetUsers = async (req: any, res: any) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  const reseller = await resolveAuthorizedReseller(req);
+  if (!reseller) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid Reseller API Key or Reseller ID.',
+    });
+  }
+
+  const cleanCurrentId = (reseller.id || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const currentPortalName = (reseller.portalName || '').trim().toLowerCase();
+  const currentEmail = (reseller.email || '').trim().toLowerCase();
+
+  const matchedUsers = db.users.filter(u => {
+    if (!u) return false;
+    if (u.resellerId && u.resellerId === reseller.id) return true;
+    const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    if (cleanCurrentId && cleanUserResId && cleanCurrentId === cleanUserResId) return true;
+    if (u.resellerName && currentPortalName && u.resellerName.trim().toLowerCase() === currentPortalName) return true;
+    if ((u as any).resellerEmail && currentEmail && (u as any).resellerEmail.trim().toLowerCase() === currentEmail) return true;
+    return false;
+  });
+
+  return res.json({
+    success: true,
+    reseller: {
+      id: reseller.id,
+      portalName: reseller.portalName,
+      email: reseller.email,
+      userLimit: reseller.userLimit,
+      daysLeft: reseller.daysLeft,
+    },
+    count: matchedUsers.length,
+    users: matchedUsers,
+  });
+};
+
+// Bind ALL routes and aliases for Reseller API (supporting POST, GET, all verbs)
+app.all('/api/reseller/access/grant', handleResellerGrantAccess);
+app.all('/api/reseller/grant-access', handleResellerGrantAccess);
+app.all('/api/reseller/grant', handleResellerGrantAccess);
+app.all('/api/reseller/add-user', handleResellerGrantAccess);
+app.all('/api/reseller/user/add', handleResellerGrantAccess);
+app.all('/api/reseller/users/create', handleResellerGrantAccess);
+
+app.all('/api/reseller/access/revoke', handleResellerRevokeAccess);
+app.all('/api/reseller/revoke-access', handleResellerRevokeAccess);
+app.all('/api/reseller/revoke', handleResellerRevokeAccess);
+app.all('/api/reseller/remove-user', handleResellerRevokeAccess);
+
+app.all('/api/reseller/access/status', handleResellerUserStatus);
+app.all('/api/reseller/status', handleResellerUserStatus);
+app.all('/api/reseller/user/status', handleResellerUserStatus);
+
+app.all('/api/reseller/users', handleResellerGetUsers);
+app.all('/api/reseller/my-users', handleResellerGetUsers);
 
 // GET config
 app.get('/api/config', (req, res) => {

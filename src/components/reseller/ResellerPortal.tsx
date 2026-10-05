@@ -71,6 +71,36 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     return () => clearInterval(timer);
   }, []);
 
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Auto-poll every 3 seconds while on Reseller Portal to catch API key requests immediately
+  React.useEffect(() => {
+    if (!currentReseller) return;
+    const interval = setInterval(() => {
+      fetch('/api/users')
+        .then(res => res.json())
+        .then(data => {
+          if (data?.users && Array.isArray(data.users)) {
+            // Context will automatically merge or state will update
+            setTimeTick(t => t + 1);
+          }
+        })
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [currentReseller]);
+
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      const res = await fetch('/api/users');
+      if (res.ok) {
+        showToast('Reseller data refreshed successfully!');
+      }
+    } catch {}
+    setTimeout(() => setIsRefreshing(false), 600);
+  };
+
   // Direct login state when accessing /reseller via URL
   const [resellerEmail, setResellerEmail] = useState('');
   const [resellerPassword, setResellerPassword] = useState('');
@@ -181,8 +211,20 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
   const expiryInfo = calculateResellerExpiry(currentReseller);
   const isPortalExpired = expiryInfo.isExpired || currentReseller.status === 'suspended' || currentReseller.status === 'expired';
 
-  // Reseller's assigned users
-  const resellerUsers = users.filter(u => u.resellerId === currentReseller.id);
+  // Reseller's assigned users (Multi-tier flexible matching so no API user is missed)
+  const cleanCurrentId = (currentReseller.id || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const currentPortalName = (currentReseller.portalName || '').trim().toLowerCase();
+  const currentEmail = (currentReseller.email || '').trim().toLowerCase();
+
+  const resellerUsers = users.filter(u => {
+    if (!u) return false;
+    if (u.resellerId && u.resellerId === currentReseller.id) return true;
+    const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    if (cleanCurrentId && cleanUserResId && cleanCurrentId === cleanUserResId) return true;
+    if (u.resellerName && currentPortalName && u.resellerName.trim().toLowerCase() === currentPortalName) return true;
+    if ((u as any).resellerEmail && currentEmail && (u as any).resellerEmail.trim().toLowerCase() === currentEmail) return true;
+    return false;
+  });
   const filteredUsers = resellerUsers.filter(u => 
     u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     u.email.toLowerCase().includes(searchTerm.toLowerCase())
@@ -369,6 +411,15 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
           </div>
 
           <div className="flex items-center gap-2.5">
+            <button
+              onClick={handleManualRefresh}
+              disabled={isRefreshing}
+              title="Refresh Users List"
+              className="flex items-center gap-1.5 px-3 py-2 bg-[#161824] hover:bg-[#1e2030] border border-neutral-800 text-neutral-300 hover:text-white rounded-xl text-xs font-medium transition-all cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-purple-400' : 'text-neutral-400'}`} />
+              <span>Refresh</span>
+            </button>
             <button
               onClick={() => setShowNewUserModal(true)}
               disabled={isPortalExpired || totalCreated >= currentReseller.userLimit}
