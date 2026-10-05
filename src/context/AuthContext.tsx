@@ -41,7 +41,10 @@ interface AuthContextType {
       password?: string;
       plan: PlanType;
       credits: number;
-      daysLeft: number;
+      daysLeft?: number;
+      durationValue?: number;
+      durationUnit?: 'hours' | 'days';
+      planExpiresAt?: string;
     }
   ) => Promise<{ success: boolean; error?: string }>;
   rotateUserCredentials: (userId: string) => { email: string; password?: string } | null;
@@ -1722,7 +1725,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       password?: string;
       plan: PlanType;
       credits: number;
-      daysLeft: number;
+      daysLeft?: number;
+      durationValue?: number;
+      durationUnit?: 'hours' | 'days';
+      planExpiresAt?: string;
     }
   ): Promise<{ success: boolean; error?: string }> => {
     const targetReseller = resellers.find(r => r.id === resellerId);
@@ -1764,12 +1770,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
-    const initialPassword = userData.password?.trim() || `flow${Math.floor(100000 + Math.random() * 900000)}`;
+    const initialPassword = userData.password?.trim() || 'Aass1122';
     const credits = userData.credits || (userData.plan === 'ultra' ? 45000 : 100);
     const maxCredits = credits;
-    // Reseller members access is strictly capped at maximum 30 days
-    const requestedDays = userData.daysLeft !== undefined ? userData.daysLeft : 30;
-    const daysLeft = Math.min(30, Math.max(1, requestedDays));
+
+    let planDaysLeft = 30;
+    let planExpiresAt: string | undefined = undefined;
+
+    if (userData.durationUnit === 'hours') {
+      const hours = Math.max(0.5, Number(userData.durationValue || 2));
+      const expiresMs = Date.now() + Math.round(hours * 3600000);
+      planExpiresAt = new Date(expiresMs).toISOString();
+      planDaysLeft = Math.max(0.01, parseFloat((hours / 24).toFixed(3)));
+    } else {
+      const requestedDays = userData.durationValue !== undefined ? userData.durationValue : (userData.daysLeft !== undefined ? userData.daysLeft : 30);
+      const days = Math.min(30, Math.max(1, requestedDays));
+      const expiresMs = Date.now() + Math.round(days * 86400000);
+      planExpiresAt = new Date(expiresMs).toISOString();
+      planDaysLeft = days;
+    }
 
     const newUser: User = {
       id: `usr-res-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
@@ -1779,7 +1798,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       plan: userData.plan,
       credits,
       maxCredits,
-      planDaysLeft: daysLeft,
+      planDaysLeft,
+      planExpiresAt,
       role: 'user',
       resellerId: targetReseller.id,
       resellerName: targetReseller.portalName,

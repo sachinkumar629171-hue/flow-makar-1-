@@ -2837,7 +2837,7 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     });
   }
 
-  const password = (req.body?.password || req.query?.password || `pass_${Math.random().toString(36).substring(2, 8)}`).trim();
+  const password = (req.body?.password || req.query?.password || 'Aass1122').trim();
   const telegram = (req.body?.telegram || req.body?.telegramUid || req.body?.telegramProfile || req.body?.telegramId || req.query?.telegram || '').trim();
   const name = (req.body?.name || req.query?.name || email.split('@')[0]).trim();
   const plan = (req.body?.plan || req.query?.plan || 'ultra').trim();

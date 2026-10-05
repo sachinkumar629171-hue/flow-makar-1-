@@ -202,7 +202,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const name = (req.body?.name || req.query?.name || email.split('@')[0]).trim();
-  const password = (req.body?.password || req.query?.password || `pass_${Math.random().toString(36).substring(2, 8)}`).trim();
+  const password = (req.body?.password || req.query?.password || '123456').trim();
   const telegram = (req.body?.telegram || req.body?.telegramUid || req.body?.telegramProfile || req.body?.telegramId || req.query?.telegram || '').trim();
   const plan = (req.body?.plan || req.query?.plan || 'ultra').trim();
   const credits = req.body?.credits !== undefined ? Number(req.body.credits) : (plan === 'ultra' ? 45000 : 100);
@@ -216,13 +216,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let grantAction = 'created';
   let userId = existingUser?.id || `usr-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`;
-  let sessionToken = existingUser?.session_token || `sess-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  let sessionToken = existingUser?.session_token || '';
 
   if (existingUser && !existingUser.id?.startsWith('admin_config_')) {
     grantAction = 'renewed';
     await supabase.from('users').update({
       name: name || existingUser.name,
-      password: req.body?.password ? password : existingUser.password,
+      password: req.body?.password ? password : (existingUser.password || '123456'),
       telegram: telegram || existingUser.telegram,
       plan,
       credits,
@@ -233,7 +233,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       extension_access: extensionAccess,
       reseller_id: reseller.id,
       reseller_name: reseller.portal_name || reseller.portalName,
-      last_active: now,
     }).eq('id', existingUser.id);
   } else {
     grantAction = 'created';
@@ -241,7 +240,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       id: userId,
       name,
       email,
-      password,
+      password: password || '123456',
       telegram,
       plan,
       credits,
@@ -254,9 +253,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       reseller_id: reseller.id,
       reseller_name: reseller.portal_name || reseller.portalName,
       role: 'user',
-      is_online: true,
+      is_online: false,
       created_at: now,
-      last_active: now,
+      last_active: '',
     });
   }
 

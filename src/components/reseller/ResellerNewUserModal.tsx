@@ -12,7 +12,9 @@ interface ResellerNewUserModalProps {
     password?: string;
     plan: PlanType;
     credits: number;
-    daysLeft: number;
+    daysLeft?: number;
+    durationValue?: number;
+    durationUnit?: 'hours' | 'days';
   }) => Promise<{ success: boolean; error?: string }> | { success: boolean; error?: string };
   currentCount: number;
 }
@@ -26,12 +28,12 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
 }) => {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState(`flow${Math.floor(100000 + Math.random() * 900000)}`);
+  const [password, setPassword] = useState('');
   const [plan, setPlan] = useState<PlanType>('ultra');
   const [credits, setCredits] = useState(45000);
-  const [daysLeft, setDaysLeft] = useState(30);
+  const [durationUnit, setDurationUnit] = useState<'days' | 'hours'>('days');
+  const [durationValue, setDurationValue] = useState<number>(30);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
 
   if (!isOpen) return null;
@@ -44,7 +46,17 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
   };
 
   const handleGeneratePassword = () => {
-    setPassword(`flow${Math.floor(100000 + Math.random() * 900000)}`);
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    setPassword(`Aass${randomSuffix}`);
+  };
+
+  const handleUnitChange = (unit: 'days' | 'hours') => {
+    setDurationUnit(unit);
+    if (unit === 'hours') {
+      setDurationValue(2); // Default 2 hours for demo access
+    } else {
+      setDurationValue(30); // Default 30 days
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -52,20 +64,27 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
     setError(null);
     setLoading(true);
 
-    const targetDays = Math.min(30, Math.max(1, daysLeft || 30));
+    const finalPass = password.trim() || 'Aass1122';
+    const finalValue = Math.max(0.5, durationValue || (durationUnit === 'hours' ? 2 : 30));
+
     try {
       const res = await onAddUser({
         name: name.trim(),
         email: email.trim().toLowerCase(),
-        password,
+        password: finalPass,
         plan,
         credits,
-        daysLeft: targetDays,
+        durationUnit,
+        durationValue: finalValue,
+        daysLeft: durationUnit === 'days' ? Math.min(30, Math.max(1, finalValue)) : Math.max(0.01, parseFloat((finalValue / 24).toFixed(3))),
       });
 
       if (!res.success) {
         setError(res.error || 'Failed to create user');
       } else {
+        setName('');
+        setEmail('');
+        setPassword('');
         onClose();
       }
     } catch {
@@ -76,7 +95,7 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm select-text">
       <div className="bg-[#12131a] border border-neutral-800 rounded-2xl w-full max-w-lg overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800/80 bg-[#161722]">
@@ -147,15 +166,16 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
             </div>
           </div>
 
-          {/* Password */}
+          {/* Password (Empty by default, with Generate Random button) */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="block text-xs font-medium text-neutral-300">Login Password</label>
               <button
                 type="button"
                 onClick={handleGeneratePassword}
-                className="text-[11px] text-purple-400 hover:text-purple-300 cursor-pointer"
+                className="text-[11px] font-semibold text-purple-400 hover:text-purple-300 cursor-pointer flex items-center gap-1 hover:underline"
               >
+                <Sparkles className="w-3 h-3" />
                 Generate Random
               </button>
             </div>
@@ -163,10 +183,10 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
               <Lock className="w-4 h-4 text-neutral-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                required
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                className="w-full pl-10 pr-3.5 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white font-mono text-sm focus:outline-none focus:border-purple-500"
+                placeholder="Enter password or leave blank for default (Aass1122)"
+                className="w-full pl-10 pr-3.5 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white font-mono text-sm placeholder:font-sans placeholder:text-neutral-500 focus:outline-none focus:border-purple-500"
               />
             </div>
           </div>
@@ -209,8 +229,8 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
             </div>
           </div>
 
-          {/* Credits & Validity */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* Credits & Validity with Hours / Days Toggle */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-neutral-300 mb-1.5">Credits Allocated</label>
               <input
@@ -221,21 +241,113 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
                 className="w-full px-3.5 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white text-sm focus:outline-none focus:border-purple-500"
               />
             </div>
+
             <div>
               <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-medium text-neutral-300">Validity (Days)</label>
-                <span className="text-[10px] text-purple-400 font-mono">Max 30 Days</span>
+                <label className="block text-xs font-medium text-neutral-300">
+                  Validity Duration
+                </label>
+                {/* Unit Switcher */}
+                <div className="flex items-center bg-[#0b0c0f] border border-neutral-800 rounded-lg p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => handleUnitChange('days')}
+                    className={`px-2 py-0.5 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${
+                      durationUnit === 'days'
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    Days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleUnitChange('hours')}
+                    className={`px-2 py-0.5 text-[10px] font-semibold rounded-md transition-all cursor-pointer ${
+                      durationUnit === 'hours'
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    Hours
+                  </button>
+                </div>
               </div>
+
               <div className="relative">
                 <Clock className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="number"
                   min="1"
-                  max="30"
-                  value={daysLeft}
-                  onChange={e => setDaysLeft(Math.min(30, Math.max(1, Number(e.target.value))))}
-                  className="w-full pl-9 pr-3.5 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white text-sm focus:outline-none focus:border-purple-500"
+                  max={durationUnit === 'days' ? 30 : 720}
+                  value={durationValue}
+                  onChange={e => setDurationValue(Number(e.target.value))}
+                  placeholder={durationUnit === 'days' ? 'e.g. 30' : 'e.g. 2'}
+                  className="w-full pl-9 pr-14 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white text-sm focus:outline-none focus:border-purple-500"
                 />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-neutral-400 font-medium">
+                  {durationUnit === 'days' ? 'Days' : 'Hours'}
+                </span>
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div className="flex items-center gap-1.5 mt-2">
+                {durationUnit === 'hours' ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(2)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      2h (Demo)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(6)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      6h
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(12)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      12h
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(24)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      24h
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(7)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      7 Days
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(15)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      15 Days
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDurationValue(30)}
+                      className="px-2 py-1 bg-[#1a1c26] hover:bg-purple-600/30 border border-neutral-800 hover:border-purple-500/50 rounded-lg text-[10px] text-neutral-300 hover:text-purple-200 transition-colors cursor-pointer"
+                    >
+                      30 Days (Max)
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -251,10 +363,10 @@ export const ResellerNewUserModal: React.FC<ResellerNewUserModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={isLimitReached}
+              disabled={isLimitReached || loading}
               className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold shadow-lg shadow-purple-600/20 transition-all cursor-pointer"
             >
-              Create Member Access
+              {loading ? 'Creating...' : 'Create Member Access'}
             </button>
           </div>
         </form>

@@ -1,6 +1,28 @@
 {
   "users": [
     {
+      "id": "usr-1791199030507-0ge",
+      "name": "Default Pass User",
+      "email": "test_default_pass@gmail.com",
+      "password": "Aass1122",
+      "telegram": "",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 0.083,
+      "planExpiresAt": "2026-10-05T13:17:10.507Z",
+      "status": "active",
+      "extensionAccess": true,
+      "sessionToken": "sess-1791199030507-np8tf",
+      "resellerId": "reseller-mum1n75t-l6gu",
+      "resellerName": "Sachin portal 2",
+      "role": "user",
+      "isOnline": true,
+      "createdAt": "2026-10-05T11:17:10.507Z",
+      "lastActive": "2026-10-05T11:17:10.507Z",
+      "avatarColor": "from-purple-600 to-indigo-600"
+    },
+    {
       "id": "usr-1791197584324-id5",
       "name": "rrrrrrr",
       "email": "rrrrrrr@gmail.com",
@@ -17,7 +39,7 @@
       "resellerId": "reseller-mum1n75t-l6gu",
       "resellerName": "Sachin portal 2",
       "role": "user",
-      "isOnline": true,
+      "isOnline": false,
       "createdAt": "2026-10-05T10:53:04.324Z",
       "lastActive": "2026-10-05T10:53:04.324Z",
       "avatarColor": "from-purple-600 to-indigo-600"
@@ -38,8 +60,8 @@
       "createdAt": "2025-01-10T10:00:00Z",
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
-      "isOnline": true,
-      "lastActive": "2026-10-05T10:53:04.236Z",
+      "isOnline": false,
+      "lastActive": "2026-10-05T11:14:27.779Z",
       "sessionToken": "sys_prompts"
     },
     {
@@ -105,6 +127,29 @@
       "status": "active",
       "isOnline": false,
       "lastActive": "2026-09-17T09:14:42.216+00:00"
+    },
+    {
+      "id": "usr-1791198234821-4x9",
+      "name": "client_test99",
+      "email": "client_test99@gmail.com",
+      "password": "123456",
+      "telegram": "",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 30,
+      "planExpiresAt": "2026-11-04T11:03:54.820Z",
+      "status": "active",
+      "extensionAccess": true,
+      "sessionToken": "sess-1791198254174-2ly4dqj",
+      "resellerId": "reseller-mum1n75t-l6gu",
+      "resellerName": "Sachin portal 2",
+      "role": "user",
+      "isOnline": false,
+      "createdAt": "2026-10-05T11:03:54.820Z",
+      "lastActive": "2026-10-05T11:04:14.174Z",
+      "avatarColor": "from-purple-600 to-indigo-600",
+      "usedCredits": 0
     }
   ],
   "resellers": [
