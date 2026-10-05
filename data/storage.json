@@ -1,6 +1,28 @@
 {
   "users": [
     {
+      "id": "usr-1791205789374-vot",
+      "name": "Supabase Log Fix User",
+      "email": "test_supabase_log_fix@gmail.com",
+      "password": "Aass1122",
+      "telegram": "",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 0.083,
+      "planExpiresAt": "2026-10-05T15:09:49.374Z",
+      "status": "active",
+      "extensionAccess": true,
+      "sessionToken": "",
+      "resellerId": "reseller-mum1n75t-l6gu",
+      "resellerName": "Sachin portal 2",
+      "role": "user",
+      "isOnline": false,
+      "createdAt": "2026-10-05T13:09:49.374Z",
+      "lastActive": "",
+      "avatarColor": "from-purple-600 to-indigo-600"
+    },
+    {
       "id": "usr-1791202699146-khh",
       "name": "flow_get_user_2",
       "email": "flow_get_user_2@gmail.com",
@@ -149,7 +171,7 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": false,
-      "lastActive": "2026-10-05T11:49:40.995Z",
+      "lastActive": "2026-10-05T13:06:05.191Z",
       "sessionToken": "sys_prompts"
     },
     {
@@ -299,13 +321,18 @@
         "id": "server1",
         "label": "Server 1",
         "prompt": "fhhg"
+      },
+      {
+        "id": "server2",
+        "label": "Server 2",
+        "prompt": ""
       }
     ],
     "costs": {
       "image": 20,
       "video": 30
     },
-    "headerEmailOpacity": 100,
+    "headerEmailOpacity": 25,
     "signupEnabled": true,
     "resellerContactUrl": "",
     "resellerContactUrlEnabled": true,
@@ -315,18 +342,18 @@
         {
           "id": "pro",
           "name": "Pro",
-          "label": "PRO",
+          "label": "BASIC",
           "subtitle": "Contact Your Reseller",
-          "credits": "25,000",
-          "videos": "750",
+          "credits": "100",
+          "videos": "5",
           "features": [
-            "25,000 credits per month",
-            "750 AI videos / month",
+            "100 credits per month",
+            "5 AI videos / month",
             "Google Flow managed access",
-            "15-day satisfaction warranty",
             "Session auto-rotation every 24h",
             "Credit tracking dashboard",
-            "Reseller support"
+            "Reseller support",
+            "image generate"
           ],
           "buttonText": "Get Pro — Contact Your Reseller",
           "color": "blue"
@@ -337,17 +364,18 @@
           "label": "ULTRA",
           "subtitle": "Contact Your Reseller",
           "credits": "45,000",
-          "videos": "1,250",
+          "videos": "2,250",
           "features": [
             "45,000 credits per month",
-            "1,250 AI videos / month",
+            "2,250 AI videos / month",
             "Google Flow managed access",
             "Priority session pool",
             "Session auto-rotation every 24h",
             "Full generation history",
             "Credit tracking dashboard",
             "Priority reseller support",
-            "Early access to new features"
+            "Early access to new features",
+            "Unlimited  image generate"
           ],
           "buttonText": "Get Ultra — Contact Your Reseller",
           "badge": "MOST POPULAR",
@@ -371,7 +399,8 @@
             "Priority reseller support",
             "Early access to new features",
             "Dedicated account manager",
-            "Custom session allocation"
+            "Custom session allocation",
+            "Unlimited image generate"
           ],
           "buttonText": "Get Unlimited — Contact Your Reseller",
           "badge": "BEST VALUE",

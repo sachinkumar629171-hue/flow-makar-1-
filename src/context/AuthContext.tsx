@@ -1626,7 +1626,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: 'admin_config_resellers',
           name: JSON.stringify(updatedList),
           email: 'resellers_backup@flowmaker.local',
-          role: 'system_config',
+          role: 'user',
           status: 'active',
         });
       } catch (err) {
@@ -1707,7 +1707,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           id: 'admin_config_resellers',
           name: JSON.stringify(updatedList),
           email: 'resellers_backup@flowmaker.local',
-          role: 'system_config',
+          role: 'user',
           status: 'active',
         }).then(() => {}, () => {});
       }
@@ -1733,7 +1733,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         id: 'admin_config_resellers',
         name: JSON.stringify(updatedList),
         email: 'resellers_backup@flowmaker.local',
-        role: 'system_config',
+        role: 'user',
         status: 'active',
       }).then(() => {}, () => {});
     }
@@ -1857,7 +1857,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         id: 'admin_config_all_users',
         name: JSON.stringify(updatedUsersList),
         email: 'all_users_backup@flowmaker.local',
-        role: 'system_config',
+        role: 'user',
         status: 'active',
       }).then(() => {}, () => {});
     }

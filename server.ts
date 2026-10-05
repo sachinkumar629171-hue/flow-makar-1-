@@ -92,11 +92,15 @@ const serverKnownMissingCols = new Set<string>();
 
 function serverExtractMissingColumn(error: any): string | null {
   if (!error) return null;
-  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`;
+  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''} ${JSON.stringify(error)}`;
   const match = msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
                 msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? of relation/i) ||
-                msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i);
-  return match ? match[1] : null;
+                msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i) ||
+                msg.match(/column [\\"']?([a-zA-Z0-9_]+)[\\"']?/i);
+  if (match && match[1] !== 'users' && match[1] !== 'public') {
+    return match[1];
+  }
+  return null;
 }
 
 function formatServerSupabaseUserPayload(user: Record<string, any>): Record<string, any> {
@@ -2787,7 +2791,7 @@ app.post('/api/resellers', (req, res) => {
       id: 'admin_config_resellers',
       name: JSON.stringify(db.resellers),
       email: 'resellers_backup@flowmaker.local',
-      role: 'system_config',
+      role: 'user',
       status: 'active',
     }).then(() => {}, () => {});
   }
@@ -2808,7 +2812,7 @@ app.delete('/api/resellers/:id', (req, res) => {
       id: 'admin_config_resellers',
       name: JSON.stringify(db.resellers),
       email: 'resellers_backup@flowmaker.local',
-      role: 'system_config',
+      role: 'user',
       status: 'active',
     }).then(() => {}, () => {});
   }
@@ -2981,7 +2985,7 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
       id: 'admin_config_all_users',
       name: JSON.stringify(db.users),
       email: 'all_users_backup@flowmaker.local',
-      role: 'system_config',
+      role: 'user',
       status: 'active',
     }).then(() => {}, () => {});
   }
@@ -3070,7 +3074,7 @@ const handleResellerRevokeAccess = async (req: any, res: any) => {
       id: 'admin_config_all_users',
       name: JSON.stringify(db.users),
       email: 'all_users_backup@flowmaker.local',
-      role: 'system_config',
+      role: 'user',
       status: 'active',
     }).then(() => {}, () => {});
   }

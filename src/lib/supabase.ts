@@ -107,11 +107,15 @@ const knownMissingColumns = new Set<string>();
 
 function extractMissingColumn(error: any): string | null {
   if (!error) return null;
-  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''}`;
+  const msg = `${error.message || ''} ${error.details || ''} ${error.hint || ''} ${JSON.stringify(error)}`;
   const match = msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
                 msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? of relation/i) ||
-                msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i);
-  return match ? match[1] : null;
+                msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i) ||
+                msg.match(/column [\\"']?([a-zA-Z0-9_]+)[\\"']?/i);
+  if (match && match[1] !== 'users' && match[1] !== 'public') {
+    return match[1];
+  }
+  return null;
 }
 
 export function formatSupabaseUserPayload(user: Record<string, any>): Record<string, any> {
