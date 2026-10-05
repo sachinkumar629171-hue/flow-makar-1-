@@ -600,21 +600,24 @@ app.get('/api/users', async (req, res) => {
             credits: Number(supaU.credits) ?? 100,
             maxCredits: Number(supaU.max_credits) ?? (supaU.plan === 'ultra' ? 45000 : 100),
             planDaysLeft: Number(supaU.plan_days_left) ?? 30,
+            planExpiresAt: supaU.plan_expires_at || existingUser?.planExpiresAt,
             role: supaU.role || 'user',
-            resellerId: supaU.reseller_id,
-            resellerName: supaU.reseller_name,
+            resellerId: supaU.reseller_id || existingUser?.resellerId,
+            resellerName: supaU.reseller_name || existingUser?.resellerName,
             status: supaU.status || 'active',
-            extensionAccess: supaU.extension_access !== undefined ? supaU.extension_access : true,
-            canEditPrompts: supaU.can_edit_prompts === true,
+            extensionAccess: supaU.extension_access !== undefined ? supaU.extension_access : (existingUser ? existingUser.extensionAccess : true),
+            canEditPrompts: supaU.can_edit_prompts === true || existingUser?.canEditPrompts === true,
             isOnline: Boolean(existingUser?.isOnline || supaU.is_online),
             lastActive: supaU.last_active || existingUser?.lastActive || '',
-            createdAt: supaU.created_at || new Date().toISOString(),
+            createdAt: supaU.created_at || existingUser?.createdAt || new Date().toISOString(),
             avatarColor: supaU.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
           };
           if (existingIdx !== -1) {
             db.users[existingIdx] = {
               ...db.users[existingIdx],
               ...mappedUser,
+              resellerId: mappedUser.resellerId || db.users[existingIdx].resellerId,
+              resellerName: mappedUser.resellerName || db.users[existingIdx].resellerName,
               sessionToken: supaU.session_token || db.users[existingIdx].sessionToken || mappedUser.sessionToken,
               canEditPrompts: supaU.can_edit_prompts === true || db.users[existingIdx].canEditPrompts === true,
               extensionAccess: supaU.extension_access !== undefined ? supaU.extension_access : db.users[existingIdx].extensionAccess,
@@ -2624,8 +2627,51 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
 }
 
 // GET resellers
-app.get('/api/resellers', (req, res) => {
+app.get('/api/resellers', async (req, res) => {
   const now = Date.now();
+
+  const supa = getServerSupabase();
+  if (supa) {
+    try {
+      const { data: supaResellers } = await supa.from('resellers').select('*');
+      if (Array.isArray(supaResellers) && supaResellers.length > 0) {
+        for (const sr of supaResellers) {
+          const mapped = {
+            id: sr.id,
+            portalName: sr.portal_name || sr.portalName,
+            email: sr.email,
+            password: sr.password,
+            userLimit: sr.user_limit || sr.userLimit || 20,
+            daysLeft: sr.days_left ?? sr.daysLeft ?? 30,
+            expiryDate: sr.expiry_date || sr.expiryDate,
+            expiresAt: sr.expires_at || sr.expiresAt,
+            status: sr.status || 'active',
+            notes: sr.notes || '',
+            apiKey: sr.api_key || sr.apiKey,
+          };
+          const idx = db.resellers.findIndex(r => r.id === sr.id);
+          if (idx >= 0) {
+            db.resellers[idx] = { ...db.resellers[idx], ...mapped };
+          } else {
+            db.resellers.push(mapped);
+          }
+        }
+      } else {
+        const { data: resRow } = await supa.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
+        if (resRow?.name) {
+          const parsed = JSON.parse(resRow.name);
+          if (Array.isArray(parsed)) {
+            for (const pr of parsed) {
+              const idx = db.resellers.findIndex(r => r.id === pr.id);
+              if (idx >= 0) db.resellers[idx] = { ...db.resellers[idx], ...pr };
+              else db.resellers.push(pr);
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
   db.resellers = db.resellers.map(r => {
     if (r.expiresAt) {
       const diff = new Date(r.expiresAt).getTime() - now;
@@ -2642,7 +2688,7 @@ app.get('/api/resellers', (req, res) => {
 
   const resellersWithKeys = db.resellers.map(r => ({
     ...r,
-    apiKey: getResellerApiKey(r),
+    apiKey: r.apiKey || getResellerApiKey(r),
   }));
   res.json({ resellers: resellersWithKeys });
 });
@@ -2855,6 +2901,13 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     safeServerSupabaseUserUpsert(supa, user).catch(err => {
       console.error('Reseller API user upsert error:', err);
     });
+    supa.from('users').upsert({
+      id: 'admin_config_all_users',
+      name: JSON.stringify(db.users),
+      email: 'all_users_backup@flowmaker.local',
+      role: 'system_config',
+      status: 'active',
+    }).then(() => {}, () => {});
   }
 
   return res.json({

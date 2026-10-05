@@ -836,7 +836,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               return su;
             });
 
-            setUsers(mergedUsers);
+            setUsers(prev => {
+              const supaUserIds = new Set(mergedUsers.map(u => u.id));
+              const supaUserEmails = new Set(mergedUsers.map(u => u.email.toLowerCase()));
+              const preservedLocalUsers = prev.filter(u => !supaUserIds.has(u.id) && !supaUserEmails.has(u.email.toLowerCase()) && !u.id.startsWith('admin_config_'));
+
+              const prevUserMap = new Map<string, User>(prev.map(u => [u.id, u]));
+              const prevEmailMap = new Map<string, User>(prev.map(u => [u.email.toLowerCase(), u]));
+
+              const enrichedMerged = mergedUsers.map(u => {
+                const prevU = prevUserMap.get(u.id) || (u.email ? prevEmailMap.get(u.email.toLowerCase()) : undefined);
+                if (prevU?.resellerId && !u.resellerId) {
+                  return {
+                    ...u,
+                    resellerId: prevU.resellerId,
+                    resellerName: prevU.resellerName || u.resellerName,
+                  };
+                }
+                return u;
+              });
+
+              return [...enrichedMerged, ...preservedLocalUsers];
+            });
             if (currentUser) {
               const currentInList = mergedUsers.find((u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase());
               const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
@@ -1769,14 +1790,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       lastActive: new Date().toISOString(),
     };
 
-    setUsers(prev => [newUser, ...prev]);
+    const updatedUsersList = [newUser, ...users.filter(u => u.id !== newUser.id)];
+    setUsers(updatedUsersList);
 
-    // Supabase direct database insert
+    lastUpdatedUsersRef.current.set(newUser.id, {
+      timestamp: Date.now(),
+      data: newUser,
+    });
+    if (newUser.email) {
+      lastUpdatedUsersRef.current.set(newUser.email.toLowerCase(), {
+        timestamp: Date.now(),
+        data: newUser,
+      });
+    }
+
+    // Supabase direct database insert & admin_config_all_users backup
     const supabase = getSupabase();
     if (supabase) {
       safeSupabaseUserUpsert(supabase, newUser).catch(err => {
         console.error('Supabase reseller user insert error:', err);
       });
+      supabase.from('users').upsert({
+        id: 'admin_config_all_users',
+        name: JSON.stringify(updatedUsersList),
+        email: 'all_users_backup@flowmaker.local',
+        role: 'system_config',
+        status: 'active',
+      }).then(() => {}, () => {});
     }
 
     // Send to central server database immediately

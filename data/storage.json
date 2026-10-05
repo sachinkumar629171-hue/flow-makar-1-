@@ -1,6 +1,28 @@
 {
   "users": [
     {
+      "id": "usr-1791197584324-id5",
+      "name": "rrrrrrr",
+      "email": "rrrrrrr@gmail.com",
+      "password": "pass_s8dsm5",
+      "telegram": "",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 30,
+      "planExpiresAt": "2026-11-04T10:53:04.324Z",
+      "status": "active",
+      "extensionAccess": true,
+      "sessionToken": "sess-1791197584324-ffjhu",
+      "resellerId": "reseller-mum1n75t-l6gu",
+      "resellerName": "Sachin portal 2",
+      "role": "user",
+      "isOnline": true,
+      "createdAt": "2026-10-05T10:53:04.324Z",
+      "lastActive": "2026-10-05T10:53:04.324Z",
+      "avatarColor": "from-purple-600 to-indigo-600"
+    },
+    {
       "id": "usr-admin-1",
       "name": "Sachin Kumar",
       "email": "sachinxexplore@gmail.com",
@@ -16,8 +38,8 @@
       "createdAt": "2025-01-10T10:00:00Z",
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
-      "isOnline": false,
-      "lastActive": "2026-10-05T10:27:58.613Z",
+      "isOnline": true,
+      "lastActive": "2026-10-05T10:53:04.236Z",
       "sessionToken": "sys_prompts"
     },
     {
@@ -86,6 +108,16 @@
     }
   ],
   "resellers": [
+    {
+      "id": "reseller-mum1n75t-l6gu",
+      "portalName": "Sachin portal 2",
+      "email": "sachin.portal2@gmail.com",
+      "userLimit": 10,
+      "daysLeft": 30,
+      "status": "active",
+      "apiKey": "flw_res_resellermum1n75tl6gu_7361636869",
+      "expiresAt": "2026-11-04T10:52:54.106Z"
+    },
     {
       "id": "reseller-mu5aw5rn-0wyh",
       "portalName": "PREEN",
