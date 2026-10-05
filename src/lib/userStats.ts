@@ -262,3 +262,36 @@ export function getUserCreditStats(user: User | null | undefined): {
     percentageRemaining,
   };
 }
+
+/**
+ * Checks if a user's paid plan has expired (0D 0h / planDaysLeft <= 0 / planExpiresAt passed).
+ * If expired and not admin, automatically converts plan to 'basic' with 100 credits limit.
+ */
+export function checkAndDowngradeExpiredUser(user: User): { user: User; changed: boolean } {
+  if (user.role === 'admin' || (user.email && (user.email.toLowerCase() === 'sachinxexplore@gmail.com' || user.email.toLowerCase() === 'sachinkumar629171@gmail.com'))) {
+    return { user, changed: false };
+  }
+
+  // Only paid plans like 'ultra' or 'unlimited' get downgraded to 'basic'
+  if (user.plan === 'basic') {
+    return { user, changed: false };
+  }
+
+  const validity = getUserValidityTime(user);
+  const isDaysExpired = (Number(user.planDaysLeft) ?? 0) <= 0;
+  const isTimeExpired = user.planExpiresAt ? (new Date(user.planExpiresAt).getTime() <= Date.now()) : false;
+
+  if (validity.isExpired || isDaysExpired || isTimeExpired) {
+    const updatedUser: User = {
+      ...user,
+      plan: 'basic',
+      credits: Math.min(typeof user.credits === 'number' ? user.credits : 100, 100),
+      maxCredits: 100,
+      planDaysLeft: 0,
+      avatarColor: 'from-blue-600 to-cyan-600',
+    };
+    return { user: updatedUser, changed: true };
+  }
+
+  return { user, changed: false };
+}

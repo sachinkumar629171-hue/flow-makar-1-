@@ -114,8 +114,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const resellerEmail = (req.body?.resellerEmail || req.query?.resellerEmail || '').toString().trim().toLowerCase();
 
   let reseller: any = null;
-  const { data: resellersList } = await supabase.from('resellers').select('*');
-  const allResellers = Array.isArray(resellersList) ? resellersList : [];
+  let allResellers: any[] = [];
+  const { data: resellersList, error: resListErr } = await supabase.from('resellers').select('*');
+  if (!resListErr && Array.isArray(resellersList) && resellersList.length > 0) {
+    allResellers = resellersList;
+  } else {
+    // Robust fallback: check admin_config_resellers backup in users table
+    try {
+      const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
+      if (resRow?.name) {
+        const parsed = JSON.parse(resRow.name);
+        if (Array.isArray(parsed) && parsed.length > 0) allResellers = parsed;
+      }
+    } catch {}
+  }
 
   if (apiKey) {
     if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com') {
@@ -141,6 +153,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       access: false,
       error: 'Unauthorized: Invalid Reseller API Key (x-api-key header) or Reseller ID.',
     });
+  }
+
+  // Check if reseller portal validity is expired
+  if (reseller && reseller.id !== 'admin') {
+    const expiresAt = reseller.expires_at || reseller.expiresAt;
+    const isExpired = expiresAt ? new Date(expiresAt).getTime() < Date.now() : (Number(reseller.days_left || reseller.daysLeft) <= 0);
+    if (isExpired || reseller.status === 'expired' || reseller.status === 'suspended') {
+      return res.status(403).json({
+        success: false,
+        access: false,
+        error: `Reseller Portal '${reseller.portal_name || reseller.portalName}' has expired or is suspended. Please contact admin to renew.`,
+      });
+    }
   }
 
   const rawEmail = req.body?.email || req.body?.gmailId || req.body?.gmail || req.body?.userEmail || req.query?.email || req.query?.gmailId || req.query?.gmail || '';

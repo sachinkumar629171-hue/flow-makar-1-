@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
-import { X, Key, Copy, Check, Terminal, Globe, Send, ShieldCheck, Code, Zap } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Key, Copy, Check, Terminal, Globe, Send, ShieldCheck, Code, Zap, RotateCw } from 'lucide-react';
 import { Reseller } from '../../types';
+import { useAuth } from '../../context/AuthContext';
+import { getOrCreateResellerApiKey } from '../../lib/resellerUtils';
 
 interface ResellerApiDocsModalProps {
   reseller: Reseller;
@@ -13,6 +15,7 @@ export const ResellerApiDocsModal: React.FC<ResellerApiDocsModalProps> = ({
   onClose,
   showToast,
 }) => {
+  const { updateReseller } = useAuth();
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedCurl, setCopiedCurl] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'curl' | 'node' | 'php' | 'python'>('curl');
@@ -24,7 +27,14 @@ export const ResellerApiDocsModal: React.FC<ResellerApiDocsModalProps> = ({
   const [testLoading, setTestLoading] = useState(false);
   const [testResult, setTestResult] = useState<any | null>(null);
 
-  const apiKey = reseller.apiKey || '';
+  const apiKey = getOrCreateResellerApiKey(reseller);
+
+  // Automatically persist API Key to Supabase if missing on reseller record
+  useEffect(() => {
+    if (!reseller.apiKey && apiKey) {
+      updateReseller(reseller.id, { apiKey });
+    }
+  }, [reseller.id, reseller.apiKey, apiKey, updateReseller]);
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'https://flowmakerai.site';
 
   const grantUrl = `${baseUrl}/api/reseller/access/grant`;
@@ -257,22 +267,30 @@ def revoke_access(customer_email):
               </span>
               <span className="text-[10px] text-neutral-500">Pass in header: <code className="text-purple-300">x-api-key</code></span>
             </div>
-            {apiKey ? (
-              <div className="flex items-center gap-2 bg-[#090a0e] p-2.5 rounded-xl border border-neutral-800 font-mono text-xs">
-                <span className="text-purple-300 font-semibold select-all break-all flex-1">{apiKey}</span>
-                <button
-                  onClick={() => copyToClipboard(apiKey, 'API Key')}
-                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-all cursor-pointer shadow-sm active:scale-95"
-                >
-                  {copiedKey ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedKey ? 'Copied!' : 'Copy Key'}</span>
-                </button>
-              </div>
-            ) : (
-              <div className="p-3 bg-amber-950/30 border border-amber-500/40 rounded-xl text-amber-200 text-xs flex items-center gap-2">
-                <span>⚠️ <strong>Admin Key Required:</strong> Only the Administrator can generate your API Key from the Admin Control Center. Please ask your Admin to generate your portal API key.</span>
-              </div>
-            )}
+            <div className="flex items-center gap-2 bg-[#090a0e] p-2.5 rounded-xl border border-neutral-800 font-mono text-xs">
+              <span className="text-purple-300 font-semibold select-all break-all flex-1">{apiKey}</span>
+              <button
+                onClick={() => {
+                  const cleanId = reseller.id.replace(/[^a-zA-Z0-9]/g, '');
+                  const rand = Math.random().toString(36).substring(2, 9);
+                  const newKey = `flw_res_${cleanId}_${rand}`;
+                  updateReseller(reseller.id, { apiKey: newKey });
+                  showToast('Generated & saved new API Key!');
+                }}
+                className="px-2.5 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white rounded-lg text-xs font-medium flex items-center gap-1 shrink-0 transition-all cursor-pointer"
+                title="Regenerate new API Key"
+              >
+                <RotateCw className="w-3.5 h-3.5" />
+                <span>Regenerate</span>
+              </button>
+              <button
+                onClick={() => copyToClipboard(apiKey, 'API Key')}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shrink-0 transition-all cursor-pointer shadow-sm active:scale-95"
+              >
+                {copiedKey ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedKey ? 'Copied!' : 'Copy Key'}</span>
+              </button>
+            </div>
           </div>
 
           {/* 2. Endpoints Summary */}

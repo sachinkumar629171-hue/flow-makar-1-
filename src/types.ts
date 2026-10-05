@@ -42,6 +42,7 @@ export interface Reseller {
   createdAt: string;
   notes?: string;
   apiKey?: string;
+  expiresAt?: string; // ISO timestamp for real-time countdown
 }
 
 export interface Generation {

@@ -25,6 +25,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { User, PlanType } from '../../types';
 import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime } from '../../lib/userStats';
+import { calculateResellerExpiry } from '../../lib/resellerUtils';
 import { ResellerNewUserModal } from './ResellerNewUserModal';
 import { ResellerEditUserModal } from './ResellerEditUserModal';
 import { ResellerPasswordModal } from './ResellerPasswordModal';
@@ -177,7 +178,8 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const isPortalExpired = currentReseller.daysLeft <= 0 || currentReseller.status === 'suspended';
+  const expiryInfo = calculateResellerExpiry(currentReseller);
+  const isPortalExpired = expiryInfo.isExpired || currentReseller.status === 'suspended' || currentReseller.status === 'expired';
 
   // Reseller's assigned users
   const resellerUsers = users.filter(u => u.resellerId === currentReseller.id);
@@ -342,10 +344,10 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
           <div className="bg-[#12131a] border border-neutral-800/80 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
             <div className="flex items-center gap-1.5 text-neutral-400 text-[11px] font-semibold tracking-wider uppercase">
               <Calendar className="w-3.5 h-3.5 text-neutral-500" />
-              <span>Expires ({currentReseller.daysLeft}D)</span>
+              <span>Validity ({expiryInfo.timeRemainingText})</span>
             </div>
             <div className={`mt-2 text-sm font-bold tracking-tight ${isPortalExpired ? 'text-red-400' : 'text-emerald-400 font-mono'}`}>
-              {currentReseller.expiryDate || '30/09/2026'}
+              {isPortalExpired ? 'Portal Expired' : `Expires: ${expiryInfo.expiryDate}`}
             </div>
           </div>
         </div>

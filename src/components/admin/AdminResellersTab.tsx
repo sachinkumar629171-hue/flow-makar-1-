@@ -23,6 +23,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { Reseller } from '../../types';
 import { isUserLive } from '../../lib/userStats';
+import { calculateResellerExpiry, getOrCreateResellerApiKey } from '../../lib/resellerUtils';
 
 interface AdminResellersTabProps {
   onOpenResellerPortal: (reseller: Reseller) => void;
@@ -199,7 +200,8 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                   const assignedUsers = users.filter(u => u.resellerId === reseller.id);
                   const assignedCount = assignedUsers.length;
                   const liveInReseller = assignedUsers.filter(u => isUserLive(u)).length;
-                  const isExpired = reseller.daysLeft <= 0 || reseller.status === 'expired';
+                  const expiryInfo = calculateResellerExpiry(reseller);
+                  const isExpired = expiryInfo.isExpired || reseller.status === 'expired';
 
                   return (
                     <tr key={reseller.id} className="hover:bg-[#161824]/60 transition-colors">
@@ -260,7 +262,7 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
                           <span className={`font-mono text-xs font-semibold ${isExpired ? 'text-red-400' : 'text-emerald-400'}`}>
-                            {reseller.daysLeft} Days Left
+                            {expiryInfo.timeRemainingText}
                           </span>
                           <div className="flex items-center gap-1">
                             <button
@@ -281,7 +283,7 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                         </div>
                         <div className="text-[10px] text-neutral-500 font-mono mt-0.5 flex items-center gap-1">
                           <Calendar className="w-3 h-3" />
-                          <span>Exp: {reseller.expiryDate || '30/09/2026'}</span>
+                          <span>Exp: {expiryInfo.expiryDate}</span>
                         </div>
                       </td>
 
@@ -693,23 +695,26 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
             <div className="space-y-3 text-xs">
               <div>
                 <label className="block text-neutral-400 mb-1 font-semibold">Active API Key for External Access:</label>
-                <div className="flex items-center gap-2 bg-[#090a0e] p-2 rounded-xl border border-neutral-800 font-mono text-xs">
-                  <span className="text-purple-300 font-semibold select-all break-all flex-1">
-                    {apiKeyModalReseller.apiKey || 'No API key generated yet'}
-                  </span>
-                  {apiKeyModalReseller.apiKey && (
-                    <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(apiKeyModalReseller.apiKey || '');
-                        showToast('Copied API Key to clipboard!');
-                      }}
-                      className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-colors cursor-pointer shrink-0"
-                      title="Copy Key"
-                    >
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
+                {(() => {
+                  const activeKey = getOrCreateResellerApiKey(apiKeyModalReseller);
+                  return (
+                    <div className="flex items-center gap-2 bg-[#090a0e] p-2 rounded-xl border border-neutral-800 font-mono text-xs">
+                      <span className="text-purple-300 font-semibold select-all break-all flex-1">
+                        {activeKey}
+                      </span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(activeKey);
+                          showToast('Copied API Key to clipboard!');
+                        }}
+                        className="p-1.5 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg transition-colors cursor-pointer shrink-0"
+                        title="Copy Key"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="flex items-center gap-2 pt-2">
@@ -718,7 +723,7 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                   className="flex-1 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-md"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
-                  <span>{apiKeyModalReseller.apiKey ? 'Regenerate New Key' : 'Generate API Key'}</span>
+                  <span>Regenerate New Key</span>
                 </button>
 
                 {apiKeyModalReseller.apiKey && (

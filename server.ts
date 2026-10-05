@@ -445,28 +445,39 @@ function checkAndConvertToBasic(u: any): boolean {
   if (!u || u.role === 'admin' || (u.email && u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || (u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com')) {
     return false;
   }
-  if (u.plan === 'ultra') {
+  if (u.plan === 'ultra' || u.plan === 'unlimited') {
     let expired = false;
-    if (u.planDaysLeft !== undefined && Number(u.planDaysLeft) <= 0) {
-      expired = true;
-    } else if (u.planExpiresAt) {
-      if (new Date(u.planExpiresAt).getTime() <= Date.now()) {
+    const now = Date.now();
+    if (u.planExpiresAt) {
+      const expMs = new Date(u.planExpiresAt).getTime();
+      if (!isNaN(expMs) && expMs <= now) {
         expired = true;
       }
     }
+    if (!expired && u.planDaysLeft !== undefined && Number(u.planDaysLeft) <= 0) {
+      expired = true;
+    }
+    if (!expired && u.createdAt && u.planDaysLeft) {
+      const createdMs = new Date(u.createdAt).getTime();
+      if (!isNaN(createdMs) && (createdMs + Number(u.planDaysLeft) * 86400000) <= now) {
+        expired = true;
+      }
+    }
+
     if (expired) {
       u.plan = 'basic';
-      u.credits = 100;
+      u.credits = Math.min(Number(u.credits) || 0, 100);
       u.maxCredits = 100;
-      u.planDaysLeft = 30;
+      u.planDaysLeft = 0;
+      u.avatarColor = 'from-blue-600 to-cyan-600';
 
       const supa = getServerSupabase();
       if (supa && u.id && !u.id.startsWith('admin_config_')) {
         supa.from('users').update({
           plan: 'basic',
-          credits: 100,
+          credits: u.credits,
           max_credits: 100,
-          plan_days_left: 30,
+          plan_days_left: 0,
         }).eq('id', u.id).then(({ error }) => {
           if (error) console.error('Error auto-switching expired user in Supabase:', error);
         });
@@ -2552,6 +2563,21 @@ function resolveAuthorizedReseller(req: any): any | null {
 
 // GET resellers
 app.get('/api/resellers', (req, res) => {
+  const now = Date.now();
+  db.resellers = db.resellers.map(r => {
+    if (r.expiresAt) {
+      const diff = new Date(r.expiresAt).getTime() - now;
+      const days = Math.max(0, Math.ceil(diff / 86400000));
+      const isExp = diff <= 0;
+      return {
+        ...r,
+        daysLeft: days,
+        status: r.status === 'suspended' ? 'suspended' : (isExp ? 'expired' : 'active'),
+      };
+    }
+    return r;
+  });
+
   const resellersWithKeys = db.resellers.map(r => ({
     ...r,
     apiKey: getResellerApiKey(r),
@@ -2563,6 +2589,10 @@ app.get('/api/resellers', (req, res) => {
 app.post('/api/resellers', (req, res) => {
   const reseller = req.body;
   if (!reseller.apiKey) reseller.apiKey = getResellerApiKey(reseller);
+  if (!reseller.expiresAt && reseller.daysLeft) {
+    reseller.expiresAt = new Date(Date.now() + Number(reseller.daysLeft) * 86400000).toISOString();
+  }
+
   const idx = db.resellers.findIndex(r => r.id === reseller.id);
   if (idx >= 0) {
     db.resellers[idx] = { ...db.resellers[idx], ...reseller };
@@ -2570,6 +2600,34 @@ app.post('/api/resellers', (req, res) => {
     db.resellers.unshift(reseller);
   }
   saveStorage();
+
+  // Supabase sync (both to resellers table and admin_config_resellers backup row)
+  const supa = getServerSupabase();
+  if (supa) {
+    supa.from('resellers').upsert({
+      id: reseller.id,
+      portal_name: reseller.portalName,
+      email: reseller.email,
+      password: reseller.password,
+      user_limit: reseller.userLimit,
+      days_left: reseller.daysLeft,
+      expiry_date: reseller.expiryDate,
+      expires_at: reseller.expiresAt,
+      status: reseller.status,
+      created_at: reseller.createdAt,
+      notes: reseller.notes,
+      api_key: reseller.apiKey,
+    }).then(() => {}, () => {});
+
+    supa.from('users').upsert({
+      id: 'admin_config_resellers',
+      name: JSON.stringify(db.resellers),
+      email: 'resellers_backup@flowmaker.local',
+      role: 'system_config',
+      status: 'active',
+    }).then(() => {}, () => {});
+  }
+
   res.json({ success: true, reseller });
 });
 
@@ -2578,6 +2636,19 @@ app.delete('/api/resellers/:id', (req, res) => {
   const { id } = req.params;
   db.resellers = db.resellers.filter(r => r.id !== id);
   saveStorage();
+
+  const supa = getServerSupabase();
+  if (supa) {
+    supa.from('resellers').delete().eq('id', id).then(() => {}, () => {});
+    supa.from('users').upsert({
+      id: 'admin_config_resellers',
+      name: JSON.stringify(db.resellers),
+      email: 'resellers_backup@flowmaker.local',
+      role: 'system_config',
+      status: 'active',
+    }).then(() => {}, () => {});
+  }
+
   res.json({ success: true });
 });
 
