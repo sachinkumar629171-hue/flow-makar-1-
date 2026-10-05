@@ -2515,7 +2515,7 @@ function getResellerApiKey(reseller: any): string {
   return key;
 }
 
-function resolveAuthorizedReseller(req: any): any | null {
+async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   const apiKey = (
     req.headers['x-api-key'] ||
     req.headers['authorization']?.replace(/^Bearer\s+/i, '') ||
@@ -2524,37 +2524,99 @@ function resolveAuthorizedReseller(req: any): any | null {
     ''
   ).toString().trim();
 
-  const resellerId = (req.body?.resellerId || req.query.resellerId || '').toString().trim();
-  const resellerEmail = (req.body?.resellerEmail || req.query.resellerEmail || '').toString().trim().toLowerCase();
+  const resellerId = (
+    req.headers['x-reseller-id'] ||
+    req.body?.resellerId ||
+    req.query.resellerId ||
+    ''
+  ).toString().trim();
 
-  // If apiKey provided, match by apiKey or id or email
-  if (apiKey) {
-    if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com') {
-      if (resellerId) {
-        return db.resellers.find(r => r.id === resellerId) || db.resellers[0] || null;
+  const resellerEmail = (
+    req.headers['x-reseller-email'] ||
+    req.body?.resellerEmail ||
+    req.query.resellerEmail ||
+    ''
+  ).toString().trim().toLowerCase();
+
+  // Gather all resellers from memory and Supabase
+  let allResellers: any[] = [...db.resellers];
+  const supa = getServerSupabase();
+  if (supa) {
+    try {
+      const { data: supaResellers } = await supa.from('resellers').select('*');
+      if (Array.isArray(supaResellers) && supaResellers.length > 0) {
+        for (const sr of supaResellers) {
+          const mapped = {
+            id: sr.id,
+            portalName: sr.portal_name || sr.portalName,
+            email: sr.email,
+            password: sr.password,
+            userLimit: sr.user_limit || sr.userLimit || 20,
+            daysLeft: sr.days_left ?? sr.daysLeft ?? 30,
+            expiryDate: sr.expiry_date || sr.expiryDate,
+            expiresAt: sr.expires_at || sr.expiresAt,
+            status: sr.status || 'active',
+            notes: sr.notes || '',
+            apiKey: sr.api_key || sr.apiKey,
+          };
+          const idx = allResellers.findIndex(r => r.id === sr.id);
+          if (idx >= 0) {
+            allResellers[idx] = { ...allResellers[idx], ...mapped };
+          } else {
+            allResellers.push(mapped);
+          }
+        }
+      } else {
+        const { data: resRow } = await supa.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
+        if (resRow?.name) {
+          const parsed = JSON.parse(resRow.name);
+          if (Array.isArray(parsed)) {
+            for (const pr of parsed) {
+              const idx = allResellers.findIndex(r => r.id === pr.id);
+              if (idx >= 0) allResellers[idx] = { ...allResellers[idx], ...pr };
+              else allResellers.push(pr);
+            }
+          }
+        }
       }
-      return db.resellers[0] || null;
-    }
+    } catch {}
+  }
 
-    const matched = db.resellers.find(r => {
-      const generatedKey = getResellerApiKey(r);
-      return (
-        r.apiKey === apiKey ||
-        generatedKey === apiKey ||
-        r.id === apiKey ||
-        (r.email && r.email.toLowerCase() === apiKey.toLowerCase())
-      );
+  // Master key check
+  if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com' || apiKey === 'sachinkumar629171@gmail.com') {
+    if (resellerId) {
+      return allResellers.find(r => r.id === resellerId) || allResellers[0] || { id: 'admin', portalName: 'Admin Portal', email: 'admin' };
+    }
+    return allResellers[0] || { id: 'admin', portalName: 'Admin Portal', email: 'admin' };
+  }
+
+  // Match by API Key
+  if (apiKey) {
+    const cleanKey = apiKey.trim();
+    const matched = allResellers.find(r => {
+      const rId = String(r.id || '').trim();
+      const rCleanId = rId.replace(/[^a-zA-Z0-9]/g, '');
+      const rEmail = String(r.email || '').trim().toLowerCase();
+      const rApiKey = String(r.apiKey || r.api_key || '').trim();
+
+      if (rApiKey && rApiKey === cleanKey) return true;
+      if (rId && rId === cleanKey) return true;
+      if (rEmail && rEmail === cleanKey.toLowerCase()) return true;
+      if (rCleanId && cleanKey.startsWith(`flw_res_${rCleanId}`)) return true;
+      return false;
     });
     if (matched) return matched;
   }
 
+  // Match by Reseller ID
   if (resellerId) {
-    const matched = db.resellers.find(r => r.id === resellerId);
+    const matched = allResellers.find(r => r.id === resellerId || r.id.replace(/[^a-zA-Z0-9]/g, '') === resellerId.replace(/[^a-zA-Z0-9]/g, ''));
     if (matched) return matched;
   }
 
+  // Match by Reseller Email
   if (resellerEmail) {
-    const matched = db.resellers.find(r => r.email && r.email.toLowerCase() === resellerEmail);
+    const matched = allResellers.find(r => r.email && r.email.toLowerCase() === resellerEmail);
     if (matched) return matched;
   }
 
@@ -2702,7 +2764,7 @@ function parseDurationToExpiry(body: any): { planDaysLeft: number; planExpiresAt
 const handleResellerGrantAccess = async (req: any, res: any) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
-  const reseller = resolveAuthorizedReseller(req);
+  const reseller = await resolveAuthorizedReseller(req);
   if (!reseller) {
     return res.status(401).json({
       success: false,
@@ -2832,7 +2894,7 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
 const handleResellerRevokeAccess = async (req: any, res: any) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
-  const reseller = resolveAuthorizedReseller(req);
+  const reseller = await resolveAuthorizedReseller(req);
   if (!reseller) {
     return res.status(401).json({
       success: false,
@@ -2876,7 +2938,7 @@ const handleResellerRevokeAccess = async (req: any, res: any) => {
 const handleResellerUserStatus = async (req: any, res: any) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
-  const reseller = resolveAuthorizedReseller(req);
+  const reseller = await resolveAuthorizedReseller(req);
   if (!reseller) {
     return res.status(401).json({
       success: false,

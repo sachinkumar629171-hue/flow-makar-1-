@@ -130,19 +130,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (apiKey) {
-    if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com') {
+    if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com' || apiKey === 'sachinkumar629171@gmail.com') {
       reseller = allResellers.find(r => r.id === resellerId) || allResellers[0] || { id: 'admin', portal_name: 'Admin Portal', email: 'admin' };
     } else {
-      reseller = allResellers.find(r => 
-        r.api_key === apiKey ||
-        r.apiKey === apiKey ||
-        r.id === apiKey ||
-        r.email?.toLowerCase() === apiKey.toLowerCase() ||
-        `flw_res_${r.id.replace(/[^a-zA-Z0-9]/g, '')}` === apiKey
-      );
+      const cleanKey = apiKey.trim();
+      reseller = allResellers.find(r => {
+        const rId = String(r.id || '').trim();
+        const rCleanId = rId.replace(/[^a-zA-Z0-9]/g, '');
+        const rEmail = String(r.email || '').trim().toLowerCase();
+        const rApiKey = String(r.api_key || r.apiKey || '').trim();
+
+        if (rApiKey && rApiKey === cleanKey) return true;
+        if (rId && rId === cleanKey) return true;
+        if (rEmail && rEmail === cleanKey.toLowerCase()) return true;
+        if (rCleanId && cleanKey.startsWith(`flw_res_${rCleanId}`)) return true;
+        return false;
+      });
     }
   } else if (resellerId) {
-    reseller = allResellers.find(r => r.id === resellerId);
+    reseller = allResellers.find(r => r.id === resellerId || r.id.replace(/[^a-zA-Z0-9]/g, '') === resellerId.replace(/[^a-zA-Z0-9]/g, ''));
   } else if (resellerEmail) {
     reseller = allResellers.find(r => r.email?.toLowerCase() === resellerEmail);
   }

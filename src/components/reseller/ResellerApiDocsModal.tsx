@@ -80,8 +80,12 @@ export const ResellerApiDocsModal: React.FC<ResellerApiDocsModalProps> = ({
         headers: {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
+          'x-reseller-id': reseller.id,
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          resellerId: reseller.id,
+        }),
       });
       const data = await resp.json();
       setTestResult({ status: resp.status, data });
