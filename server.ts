@@ -2867,7 +2867,6 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     user.lastActive = now;
   } else {
     action = 'created';
-    const sessionToken = `sess-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     user = {
       id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
       name,
@@ -2881,13 +2880,13 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
       planExpiresAt: durationInfo.planExpiresAt,
       status: 'active',
       extensionAccess,
-      sessionToken,
+      sessionToken: '',
       resellerId: reseller.id,
       resellerName: reseller.portalName,
       role: 'user',
-      isOnline: true,
+      isOnline: false,
       createdAt: now,
-      lastActive: now,
+      lastActive: '',
       avatarColor: plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
     };
     db.users.unshift(user);

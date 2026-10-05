@@ -964,22 +964,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               });
               setUsers(mergedUsers);
             } else {
-              // Merge real-time server online status and credit deductions into current users list
+              // Merge real-time server online status, credit deductions, and NEW API-created users into current users list
               const serverUsersMap = new Map<string, User>(data.users.map((u: User) => [u.id, u]));
               const serverUsersEmailMap = new Map<string, User>(data.users.map((u: User) => [(u.email || '').toLowerCase(), u]));
-              setUsers(prev => prev.map((u: User) => {
-                const srv: User | undefined = serverUsersMap.get(u.id) || (u.email ? serverUsersEmailMap.get(u.email.toLowerCase()) : undefined);
-                if (srv) {
-                  return {
-                    ...u,
-                    isOnline: Boolean(srv.isOnline),
-                    lastActive: srv.lastActive || u.lastActive || '',
-                    credits: srv.credits !== undefined ? srv.credits : u.credits,
-                    sessionToken: srv.sessionToken || u.sessionToken,
-                  };
-                }
-                return u;
-              }));
+              
+              setUsers(prev => {
+                const existingIds = new Set(prev.map(u => u.id));
+                const existingEmails = new Set(prev.map(u => (u.email || '').toLowerCase()));
+
+                const updatedExisting = prev.map((u: User) => {
+                  const srv: User | undefined = serverUsersMap.get(u.id) || (u.email ? serverUsersEmailMap.get(u.email.toLowerCase()) : undefined);
+                  if (srv) {
+                    return {
+                      ...u,
+                      ...srv,
+                      resellerId: srv.resellerId || u.resellerId,
+                      resellerName: srv.resellerName || u.resellerName,
+                      isOnline: Boolean(srv.isOnline || u.isOnline),
+                      lastActive: srv.lastActive || u.lastActive || '',
+                      credits: srv.credits !== undefined ? srv.credits : u.credits,
+                      sessionToken: srv.sessionToken || u.sessionToken,
+                    };
+                  }
+                  return u;
+                });
+
+                // Add any users from server that aren't in local state yet (e.g. created via Reseller API)
+                const newServerUsers = data.users.filter((su: User) => 
+                  su.id && 
+                  !existingIds.has(su.id) && 
+                  (!su.email || !existingEmails.has(su.email.toLowerCase())) &&
+                  !su.id.startsWith('admin_config_')
+                );
+
+                return [...updatedExisting, ...newServerUsers];
+              });
             }
             // If current user is logged in, refresh their status if updated from admin
             if (currentUser) {
@@ -1010,18 +1029,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        if (!supabase && resellersRes.ok) {
+        if (resellersRes.ok) {
           const resData = await resellersRes.json();
           if (resData.resellers && Array.isArray(resData.resellers) && isMounted) {
             const now = Date.now();
-            const mergedResellers = resData.resellers.map((r: Reseller) => {
-              const pending = lastUpdatedResellersRef.current.get(r.id);
-              if (pending && now - pending.timestamp < 10000) {
-                return { ...r, ...pending.data };
-              }
-              return r;
+            setResellers(prev => {
+              const resMap = new Map<string, Reseller>(resData.resellers.map((r: Reseller) => [r.id, r]));
+              const updated = prev.map(r => {
+                const srv = resMap.get(r.id);
+                const pending = lastUpdatedResellersRef.current.get(r.id);
+                if (pending && now - pending.timestamp < 10000) return { ...r, ...pending.data };
+                return srv ? { ...r, ...srv } : r;
+              });
+              const existingIds = new Set(prev.map(r => r.id));
+              const newResellers = resData.resellers.filter((r: Reseller) => !existingIds.has(r.id));
+              return [...updated, ...newResellers];
             });
-            setResellers(mergedResellers);
           }
         }
 
