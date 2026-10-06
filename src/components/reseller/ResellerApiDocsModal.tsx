@@ -229,9 +229,11 @@ export default {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'Accept': 'application/json',
             'x-api-key': request.headers.get('x-api-key') || body.apiKey || '${apiKey || ''}',
             'x-reseller-id': request.headers.get('x-reseller-id') || body.reseller_id || body.resellerId || '${reseller.id}',
           },
+          redirect: 'follow',
           body: JSON.stringify({
             id: body.id || undefined,                                     // e.g. usr-res-mujhzif0-mfrv
             name: body.name || body.telegramProfile || "User",             // Telegram profile name
@@ -246,8 +248,11 @@ export default {
             reseller_id: body.reseller_id || body.resellerId || "${reseller.id}",
           })
         });
-        const text = await resp.text();
-        return JSON.parse(text);
+        const text = (await resp.text()).trim();
+        if (text.startsWith('{') || text.startsWith('[')) {
+          return JSON.parse(text);
+        }
+        throw new Error(\`Server at \${portalUrl} returned non-JSON response\`);
       };
 
       try {
@@ -302,11 +307,15 @@ export default {
       const tryVerify = async (baseUrl) => {
         const resp = await fetch(\`\${baseUrl}/api/extension/cf-verify\`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          redirect: 'follow',
           body: JSON.stringify({ email, sessionToken, version })
         });
-        const text = await resp.text();
-        return JSON.parse(text);
+        const text = (await resp.text()).trim();
+        if (text.startsWith('{') || text.startsWith('[')) {
+          return JSON.parse(text);
+        }
+        throw new Error(\`Server at \${baseUrl} returned non-JSON response\`);
       };
 
       try {
