@@ -503,7 +503,7 @@ export default {
       });
     }
 
-    // Dynamic Server Prompts Gathering
+    // Dynamic Server Prompts Gathering (From Portal authData, Supabase app_config, KV, or STORED_PROMPTS)
     const responsePayload = {
       success: true,
       authenticated: true,
@@ -513,21 +513,63 @@ export default {
       costs: authData.costs
     };
 
+    // 1. Merge servers if Portal returned them in authData
+    if (Array.isArray(authData.servers) && authData.servers.length > 0) {
+      for (const srv of authData.servers) {
+        if (srv && (srv.id || srv.label)) {
+          const key = srv.id && srv.id.startsWith('server') ? srv.id : (srv.label ? srv.label.toLowerCase().replace(/[^a-z0-9]/g, '') : 'server1');
+          const promptVal = srv.prompt || '';
+          if (promptVal && !STORED_PROMPTS[key]) {
+            STORED_PROMPTS[key] = promptVal;
+          }
+        }
+      }
+    }
+
+    // 2. Direct Supabase Query Backup for admin_config_prompts if STORED_PROMPTS is empty
+    const supaUrl = env?.SUPABASE_URL || body.supabase_url || body.supabaseUrl || "YOUR_SUPABASE_PROJECT_URL";
+    const supaKey = env?.SUPABASE_ANON_KEY || body.supabase_anon_key || body.supabaseAnonKey || "YOUR_SUPABASE_ANON_KEY";
+    if (supaUrl && supaKey && supaUrl.startsWith('http') && !supaUrl.includes('YOUR_SUPABASE')) {
+      const keysInStored = Object.keys(STORED_PROMPTS).filter(k => k.startsWith('server') && Boolean(STORED_PROMPTS[k]));
+      if (keysInStored.length === 0) {
+        try {
+          const supaCfgResp = await fetch(\`\${supaUrl.replace(/\\/$/, '')}/rest/v1/app_config?key=eq.admin_config_prompts\`, {
+            headers: { 'apikey': supaKey, 'Authorization': \`Bearer \${supaKey}\` }
+          });
+          if (supaCfgResp.ok) {
+            const supaData = await supaCfgResp.json();
+            const configObj = supaData[0]?.value;
+            if (configObj && Array.isArray(configObj.servers)) {
+              for (const srv of configObj.servers) {
+                if (srv && (srv.id || srv.label)) {
+                  const key = srv.id && srv.id.startsWith('server') ? srv.id : (srv.label ? srv.label.toLowerCase().replace(/[^a-z0-9]/g, '') : 'server1');
+                  STORED_PROMPTS[key] = srv.prompt || '';
+                }
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
     const serverKeys = new Set([
       ...Object.keys(STORED_PROMPTS).filter(k => k.startsWith('server')),
+      ...(Array.isArray(authData.servers) ? authData.servers.map(s => s.id || (s.label ? s.label.toLowerCase().replace(/[^a-z0-9]/g, '') : '')) : []),
       'server1', 'server2'
     ]);
 
-    for (const key of Array.from(serverKeys).sort()) {
-      let promptVal = STORED_PROMPTS[key] || '';
+    for (const key of Array.from(serverKeys).filter(Boolean).sort()) {
+      let promptVal = STORED_PROMPTS[key] || authData[key] || '';
       if (env && env.PROMPTS_KV) {
         const kvVal = await env.PROMPTS_KV.get(key);
         if (kvVal !== null) promptVal = kvVal;
       }
+      
+      const rawNum = key.replace(/[^0-9]/g, '') || '1';
       responsePayload[key] = promptVal;
       responsePayload.servers.push({
         id: key,
-        label: key.replace('server', 'Server '),
+        label: \`Server \${rawNum}\`,
         prompt: promptVal
       });
     }
