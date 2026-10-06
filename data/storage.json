@@ -2,6 +2,29 @@
   "users": [
     {
       "id": "usr-res-mujhzif0-mfrv",
+      "name": "Rahul Test 3rd Site",
+      "email": "rahul_3rd_site@gmail.com",
+      "password": "Flow@1122",
+      "telegram": "@rahul_3rd",
+      "whatsapp": "+919876543210",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 30,
+      "planExpiresAt": "2026-11-05T03:12:50.415Z",
+      "status": "active",
+      "extensionAccess": true,
+      "sessionToken": "sess-1791256370415-hgqjj",
+      "resellerId": "fgdtxhoyjujhx",
+      "resellerName": "Reseller (fgdtxhoy)",
+      "role": "user",
+      "isOnline": true,
+      "createdAt": "2026-10-06T03:12:50.415Z",
+      "lastActive": "2026-10-06T03:12:50.415Z",
+      "avatarColor": "from-purple-600 to-indigo-600"
+    },
+    {
+      "id": "usr-res-mujhzif0-mfrv",
       "name": "Rahul Sharma",
       "email": "rahul_cf_test@gmail.com",
       "password": "Flow@1122",
@@ -18,7 +41,7 @@
       "resellerId": "fgdtxhoyjujhx",
       "resellerName": "Reseller (fgdtxhoy)",
       "role": "user",
-      "isOnline": true,
+      "isOnline": false,
       "createdAt": "2026-10-05T18:22:39.209Z",
       "lastActive": "2026-10-05T18:22:54.987Z",
       "avatarColor": "from-purple-600 to-indigo-600"
@@ -84,7 +107,7 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": true,
-      "lastActive": "2026-10-05T18:22:32.320Z",
+      "lastActive": "2026-10-06T03:12:44.406Z",
       "sessionToken": "sys_prompts"
     },
     {

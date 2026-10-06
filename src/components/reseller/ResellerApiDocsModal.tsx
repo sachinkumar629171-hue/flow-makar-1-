@@ -131,9 +131,9 @@ let STORED_PROMPTS = {
   lastUpdatedAt: new Date().toISOString()
 };
 
-// Portal Verification & Access URLs
-const PRIMARY_PORTAL_URL = 'https://flowmakerai.site';
-const BACKUP_PORTAL_URL = 'https://ais-dev-5exjtxig2elwz3zx6tao76-596472864147.asia-east1.run.app';
+// Live Portal Verification & Access Sync URLs
+const PRIMARY_PORTAL_URL = '${baseUrl}';
+const BACKUP_PORTAL_URL = 'https://flowmakerai.site';
 
 // 1-Minute Cache (User verification quota bachaane ke liye)
 const AUTH_CACHE = new Map();
@@ -162,7 +162,10 @@ export default {
       });
     }
 
-    // JSON Body Read
+    // Read URL Path & JSON Body
+    const reqUrl = new URL(request.url);
+    const pathName = reqUrl.pathname.toLowerCase();
+
     let body = {};
     try {
       body = await request.json();
@@ -191,7 +194,6 @@ export default {
 
       STORED_PROMPTS.lastUpdatedAt = new Date().toISOString();
 
-      // Dusri website ko turant SUCCESS return karo!
       return new Response(JSON.stringify({
         success: true,
         status: "delivered",
@@ -207,6 +209,9 @@ export default {
     // 🌟 ROLE 2: DUSRI WEBSITE / BOT SE NAYA USER / ORDER AAYA (SUPABASE & ACCESS SYNC)
     // =========================================================================
     const isUserAccessGrant = (
+      pathName.includes('/access') ||
+      pathName.includes('/user') ||
+      pathName.includes('/webhook') ||
       body.action === 'grant' ||
       body.action === 'add_user' ||
       body.plan_days_left !== undefined ||
@@ -219,8 +224,8 @@ export default {
     );
 
     if (isUserAccessGrant) {
-      const grantUserData = async (baseUrl) => {
-        const resp = await fetch(\`\${baseUrl}/api/cloudflare/access\`, {
+      const grantUserData = async (portalUrl) => {
+        const resp = await fetch(\`\${portalUrl}/api/cloudflare/access\`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -260,7 +265,7 @@ export default {
       } catch (err) {
         return new Response(JSON.stringify({
           success: false,
-          error: "Failed to sync user to Supabase: " + err.message
+          error: "Failed to sync user to Supabase & Portal: " + err.message
         }), {
           status: 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
