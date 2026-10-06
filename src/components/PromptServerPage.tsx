@@ -252,7 +252,8 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       };
     });
 
-    setLocalServers(updatedServers);
+    const normalizedServers = normalizeServerList(updatedServers);
+    setLocalServers(normalizedServers);
 
     const tgAlertConfig: TelegramAlertConfig = {
       enabled: telegramEnabled,
@@ -266,10 +267,10 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       if (cloudflareUrl.trim()) {
         try {
           const cfPayload: Record<string, any> = {
-            servers: updatedServers,
+            servers: normalizedServers,
             updatedAt: nowIso
           };
-          updatedServers.forEach((s, idx) => {
+          normalizedServers.forEach((s, idx) => {
             const key = `server${idx + 1}`;
             cfPayload[key] = s.prompt || '';
           });
@@ -284,7 +285,7 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       }
 
       await updatePromptConfig({
-        servers: updatedServers,
+        servers: normalizedServers,
         costs: {
           image: Number(imageCost) || 20,
           video: Number(videoCost) || 30,
@@ -293,8 +294,8 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
         cloudflareEnabled,
         cloudflareUrl: cloudflareUrl.trim(),
         telegramAlerts: tgAlertConfig,
-        server1Prompt: updatedServers[0]?.prompt || '',
-        server2Prompt: updatedServers[1]?.prompt || '',
+        server1Prompt: normalizedServers[0]?.prompt || '',
+        server2Prompt: normalizedServers[1]?.prompt || '',
       });
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3500);
@@ -327,7 +328,8 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       return s;
     });
 
-    setLocalServers(updatedServers);
+    const normalizedServers = normalizeServerList(updatedServers);
+    setLocalServers(normalizedServers);
     dirtyServersRef.current.delete(serverId);
     setIsSaving(true);
     setSavedServerId(serverId);
@@ -346,7 +348,7 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       const cycleMinutes = Number(reminderMinutes) || 120;
       const oldExpiryTime = oldLastUpdatedMs + cycleMinutes * 60 * 1000;
       const delayMinutes = Math.max(1, Math.floor((Date.now() - oldExpiryTime) / 60000));
-      const targetServer = updatedServers.find(s => s.id === serverId);
+      const targetServer = normalizedServers.find(s => s.id === serverId);
       const recoveryMsg = generateRecoveryMessage(
         targetServer?.label || 'Server',
         serverId,
@@ -361,10 +363,10 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       if (cloudflareUrl.trim()) {
         try {
           const cfPayload: Record<string, any> = {
-            servers: updatedServers,
+            servers: normalizedServers,
             updatedAt: nowIso
           };
-          updatedServers.forEach((s, idx) => {
+          normalizedServers.forEach((s, idx) => {
             const key = `server${idx + 1}`;
             cfPayload[key] = s.prompt || '';
           });
@@ -379,15 +381,15 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       }
 
       await updatePromptConfig({
-        servers: updatedServers,
+        servers: normalizedServers,
         costs: {
           image: Number(imageCost) || 20,
           video: Number(videoCost) || 30,
         },
         promptReminderMinutes: Number(reminderMinutes) || 120,
         telegramAlerts: tgAlertConfig,
-        server1Prompt: updatedServers[0]?.prompt || '',
-        server2Prompt: updatedServers[1]?.prompt || '',
+        server1Prompt: normalizedServers[0]?.prompt || '',
+        server2Prompt: normalizedServers[1]?.prompt || '',
       });
       setTimeout(() => setSavedServerId(null), 3000);
     } catch (err) {

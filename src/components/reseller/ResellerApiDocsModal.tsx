@@ -149,13 +149,25 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 1. 🚫 Direct Browser GET Link Block (No public leak)
+    // 1. Return 200 OK for GET requests so Cloudflare Preview Panel loads cleanly without Error 1031!
+    if (request.method === 'GET') {
+      return new Response(JSON.stringify({
+        success: true,
+        status: "online",
+        service: "FlowMaker Worker Relay",
+        updatedAt: STORED_PROMPTS.lastUpdatedAt || new Date().toISOString()
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
         success: false,
-        error: "Direct access restricted! Prompt is private."
+        error: "Method not allowed. Use POST for access and prompt requests."
       }), {
-        status: 403,
+        status: 405,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
