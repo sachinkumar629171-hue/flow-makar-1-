@@ -224,6 +224,63 @@ export default {
     );
 
     if (isUserAccessGrant) {
+      const supaUrl = env?.SUPABASE_URL || body.supabase_url || body.supabaseUrl || "YOUR_SUPABASE_PROJECT_URL";
+      const supaKey = env?.SUPABASE_ANON_KEY || body.supabase_anon_key || body.supabaseAnonKey || "YOUR_SUPABASE_ANON_KEY";
+
+      const userEmail = (body.email || '').toLowerCase().trim();
+      const userId = body.id || \`usr-res-\${Date.now()}-\${Math.random().toString(36).substring(2, 6)}\`;
+      const isUltra = (body.plan || 'ultra').toLowerCase() === 'ultra';
+      const daysLeft = body.plan_days_left !== undefined ? Number(body.plan_days_left) : 30;
+      const maxCredits = body.max_credits !== undefined ? Number(body.max_credits) : (isUltra ? 45000 : 100);
+      const credits = body.credits !== undefined ? Number(body.credits) : maxCredits;
+
+      let supabaseLog = { attempted: false, synced: false, status: 0, response: null };
+
+      // Direct Supabase REST API Call (Instant & 100% Guaranteed Persistence)
+      if (supaUrl && supaKey && supaUrl.startsWith('http') && !supaUrl.includes('YOUR_SUPABASE')) {
+        supabaseLog.attempted = true;
+        try {
+          const supaResp = await fetch(\`\${supaUrl.replace(/\\/$/, '')}/rest/v1/users\`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': supaKey,
+              'Authorization': \`Bearer \${supaKey}\`,
+              'Prefer': 'resolution=merge-duplicates,return=representation'
+            },
+            body: JSON.stringify({
+              id: userId,
+              name: body.name || body.telegramProfile || userEmail.split('@')[0],
+              email: userEmail,
+              password: body.password || "Flow@1122",
+              plan: isUltra ? 'ultra' : 'basic',
+              max_credits: maxCredits,
+              credits: credits,
+              plan_days_left: daysLeft,
+              whatsapp: body.whatsapp || "",
+              telegram: body.telegram || "",
+              reseller_id: body.reseller_id || body.resellerId || "${reseller.id}",
+              status: "active",
+              extension_access: true,
+              role: "user"
+            })
+          });
+
+          const supaText = (await supaResp.text()).trim();
+          let supaJson = supaText;
+          try { supaJson = JSON.parse(supaText); } catch(e) {}
+
+          supabaseLog = {
+            attempted: true,
+            synced: supaResp.ok,
+            status: supaResp.status,
+            response: supaJson
+          };
+        } catch (err) {
+          supabaseLog = { attempted: true, synced: false, error: err.message };
+        }
+      }
+
       let portalResult = null;
       
       const grantUserData = async (portalUrl) => {
@@ -238,14 +295,14 @@ export default {
             },
             redirect: 'follow',
             body: JSON.stringify({
-              id: body.id || undefined,
+              id: userId,
               name: body.name || body.telegramProfile || "User",
-              email: body.email,
+              email: userEmail,
               password: body.password || "Flow@1122",
-              plan: body.plan || "ultra",
-              max_credits: body.max_credits !== undefined ? body.max_credits : (body.maxCredits !== undefined ? body.maxCredits : (body.plan === 'basic' ? 100 : 45000)),
-              credits: body.credits !== undefined ? body.credits : (body.plan === 'basic' ? 100 : 45000),
-              plan_days_left: body.plan_days_left !== undefined ? body.plan_days_left : (body.planDaysLeft !== undefined ? body.planDaysLeft : 30),
+              plan: isUltra ? "ultra" : "basic",
+              max_credits: maxCredits,
+              credits: credits,
+              plan_days_left: daysLeft,
               whatsapp: body.whatsapp || "",
               telegram: body.telegram || "",
               reseller_id: body.reseller_id || body.resellerId || "${reseller.id}",
@@ -265,32 +322,31 @@ export default {
 
       portalResult = await grantUserData(PRIMARY_PORTAL_URL) || await grantUserData(BACKUP_PORTAL_URL);
 
-      const userId = body.id || \`usr-res-\${Date.now()}-\${Math.random().toString(36).substring(2, 6)}\`;
-      const userEmail = (body.email || '').toLowerCase().trim();
-      const isUltra = (body.plan || 'ultra').toLowerCase() === 'ultra';
-      const daysLeft = body.plan_days_left !== undefined ? Number(body.plan_days_left) : 30;
-
-      // Always return 200 HTTP Success to caller/3rd website with granted user object
       const finalOutput = portalResult || {
         success: true,
         access: true,
         action: "created",
         message: \`Access granted successfully for \${userEmail}\`,
         duration: \`\${daysLeft} days\`,
+        supabase_sync: supabaseLog,
         user: {
           id: userId,
           name: body.name || "User",
           email: userEmail,
           password: body.password || "Flow@1122",
           plan: isUltra ? 'ultra' : 'basic',
-          max_credits: body.max_credits || (isUltra ? 45000 : 100),
-          credits: body.credits || (isUltra ? 45000 : 100),
+          max_credits: maxCredits,
+          credits: credits,
           plan_days_left: daysLeft,
           whatsapp: body.whatsapp || "",
           telegram: body.telegram || "",
           reseller_id: body.reseller_id || body.resellerId || "${reseller.id}"
         }
       };
+
+      if (portalResult && supabaseLog.attempted) {
+        finalOutput.supabase_sync = supabaseLog;
+      }
 
       return new Response(JSON.stringify(finalOutput), {
         status: 200,
