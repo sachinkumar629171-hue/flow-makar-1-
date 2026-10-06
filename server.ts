@@ -3002,7 +3002,7 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
   });
 };
 
-// Handler for REVOKE ACCESS (Removes customer access completely)
+// Handler for REVOKE ACCESS (Downgrades customer to basic free plan instead of deleting)
 const handleResellerRevokeAccess = async (req: any, res: any) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
@@ -3025,24 +3025,61 @@ const handleResellerRevokeAccess = async (req: any, res: any) => {
     });
   }
 
-  // Completely delete / remove the user so access is 100% revoked
-  const userIdx = db.users.findIndex(u => u.email && cleanEmailString(u.email) === email);
-  if (userIdx !== -1) {
-    db.users.splice(userIdx, 1);
+  // Downgrade user to Basic plan (100 credits, 0 VIP days left)
+  let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+  if (user) {
+    user.plan = 'basic';
+    user.credits = 100;
+    user.maxCredits = 100;
+    user.planDaysLeft = 0;
+    user.planExpiresAt = new Date().toISOString();
+    user.status = 'active';
+    saveStorage();
+  } else {
+    user = {
+      id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+      name: email.split('@')[0],
+      email,
+      password: 'Flow@1122',
+      plan: 'basic',
+      credits: 100,
+      maxCredits: 100,
+      planDaysLeft: 0,
+      status: 'active',
+      extensionAccess: true,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+    };
+    db.users.push(user);
     saveStorage();
   }
 
   const supa = getServerSupabase();
   if (supa) {
-    supa.from('users').delete().ilike('email', email).then(() => {}, () => {});
+    safeServerSupabaseUserUpdate(supa, user.id, email, {
+      plan: 'basic',
+      credits: 100,
+      max_credits: 100,
+      plan_days_left: 0,
+      status: 'active'
+    }).catch(() => {});
   }
 
   return res.json({
     success: true,
     access: false,
-    action: 'removed',
+    action: 'downgraded',
     email,
-    message: `Access completely removed for ${email}. User account deleted.`,
+    message: `VIP Access revoked for ${email}. Account downgraded to Basic plan in Supabase & Portal.`,
+    user: {
+      id: user.id,
+      email: user.email,
+      plan: 'basic',
+      credits: 100,
+      max_credits: 100,
+      plan_days_left: 0,
+      status: 'active'
+    }
   });
 };
 

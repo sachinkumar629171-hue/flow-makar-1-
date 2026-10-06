@@ -252,6 +252,26 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     };
 
     try {
+      if (cloudflareUrl.trim()) {
+        try {
+          const cfPayload: Record<string, any> = {
+            servers: updatedServers,
+            updatedAt: nowIso
+          };
+          updatedServers.forEach((s, idx) => {
+            const key = `server${idx + 1}`;
+            cfPayload[key] = s.prompt || '';
+          });
+          await fetch(cloudflareUrl.trim(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfPayload)
+          });
+        } catch (e) {
+          console.warn('Direct push to Cloudflare worker failed:', e);
+        }
+      }
+
       await updatePromptConfig({
         servers: updatedServers,
         costs: {
@@ -327,6 +347,26 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     }
 
     try {
+      if (cloudflareUrl.trim()) {
+        try {
+          const cfPayload: Record<string, any> = {
+            servers: updatedServers,
+            updatedAt: nowIso
+          };
+          updatedServers.forEach((s, idx) => {
+            const key = `server${idx + 1}`;
+            cfPayload[key] = s.prompt || '';
+          });
+          await fetch(cloudflareUrl.trim(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfPayload)
+          });
+        } catch (e) {
+          console.warn('Direct push to Cloudflare worker failed:', e);
+        }
+      }
+
       await updatePromptConfig({
         servers: updatedServers,
         costs: {

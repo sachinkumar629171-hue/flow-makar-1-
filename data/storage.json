@@ -1,6 +1,29 @@
 {
   "users": [
     {
+      "id": "usr-1791263263265-a5b",
+      "name": "test_cf_user",
+      "email": "test_cf_user@gmail.com",
+      "password": "Flow@1122",
+      "telegram": "",
+      "whatsapp": "",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 30,
+      "planExpiresAt": "2026-11-05T05:07:43.265Z",
+      "status": "active",
+      "extensionAccess": true,
+      "sessionToken": "sess-1791263263265-1n5i2",
+      "resellerId": "reseller-123",
+      "resellerName": "Reseller (reseller)",
+      "role": "user",
+      "isOnline": true,
+      "createdAt": "2026-10-06T05:07:43.265Z",
+      "lastActive": "2026-10-06T05:07:43.265Z",
+      "avatarColor": "from-purple-600 to-indigo-600"
+    },
+    {
       "id": "usr-res-mujhzif0-mfrv",
       "name": "Rahul Test 3rd Site",
       "email": "rahul_3rd_site@gmail.com",
@@ -18,7 +41,7 @@
       "resellerId": "fgdtxhoyjujhx",
       "resellerName": "Reseller (fgdtxhoy)",
       "role": "user",
-      "isOnline": true,
+      "isOnline": false,
       "createdAt": "2026-10-06T03:12:50.415Z",
       "lastActive": "2026-10-06T03:12:50.415Z",
       "avatarColor": "from-purple-600 to-indigo-600"
@@ -107,7 +130,7 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": true,
-      "lastActive": "2026-10-06T03:12:44.406Z",
+      "lastActive": "2026-10-06T05:07:31.784Z",
       "sessionToken": "sys_prompts"
     },
     {

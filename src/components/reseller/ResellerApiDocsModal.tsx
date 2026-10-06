@@ -122,12 +122,10 @@ curl -X POST "${revokeUrl}" \\
   -H "x-api-key: ${apiKey || 'YOUR_ADMIN_GENERATED_API_KEY'}" \\
   -d '{"email": "rahul@gmail.com"}'`;
 
-  const cloudflareSnippet = `// Cloudflare Worker: Multi-Role Master Handler (Prompt Receiver + User Access/Supabase Sync + Secure Extension Deliverer)
+  const cloudflareSnippet = `// Cloudflare Worker: Multi-Role Master Handler (Prompt Receiver + User Access/Supabase Sync + Revoke Access + Dynamic Multi-Server Support)
 
-// Memory Storage (Agar KV nahi bhi ho tab bhi memory me store rahega)
+// Dynamic Memory Storage
 let STORED_PROMPTS = {
-  server1: \`\`,
-  server2: \`\`,
   lastUpdatedAt: new Date().toISOString()
 };
 
@@ -177,19 +175,36 @@ export default {
     }
 
     // =========================================================================
-    // 🌟 ROLE 1: DUSRI WEBSITE / ADMIN SE NAYA PROMPT AAYA (UPDATE & STORE - ZERO DISTURBANCE)
+    // 🌟 ROLE 1: DUSRI WEBSITE / ADMIN SE NAYA PROMPT AAYA (DYNAMIC MULTI-SERVER SUPPORT)
     // =========================================================================
-    const isPromptUpdate = body.server1 !== undefined || body.server2 !== undefined || body.prompt !== undefined || body.servers !== undefined;
+    const isPromptUpdate = (
+      body.servers !== undefined ||
+      body.prompt !== undefined ||
+      Object.keys(body).some(k => k.startsWith('server'))
+    );
 
     if (isPromptUpdate) {
-      if (body.server1 !== undefined) STORED_PROMPTS.server1 = body.server1;
-      if (body.server2 !== undefined) STORED_PROMPTS.server2 = body.server2;
-      if (body.prompt !== undefined && !STORED_PROMPTS.server1) STORED_PROMPTS.server1 = body.prompt;
+      if (Array.isArray(body.servers)) {
+        for (const srv of body.servers) {
+          if (srv && (srv.id || srv.label)) {
+            const key = srv.id && srv.id.startsWith('server') ? srv.id : (srv.label ? srv.label.toLowerCase().replace(/[^a-z0-9]/g, '') : 'server1');
+            const promptVal = srv.prompt || '';
+            STORED_PROMPTS[key] = promptVal;
+            if (env && env.PROMPTS_KV) await env.PROMPTS_KV.put(key, promptVal);
+          }
+        }
+      }
 
-      // Agar Cloudflare KV bind ho toh usme bhi persist kar do
-      if (env && env.PROMPTS_KV) {
-        if (body.server1 !== undefined) await env.PROMPTS_KV.put('server1', body.server1);
-        if (body.server2 !== undefined) await env.PROMPTS_KV.put('server2', body.server2);
+      for (const [key, val] of Object.entries(body)) {
+        if (key.startsWith('server') && typeof val === 'string') {
+          STORED_PROMPTS[key] = val;
+          if (env && env.PROMPTS_KV) await env.PROMPTS_KV.put(key, val);
+        }
+      }
+
+      if (body.prompt !== undefined && !STORED_PROMPTS.server1) {
+        STORED_PROMPTS.server1 = body.prompt;
+        if (env && env.PROMPTS_KV) await env.PROMPTS_KV.put('server1', body.prompt);
       }
 
       STORED_PROMPTS.lastUpdatedAt = new Date().toISOString();
@@ -197,8 +212,9 @@ export default {
       return new Response(JSON.stringify({
         success: true,
         status: "delivered",
-        message: "Server prompt updated successfully in Cloudflare Worker!",
-        updatedAt: STORED_PROMPTS.lastUpdatedAt
+        message: "Server prompts updated successfully in Cloudflare Worker!",
+        updatedAt: STORED_PROMPTS.lastUpdatedAt,
+        serversCount: Object.keys(STORED_PROMPTS).filter(k => k.startsWith('server')).length
       }), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -206,7 +222,67 @@ export default {
     }
 
     // =========================================================================
-    // 🌟 ROLE 2: DUSRI WEBSITE / BOT SE NAYA USER / ORDER AAYA (SUPABASE & ACCESS SYNC)
+    // 🌟 ROLE 2: ACCESS REVOKE / DELETE USER
+    // =========================================================================
+    const isRevokeAccess = (
+      pathName.includes('/revoke') ||
+      body.action === 'revoke' ||
+      body.action === 'remove' ||
+      body.action === 'delete'
+    );
+
+    if (isRevokeAccess) {
+      const supaUrl = env?.SUPABASE_URL || body.supabase_url || body.supabaseUrl || "YOUR_SUPABASE_PROJECT_URL";
+      const supaKey = env?.SUPABASE_ANON_KEY || body.supabase_anon_key || body.supabaseAnonKey || "YOUR_SUPABASE_ANON_KEY";
+      const userEmail = (body.email || '').toLowerCase().trim();
+
+      if (!userEmail) {
+        return new Response(JSON.stringify({ success: false, error: "Email is required to revoke access" }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
+
+      let supaRevokeOk = false;
+      if (supaUrl && supaKey && supaUrl.startsWith('http') && !supaUrl.includes('YOUR_SUPABASE')) {
+        try {
+          const deleteResp = await fetch(\`\${supaUrl.replace(/\\/$/, '')}/rest/v1/users?email=eq.\${encodeURIComponent(userEmail)}\`, {
+            method: 'DELETE',
+            headers: {
+              'apikey': supaKey,
+              'Authorization': \`Bearer \${supaKey}\`
+            }
+          });
+          supaRevokeOk = deleteResp.ok;
+        } catch {}
+      }
+
+      // Forward to portal
+      try {
+        await fetch(\`\${PRIMARY_PORTAL_URL}/api/reseller/access/revoke\`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': request.headers.get('x-api-key') || body.apiKey || '${apiKey || ''}',
+          },
+          body: JSON.stringify({ email: userEmail })
+        });
+      } catch {}
+
+      return new Response(JSON.stringify({
+        success: true,
+        access: false,
+        action: "revoke",
+        message: \`Access revoked and user deleted for \${userEmail}\`,
+        supabase_deleted: supaRevokeOk
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // =========================================================================
+    // 🌟 ROLE 3: DUSRI WEBSITE / BOT SE NAYA USER / ORDER AAYA (SUPABASE & ACCESS SYNC)
     // =========================================================================
     const isUserAccessGrant = (
       pathName.includes('/access') ||
@@ -236,7 +312,7 @@ export default {
 
       let supabaseLog = { attempted: false, synced: false, status: 0, response: null };
 
-      // Direct Supabase REST API Call (Instant & 100% Guaranteed Persistence)
+      // Direct Supabase REST API Call (Instant & 100% Guaranteed Persistence - status, extension_access, role omitted)
       if (supaUrl && supaKey && supaUrl.startsWith('http') && !supaUrl.includes('YOUR_SUPABASE')) {
         supabaseLog.attempted = true;
         try {
@@ -259,10 +335,7 @@ export default {
               plan_days_left: daysLeft,
               whatsapp: body.whatsapp || "",
               telegram: body.telegram || "",
-              reseller_id: body.reseller_id || body.resellerId || "${reseller.id}",
-              status: "active",
-              extension_access: true,
-              role: "user"
+              reseller_id: body.reseller_id || body.resellerId || "${reseller.id}"
             })
           });
 
@@ -355,7 +428,7 @@ export default {
     }
 
     // =========================================================================
-    // 🌟 ROLE 3: EXTENSION SE USER AAYA HAI (PROMPT LENE KE LIYE - ZERO DISTURBANCE)
+    // 🌟 ROLE 4: EXTENSION SE USER AAYA HAI (PROMPT LENE KE LIYE - DYNAMIC MULTI-SERVER)
     // =========================================================================
     const email = (body.email || '').trim().toLowerCase();
     const sessionToken = (body.token || body.sessionToken || '').trim();
@@ -430,27 +503,36 @@ export default {
       });
     }
 
-    // Agar KV use kar rahe ho toh wahan se taaza utha lo
-    let activeServer1 = STORED_PROMPTS.server1;
-    let activeServer2 = STORED_PROMPTS.server2;
-    if (env && env.PROMPTS_KV) {
-      activeServer1 = (await env.PROMPTS_KV.get('server1')) || activeServer1;
-      activeServer2 = (await env.PROMPTS_KV.get('server2')) || activeServer2;
-    }
-
-    // ✅ Verified User ko Taaza Prompt Deliver Kiya!
-    return new Response(JSON.stringify({
+    // Dynamic Server Prompts Gathering
+    const responsePayload = {
       success: true,
       authenticated: true,
-      server1: activeServer1,
-      server2: activeServer2,
-      servers: [
-        { id: "server1", label: "Server 1", prompt: activeServer1 },
-        { id: "server2", label: "Server 2", prompt: activeServer2 }
-      ],
+      updatedAt: STORED_PROMPTS.lastUpdatedAt || new Date().toISOString(),
+      servers: [],
       user: authData.user,
       costs: authData.costs
-    }), {
+    };
+
+    const serverKeys = new Set([
+      ...Object.keys(STORED_PROMPTS).filter(k => k.startsWith('server')),
+      'server1', 'server2'
+    ]);
+
+    for (const key of Array.from(serverKeys).sort()) {
+      let promptVal = STORED_PROMPTS[key] || '';
+      if (env && env.PROMPTS_KV) {
+        const kvVal = await env.PROMPTS_KV.get(key);
+        if (kvVal !== null) promptVal = kvVal;
+      }
+      responsePayload[key] = promptVal;
+      responsePayload.servers.push({
+        id: key,
+        label: key.replace('server', 'Server '),
+        prompt: promptVal
+      });
+    }
+
+    return new Response(JSON.stringify(responsePayload), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   }
