@@ -47,9 +47,20 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
   const dirtyServersRef = React.useRef<Set<string>>(new Set());
   const isFocusedRef = React.useRef<boolean>(false);
 
+  const normalizeServerList = (servers: ServerPromptConfig[]): ServerPromptConfig[] => {
+    return servers.map((s, idx) => {
+      const num = idx + 1;
+      return {
+        ...s,
+        id: `server${num}`,
+        label: `Server ${num}`,
+      };
+    });
+  };
+
   const [localServers, setLocalServers] = useState<ServerPromptConfig[]>(() => {
     if (promptConfig?.servers && promptConfig.servers.length > 0) {
-      return promptConfig.servers;
+      return normalizeServerList(promptConfig.servers);
     }
     return [
       { id: 'server1', label: 'Server 1', prompt: promptConfig?.server1Prompt || '', lastUpdatedAt: new Date().toISOString() },
@@ -428,7 +439,7 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     if (!canEdit) return;
     const nextNum = localServers.length + 1;
     const newServer: ServerPromptConfig = {
-      id: `server_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 5)}`,
+      id: `server${nextNum}`,
       label: `Server ${nextNum}`,
       prompt: '',
       lastUpdatedAt: new Date().toISOString(),
@@ -437,12 +448,12 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       missed5MinSent: false,
       wasMissed: false,
     };
-    setLocalServers([...localServers, newServer]);
+    setLocalServers(normalizeServerList([...localServers, newServer]));
   };
 
   const removeServer = (id: string) => {
     if (!canEdit || localServers.length <= 1) return;
-    setLocalServers(localServers.filter(s => s.id !== id));
+    setLocalServers(normalizeServerList(localServers.filter(s => s.id !== id)));
   };
 
   const updateServer = (id: string, data: Partial<ServerPromptConfig>) => {

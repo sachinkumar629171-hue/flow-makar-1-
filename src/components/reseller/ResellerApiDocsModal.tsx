@@ -175,7 +175,7 @@ export default {
     }
 
     // =========================================================================
-    // 🌟 ROLE 1: DUSRI WEBSITE / ADMIN SE NAYA PROMPT AAYA (DYNAMIC MULTI-SERVER SUPPORT)
+    // 🌟 ROLE 1: PROMPT UPDATE (CLEAN SEQUENTIAL MULTI-SERVER: SERVER 1, 2, 3, 4...)
     // =========================================================================
     const isPromptUpdate = (
       body.servers !== undefined ||
@@ -185,9 +185,11 @@ export default {
 
     if (isPromptUpdate) {
       if (Array.isArray(body.servers)) {
-        for (const srv of body.servers) {
-          if (srv && (srv.id || srv.label)) {
-            const key = srv.id && srv.id.startsWith('server') ? srv.id : (srv.label ? srv.label.toLowerCase().replace(/[^a-z0-9]/g, '') : 'server1');
+        for (let i = 0; i < body.servers.length; i++) {
+          const srv = body.servers[i];
+          if (srv) {
+            const rawNum = (srv.id || srv.label || '').replace(/[^0-9]/g, '') || String(i + 1);
+            const key = \`server\${rawNum}\`;
             const promptVal = srv.prompt || '';
             STORED_PROMPTS[key] = promptVal;
             if (env && env.PROMPTS_KV) await env.PROMPTS_KV.put(key, promptVal);
@@ -197,8 +199,10 @@ export default {
 
       for (const [key, val] of Object.entries(body)) {
         if (key.startsWith('server') && typeof val === 'string') {
-          STORED_PROMPTS[key] = val;
-          if (env && env.PROMPTS_KV) await env.PROMPTS_KV.put(key, val);
+          const rawNum = key.replace(/[^0-9]/g, '') || '1';
+          const cleanKey = \`server\${rawNum}\`;
+          STORED_PROMPTS[cleanKey] = val;
+          if (env && env.PROMPTS_KV) await env.PROMPTS_KV.put(cleanKey, val);
         }
       }
 
@@ -552,24 +556,44 @@ export default {
       }
     }
 
-    const serverKeys = new Set([
-      ...Object.keys(STORED_PROMPTS).filter(k => k.startsWith('server')),
-      ...(Array.isArray(authData.servers) ? authData.servers.map(s => s.id || (s.label ? s.label.toLowerCase().replace(/[^a-z0-9]/g, '') : '')) : []),
-      'server1', 'server2'
-    ]);
+    const serverNums = new Set();
+    serverNums.add(1);
+    serverNums.add(2);
 
-    for (const key of Array.from(serverKeys).filter(Boolean).sort()) {
-      let promptVal = STORED_PROMPTS[key] || authData[key] || '';
+    for (const k of Object.keys(STORED_PROMPTS)) {
+      if (k.startsWith('server')) {
+        const num = parseInt(k.replace(/[^0-9]/g, ''), 10);
+        if (!isNaN(num) && num > 0) serverNums.add(num);
+      }
+    }
+
+    if (Array.isArray(authData.servers)) {
+      for (const s of authData.servers) {
+        const num = parseInt((s.id || s.label || '').replace(/[^0-9]/g, ''), 10);
+        if (!isNaN(num) && num > 0) serverNums.add(num);
+      }
+    }
+
+    const sortedNums = Array.from(serverNums).sort((a, b) => a - b);
+
+    for (const num of sortedNums) {
+      const key = \`server\${num}\`;
+      let promptVal = STORED_PROMPTS[key] || (authData ? authData[key] : '') || '';
+
+      if (!promptVal && Array.isArray(authData?.servers)) {
+        const matched = authData.servers.find(s => parseInt((s.id || s.label || '').replace(/[^0-9]/g, ''), 10) === num);
+        if (matched?.prompt) promptVal = matched.prompt;
+      }
+
       if (env && env.PROMPTS_KV) {
         const kvVal = await env.PROMPTS_KV.get(key);
         if (kvVal !== null) promptVal = kvVal;
       }
-      
-      const rawNum = key.replace(/[^0-9]/g, '') || '1';
+
       responsePayload[key] = promptVal;
       responsePayload.servers.push({
         id: key,
-        label: \`Server \${rawNum}\`,
+        label: \`Server \${num}\`,
         prompt: promptVal
       });
     }
