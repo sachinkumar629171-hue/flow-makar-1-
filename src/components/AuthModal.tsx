@@ -111,11 +111,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onB
       >
         {/* Title */}
         <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-white font-display mb-2">
-          Sign in to Flow
+          {mode === 'login' ? 'Sign in to Flow' : 'Create an Account'}
         </h1>
         {/* Subtitle */}
         <p className="text-sm sm:text-base text-neutral-400 mb-8">
-          Where the next wave of storytelling happens
+          {mode === 'login'
+            ? 'Where the next wave of storytelling happens'
+            : 'Join FlowMaker and create stories with AI'}
         </p>
 
         {/* Main Card */}
@@ -409,6 +411,50 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onB
           )}
         </div>
       </motion.div>
+
+      {/* Floating Telegram Support Icon for Sign Up page exclusively (Nichhe Right Side me - Pure Telegram Logo) */}
+      <AnimatePresence>
+        {mode === 'signup' && promptConfig?.signupTelegramEnabled !== false && (
+          <motion.div
+            key="signup-telegram-floating"
+            initial={{ opacity: 0, scale: 0.8, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.8, y: 20 }}
+            transition={{ duration: 0.25 }}
+            className="fixed bottom-6 right-6 z-50 flex items-center"
+          >
+            <a
+              href={(() => {
+                const raw = promptConfig?.signupTelegramUrl?.trim() || '';
+                if (!raw) return 'https://t.me/';
+                if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+                if (raw.startsWith('@')) return `https://t.me/${raw.replace(/^@/, '')}`;
+                if (raw.startsWith('t.me/')) return `https://${raw}`;
+                return `https://t.me/${raw}`;
+              })()}
+              target="_blank"
+              rel="noopener noreferrer"
+              id="signup-floating-telegram-btn"
+              className="w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-2xl shadow-sky-500/50 hover:shadow-sky-500/80 hover:scale-110 active:scale-95 transition-all duration-200 cursor-pointer flex items-center justify-center focus:outline-none"
+              title="Telegram"
+              aria-label="Telegram"
+            >
+              <svg className="w-full h-full drop-shadow-md select-none pointer-events-none" viewBox="0 0 240 240" fill="none">
+                <defs>
+                  <linearGradient id="tg-grad-fab" x1="120" y1="0" x2="120" y2="240" gradientUnits="userSpaceOnUse">
+                    <stop stopColor="#2AABEE"/>
+                    <stop offset="1" stopColor="#229ED9"/>
+                  </linearGradient>
+                </defs>
+                <circle cx="120" cy="120" r="120" fill="url(#tg-grad-fab)"/>
+                <path d="M98 175c-3.887 0-3.227-1.468-4.568-5.17L82 132.206 172 75.8" fill="#c8daea"/>
+                <path d="M98 175c3 0 4.333-1.374 6-3l26-25.263-32.417-19.531" fill="#a9c9dd"/>
+                <path d="M97.583 127.206l57.777 42.688c5.523 3.045 9.516 1.469 10.892-5.125l23.5-110.744c2.016-8.086-3.08-11.746-8.36-9.348L42.5 102.32c-7.89 3.165-7.844 7.568-1.442 9.534l35.632 11.12 82.52-52.06c3.896-2.364 7.466-1.094 4.536 1.503" fill="#ffffff"/>
+              </svg>
+            </a>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

@@ -1837,11 +1837,15 @@ app.post('/api/extension/cf-verify', async (req, res) => {
     }).eq('id', user.id).then(() => {});
   }
 
+  const { servers, serverMap } = await resolveActiveServers();
+
   return res.json({
     allowed: true,
     success: true,
     requiredVersion: requiredVer,
     costs,
+    servers,
+    serverMap,
     user: {
       id: user.id,
       name: user.name,

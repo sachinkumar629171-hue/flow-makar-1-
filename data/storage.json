@@ -18,7 +18,7 @@
       "resellerId": "reseller-123",
       "resellerName": "Reseller (reseller)",
       "role": "user",
-      "isOnline": true,
+      "isOnline": false,
       "createdAt": "2026-10-06T05:07:43.265Z",
       "lastActive": "2026-10-06T05:07:43.265Z",
       "avatarColor": "from-purple-600 to-indigo-600"
@@ -130,7 +130,7 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": true,
-      "lastActive": "2026-10-06T05:07:31.784Z",
+      "lastActive": "2026-10-09T09:54:50.478Z",
       "sessionToken": "sys_prompts"
     },
     {
@@ -295,10 +295,10 @@
       "email": "customer_buyer_777@gmail.com",
       "password": "Aass1122",
       "telegram": "",
-      "plan": "ultra",
-      "credits": 45000,
-      "maxCredits": 45000,
-      "planDaysLeft": 1,
+      "plan": "basic",
+      "credits": 100,
+      "maxCredits": 100,
+      "planDaysLeft": 0,
       "planExpiresAt": "2026-10-06T11:30:23.511Z",
       "status": "active",
       "extensionAccess": true,
@@ -309,7 +309,7 @@
       "isOnline": false,
       "createdAt": "2026-10-05T11:30:23.511Z",
       "lastActive": "2026-10-05T11:30:34.139Z",
-      "avatarColor": "from-purple-600 to-indigo-600",
+      "avatarColor": "from-blue-600 to-cyan-600",
       "usedCredits": 0
     },
     {
@@ -318,10 +318,10 @@
       "email": "portal_test_member@gmail.com",
       "password": "Aass1122",
       "telegram": "",
-      "plan": "ultra",
-      "credits": 45000,
-      "maxCredits": 45000,
-      "planDaysLeft": 1,
+      "plan": "basic",
+      "credits": 100,
+      "maxCredits": 100,
+      "planDaysLeft": 0,
       "planExpiresAt": "2026-10-06T11:29:23.013Z",
       "status": "active",
       "extensionAccess": true,
@@ -332,7 +332,7 @@
       "isOnline": false,
       "createdAt": "2026-10-05T11:29:23.013Z",
       "lastActive": "2026-10-05T11:29:23.013Z",
-      "avatarColor": "from-purple-600 to-indigo-600",
+      "avatarColor": "from-blue-600 to-cyan-600",
       "usedCredits": 0
     }
   ],
@@ -342,7 +342,7 @@
       "portalName": "Sachin portal 2",
       "email": "sachin.portal2@gmail.com",
       "userLimit": 10,
-      "daysLeft": 30,
+      "daysLeft": 27,
       "status": "active",
       "apiKey": "flw_res_resellermum1n75tl6gu_7361636869",
       "expiresAt": "2026-11-04T10:52:54.106Z"
@@ -400,6 +400,16 @@
         "id": "server2",
         "label": "Server 2",
         "prompt": ""
+      },
+      {
+        "id": "server_muwbcaqx_3o8",
+        "label": "Server 3",
+        "prompt": "",
+        "lastUpdatedAt": "2026-10-06T06:44:37.876Z",
+        "updatedBy": "Admin",
+        "reminded20MinSent": false,
+        "missed5MinSent": false,
+        "wasMissed": false
       }
     ],
     "costs": {
@@ -483,19 +493,19 @@
       ]
     },
     "promptReminderMinutes": 120,
-    "server1Prompt": "fhhgfhcg",
-    "server2Prompt": "[\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1805020820.791119,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"SEARCH_SAMESITE\",\n    \"path\": \"/\",\n    \"sameSite\": \"strict\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"CgQI56EB\"\n  },\n  {\n    \"domain\": \".flow.google.com\",\n    \"expirationDate\": 1824600137.187619,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"_ga\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"GA1.1.1194372204.1789469259\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1805020819.752266,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"AEC\",\n    \"path\": \"/\",\n    \"sameSite\": \"lax\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"AdJVEat2WGbl9zRt6UYGJjDSgbOPn3_RMEzDVsai26psjltQqn0V3Gc23Yw\"\n  },\n  {\n    \"domain\": \"flow.google.com\",\n    \"expirationDate\": 1824540382.468754,\n    \"hostOnly\": true,\n    \"httpOnly\": true,\n    \"name\": \"OSID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"g.a000Cwl9LAG5kPqWeviAjIkQDBguvWTR25r8ulTweOZtNFPu4slR2eOuZ8ZOg_azIdCm-_vpJQACgYKAXcSARASFQHGX2Mi89LQTxJZ31vzJdVg0IFF_RoVAUF8yKpDg1u8-wLhng0ZVuH5EFDb0076\"\n  },\n  {\n    \"domain\": \"flow.google.com\",\n    \"expirationDate\": 1824540382.469242,\n    \"hostOnly\": true,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-OSID\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"g.a000Cwl9LAG5kPqWeviAjIkQDBguvWTR25r8ulTweOZtNFPu4slRv-iiVb0oBvOaM7B0Nx0VbwACgYKAc8SARASFQHGX2MiXyMLc8TlVJ8ULi22vKadbhoVAUF8yKrQpKNdYM-xRUiQiMjPH1do0076\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.470592,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"SID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"g.a000Cwl9LJ2ndnzsZpCuxtNNluKWIqkX58FLcFNuTM54Lj-1LXD0o9U5-iIEWIPI3PUC_6UKQgACgYKAZ0SARASFQHGX2Mi7xAC4DM4ehqrr2rRsFQ0QhoVAUF8yKo9KOK3rP5S-sNEqcSuh4Q20076\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.471089,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-1PSID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"g.a000Cwl9LJ2ndnzsZpCuxtNNluKWIqkX58FLcFNuTM54Lj-1LXD0uVGEi80Bf7XGGdaAUCqHhwACgYKAdwSARASFQHGX2Mi19sRJ54Lxn9TvaIIqdkoUhoVAUF8yKoAWpiIpAuD_2tqxRbmB6_y0076\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.471578,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-3PSID\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"g.a000Cwl9LJ2ndnzsZpCuxtNNluKWIqkX58FLcFNuTM54Lj-1LXD0QJKdTm76Djd05ln25FOE7AACgYKAYQSARASFQHGX2MiJpy3uNiVG1Y2c-xX5xRYtRoVAUF8yKrhPGjFW_Mnpgrtsk_3h4tm0076\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.473425,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"HSID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"AZGcjIK5cAw8DlUu7\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.473991,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"SSID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"A93gq0frKmdHrASfm\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.474429,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"APISID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"aTVYmZyR_rxvKnoO/ArGS2XsYDXFaO9cKZ\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.474842,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"SAPISID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"uWeyCSWtDoMVSchm/AZkgcvgF6-HNiUNRI\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.475563,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"__Secure-1PAPISID\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"uWeyCSWtDoMVSchm/AZkgcvgF6-HNiUNRI\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1824540382.476042,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"__Secure-3PAPISID\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"uWeyCSWtDoMVSchm/AZkgcvgF6-HNiUNRI\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1805828673.490588,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"NID\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"CuwCCAESngIBp2sxrvYjiOr09f7DlEfMSNdi35YYAoqGp1u1TgfzOYFRWyKs8mHltSNky189cG8Ck2C2WVQ0JthVnsHJBX9FJYpDVwKAaen5Xn0jN4RY0dF-dgLezSW6eib_IEP3k7F0cBsNZcxjOAUgfdlUBEkAqxcMcjuS5sU3QHZnpBwg8YwPHBuJrwuIvJuX1z95GLSoGspgahDRzi0VupCgIW2Dwy_2GFp7NhEOS6stbv3dgMgGsYwVs-mxggg6VSYFIY8siws0dVdVBeKC01IwZkWgxc8PHl_v-puDP4BGuw8ZGDzIjL3kBkBuqo6-pGdUqCWy7ujmTtKBwJTtguEhNAW3JtBs1sOnXVtEjklLZYl2VliaCqKfah3dNtz8F6iZKAEyRQEOK94Rbplqt4HinG-Tdb5EczVFhO3AhbQJyNCi1TnQJZ6BndRyf9j8R2_C_c1N4NTuvOkuZnFBA3RLjsQ2Zf-7uhlUAw\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1821576130.709467,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-1PSIDTS\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"sidts-CjcBXMw41YF3Q1dKJ0evPXDE3hsAFI-tZ8vlis6RNfpJF2DOCgJBvvp337HopblvFsgpXs31K2sAEAA\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1853112206,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-1PSIDRTS\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"sidts-CjcBXMw41YF3Q1dKJ0evPXDE3hsAFI-tZ8vlis6RNfpJF2DOCgJBvvp337HopblvFsgpXs31K2sAEAA\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1821576130.709982,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-3PSIDTS\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"sidts-CjcBXMw41YF3Q1dKJ0evPXDE3hsAFI-tZ8vlis6RNfpJF2DOCgJBvvp337HopblvFsgpXs31K2sAEAA\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1853112206,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-3PSIDRTS\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"sidts-CjcBXMw41YF3Q1dKJ0evPXDE3hsAFI-tZ8vlis6RNfpJF2DOCgJBvvp337HopblvFsgpXs31K2sAEAA\"\n  },\n  {\n    \"domain\": \".flow.google.com\",\n    \"expirationDate\": 1824600137.224632,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"_ga_X2GNH8R5NS\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"GS2.1.s1790040135$o56$g1$t1790040135$j60$l0$h118638026\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1821576204.26974,\n    \"hostOnly\": false,\n    \"httpOnly\": false,\n    \"name\": \"SIDCC\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": false,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"AKEyXzUhLfXxoaPZMz2BYvOcOFSniks_OprDseZOqQimb3V5FjYQw4pzSZyVRUgSOnGEYF39IA\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1821576204.270131,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-1PSIDCC\",\n    \"path\": \"/\",\n    \"sameSite\": \"unspecified\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"AKEyXzXAm27E2Xp40Ve07w2iAaMeeokEdY-bR39a4QgT6BnX3wo9GAd71tE67_JBiIie6BdaAg\"\n  },\n  {\n    \"domain\": \".google.com\",\n    \"expirationDate\": 1821576204.270229,\n    \"hostOnly\": false,\n    \"httpOnly\": true,\n    \"name\": \"__Secure-3PSIDCC\",\n    \"path\": \"/\",\n    \"sameSite\": \"no_restriction\",\n    \"secure\": true,\n    \"session\": false,\n    \"storeId\": \"0\",\n    \"value\": \"AKEyXzW_M2rl44nsNTGAiU4vn5hE6QfBETEHAtikn6mkUrzhpYsyL65LHCHKB4WC1Fa1tYBeoA\"\n  }\n]",
+    "server1Prompt": "fhhg",
+    "server2Prompt": "",
     "telegramAlerts": {
       "enabled": false,
       "botToken": "",
       "chatId": "",
       "reminderMinutesBefore": 20,
-      "missedAlertMinutesAfter": 5,
-      "lastTestedAt": "2026-09-22T19:56:30.100Z",
-      "lastTestSuccess": true
+      "missedAlertMinutesAfter": 5
     },
     "websiteFaviconUrl": "",
     "websiteTitle": "",
-    "extensionVersion": "3.2.0"
+    "extensionVersion": "3.2.0",
+    "signupTelegramEnabled": true,
+    "signupTelegramUrl": "https://t.me/flowmakersupport"
   }
 }

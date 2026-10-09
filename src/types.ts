@@ -174,6 +174,8 @@ export interface PromptConfig {
   promptReminderMinutes?: number;
   telegramAlerts?: TelegramAlertConfig;
   signupEnabled?: boolean;
+  signupTelegramEnabled?: boolean;
+  signupTelegramUrl?: string;
   resellerContactUrl?: string;
   resellerContactUrlEnabled?: boolean;
   customPlanContactUrl?: string;

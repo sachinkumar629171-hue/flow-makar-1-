@@ -174,6 +174,8 @@ export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
   },
   headerEmailOpacity: 100,
   signupEnabled: true,
+  signupTelegramEnabled: true,
+  signupTelegramUrl: '',
   resellerContactUrl: '',
   resellerContactUrlEnabled: true,
   customPlanContactUrl: '',

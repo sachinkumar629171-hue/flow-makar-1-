@@ -149,14 +149,27 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // 1. Return 200 OK for GET requests so Cloudflare Preview Panel loads cleanly without Error 1031!
+    // 1. Return 200 OK for GET requests so Cloudflare Preview Panel & Portal Relay read server prompts cleanly!
     if (request.method === 'GET') {
-      return new Response(JSON.stringify({
+      const getPayload = {
         success: true,
         status: "online",
         service: "FlowMaker Worker Relay",
-        updatedAt: STORED_PROMPTS.lastUpdatedAt || new Date().toISOString()
-      }), {
+        updatedAt: STORED_PROMPTS.lastUpdatedAt || new Date().toISOString(),
+        ...STORED_PROMPTS
+      };
+      if (env && env.PROMPTS_KV) {
+        for (let i = 1; i <= 10; i++) {
+          const k = \`server\${i}\`;
+          if (!getPayload[k]) {
+            try {
+              const kvVal = await env.PROMPTS_KV.get(k);
+              if (kvVal) getPayload[k] = kvVal;
+            } catch {}
+          }
+        }
+      }
+      return new Response(JSON.stringify(getPayload), {
         status: 200,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
@@ -590,7 +603,7 @@ export default {
 
     for (const num of sortedNums) {
       const key = \`server\${num}\`;
-      let promptVal = STORED_PROMPTS[key] || (authData ? authData[key] : '') || '';
+      let promptVal = STORED_PROMPTS[key] || (authData?.serverMap ? authData.serverMap[key] : '') || (authData ? authData[key] : '') || '';
 
       if (!promptVal && Array.isArray(authData?.servers)) {
         const matched = authData.servers.find(s => parseInt((s.id || s.label || '').replace(/[^0-9]/g, ''), 10) === num);
