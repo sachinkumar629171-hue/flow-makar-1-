@@ -1024,7 +1024,7 @@ app.post('/api/users/logout', (req, res) => {
 // Saves >75% Supabase API quota while keeping 2-minute live window perfectly active!
 const lastSupaHeartbeatWrite = new Map<string, number>();
 
-// POST heartbeat with strict single-device session check
+// POST heartbeat with robust presence update
 app.post('/api/users/heartbeat', async (req, res) => {
   const { userId, email, isOnline, sessionToken } = req.body;
   const now = new Date().toISOString();
@@ -1034,31 +1034,8 @@ app.post('/api/users/heartbeat', async (req, res) => {
     (cleanEmail && u.email && cleanEmailString(u.email) === cleanEmail)
   );
 
-  // Authoritative check against Supabase
   const supa = getServerSupabase();
-  if (supa && cleanEmail) {
-    try {
-      const { data: supaUser } = await supa.from('users').select('session_token, is_online').ilike('email', cleanEmail).maybeSingle();
-      if (supaUser && supaUser.session_token && sessionToken && supaUser.session_token !== sessionToken) {
-        return res.json({
-          success: false,
-          sessionMismatch: true,
-          error: 'Your account was logged into on another device. This session has been terminated.',
-        });
-      }
-    } catch {}
-  }
-
   if (user) {
-    // Single device enforcement against local memory
-    if (sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
-      return res.json({
-        success: false,
-        sessionMismatch: true,
-        error: 'Your account was logged into on another device. This session has been terminated.',
-      });
-    }
-
     user.isOnline = isOnline ?? true;
     user.lastActive = now;
     if (sessionToken && !user.sessionToken) {

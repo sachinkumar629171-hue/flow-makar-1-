@@ -732,6 +732,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 } else {
                   setCurrentUser(prev => {
                     if (!prev) return null;
+                    const updated = { ...prev, ...u };
                     if (
                       prev.credits !== u.credits ||
                       prev.maxCredits !== u.maxCredits ||
@@ -739,9 +740,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       prev.planDaysLeft !== u.planDaysLeft ||
                       prev.status !== u.status ||
                       prev.extensionAccess !== u.extensionAccess ||
-                      Boolean(prev.canEditPrompts) !== Boolean(u.canEditPrompts)
+                      Boolean(prev.canEditPrompts) !== Boolean(u.canEditPrompts) ||
+                      prev.name !== u.name
                     ) {
-                      return { ...prev, ...u };
+                      localStorage.setItem('flow_current_user_v3', JSON.stringify(updated));
+                      return updated;
                     }
                     return prev;
                   });
@@ -901,7 +904,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           if (type === 'NEW_LOGIN' && email && currentUser) {
             const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
-            if (Date.now() - lastLogin < 10000) return; // Ignore during 10s login grace period
+            if (Date.now() - lastLogin < 60000) return; // Ignore during 60s login grace period
 
             const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinxexplore@gmail.com' || currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
             const localToken = localStorage.getItem('flowmaker_session_token');
@@ -938,7 +941,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         filter: `id=eq.${currentUser.id}`,
       }, (payload: any) => {
         const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
-        if (Date.now() - lastLogin < 10000) return; // Ignore during 10s login grace period
+        if (Date.now() - lastLogin < 60000) return; // Ignore during 60s login grace period
 
         const newSupaUser = payload.new;
         const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
@@ -1004,7 +1007,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       .then(res => res.json())
       .then(data => {
         const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
-        if (Date.now() - lastLogin < 10000) return; // Ignore during 10s grace period
+        if (Date.now() - lastLogin < 60000) return; // Ignore during 60s grace period
 
         if (data && data.sessionMismatch) {
           console.warn('[SingleSession] Heartbeat detected session mismatch! Terminating old session.');
@@ -1674,6 +1677,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       adminUser.sessionToken = sessionToken;
       localStorage.setItem('flowmaker_session_token', sessionToken);
       localStorage.setItem('flow_login_timestamp', String(Date.now()));
+      localStorage.setItem('flow_current_user_v3', JSON.stringify(adminUser));
       setCurrentUser(adminUser);
 
       // Broadcast across tabs
@@ -1741,6 +1745,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   loggedUser.sessionToken = sessionToken;
                   localStorage.setItem('flowmaker_session_token', sessionToken);
                   localStorage.setItem('flow_login_timestamp', String(Date.now()));
+                  localStorage.setItem('flow_current_user_v3', JSON.stringify(loggedUser));
                   setCurrentUser(loggedUser);
                   setUsers(prev => [loggedUser, ...prev.filter(u => u.email.toLowerCase() !== cleanEmail)]);
                   
@@ -1778,6 +1783,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (sUser.sessionToken) {
           localStorage.setItem('flowmaker_session_token', sUser.sessionToken);
           localStorage.setItem('flow_login_timestamp', String(Date.now()));
+          localStorage.setItem('flow_current_user_v3', JSON.stringify(sUser));
           try {
             const bc = new BroadcastChannel('flow_user_presence');
             bc.postMessage({
