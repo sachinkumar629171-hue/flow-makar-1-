@@ -900,6 +900,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }));
           }
           if (type === 'NEW_LOGIN' && email && currentUser) {
+            const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
+            if (Date.now() - lastLogin < 10000) return; // Ignore during 10s login grace period
+
             const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinxexplore@gmail.com' || currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
             const localToken = localStorage.getItem('flowmaker_session_token');
             if (!isCurrentUserAdmin && currentUser.email.toLowerCase() === email.toLowerCase() && sessionToken && localToken && sessionToken !== localToken) {
@@ -934,6 +937,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         table: 'users',
         filter: `id=eq.${currentUser.id}`,
       }, (payload: any) => {
+        const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
+        if (Date.now() - lastLogin < 10000) return; // Ignore during 10s login grace period
+
         const newSupaUser = payload.new;
         const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
         if (newSupaUser && newSupaUser.session_token && localToken && newSupaUser.session_token !== localToken) {
@@ -997,6 +1003,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .then(res => res.json())
       .then(data => {
+        const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
+        if (Date.now() - lastLogin < 10000) return; // Ignore during 10s grace period
+
         if (data && data.sessionMismatch) {
           console.warn('[SingleSession] Heartbeat detected session mismatch! Terminating old session.');
           setSessionTerminatedNotice(true);
@@ -1664,6 +1673,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
       adminUser.sessionToken = sessionToken;
       localStorage.setItem('flowmaker_session_token', sessionToken);
+      localStorage.setItem('flow_login_timestamp', String(Date.now()));
       setCurrentUser(adminUser);
 
       // Broadcast across tabs
@@ -1730,6 +1740,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
                   loggedUser.sessionToken = sessionToken;
                   localStorage.setItem('flowmaker_session_token', sessionToken);
+                  localStorage.setItem('flow_login_timestamp', String(Date.now()));
                   setCurrentUser(loggedUser);
                   setUsers(prev => [loggedUser, ...prev.filter(u => u.email.toLowerCase() !== cleanEmail)]);
                   
@@ -1766,6 +1777,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const sUser: User = serverData.user;
         if (sUser.sessionToken) {
           localStorage.setItem('flowmaker_session_token', sUser.sessionToken);
+          localStorage.setItem('flow_login_timestamp', String(Date.now()));
           try {
             const bc = new BroadcastChannel('flow_user_presence');
             bc.postMessage({
