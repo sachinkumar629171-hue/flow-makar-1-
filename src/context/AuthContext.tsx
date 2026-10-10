@@ -98,6 +98,9 @@ interface AuthContextType {
   updateTutorialConfig: (config: Partial<TutorialConfig>) => void;
   updateHeroConfig: (config: Partial<HeroConfig>) => void;
   updatePromptConfig: (config: Partial<PromptConfig>) => void;
+  loadAdminUsers: () => Promise<void>;
+  loadAdminResellers: () => Promise<void>;
+  loadResellerUsers: (resellerId: string) => Promise<void>;
   promptConfig: PromptConfig;
   sessionTerminatedNotice: boolean;
   dismissSessionTerminatedNotice: () => void;
@@ -486,7 +489,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     try {
       if (currentReseller) {
-        localStorage.setItem(CURRENT_RESELLER_KEY, JSON.stringify(currentReseller));
+        const safeRes = { ...currentReseller };
+        delete (safeRes as any).password;
+        localStorage.setItem(CURRENT_RESELLER_KEY, JSON.stringify(safeRes));
       } else {
         localStorage.removeItem(CURRENT_RESELLER_KEY);
       }
@@ -495,20 +500,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [currentReseller]);
 
-  // Sync users to localStorage
+  // Sync users to localStorage (stripped of passwords)
   useEffect(() => {
     try {
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(users));
+      const sanitized = users.map(u => {
+        const copy = { ...u };
+        delete (copy as any).password;
+        return copy;
+      });
+      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(sanitized));
     } catch {
       // ignore
     }
   }, [users]);
 
-  // Sync current user to localStorage & Extension Bridge
+  // Sync current user to localStorage & Extension Bridge (stripped of password)
   useEffect(() => {
     try {
       if (currentUser) {
-        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(currentUser));
+        const safeCurrentUser = { ...currentUser };
+        delete (safeCurrentUser as any).password;
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(safeCurrentUser));
         
         const isUltraOrUnlimited = currentUser.plan === 'ultra' || currentUser.plan === 'unlimited';
         const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
@@ -646,489 +658,151 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [generations]);
 
-  // Real-time Central Server Sync & Polling
+  // Real-time Central Server Sync & Polling (Secure: Never leaks all users or passwords)
   useEffect(() => {
     let isMounted = true;
 
-    // Initial sync of current local users to server (excluding mock/purged IDs)
-    try {
-      const currentLocalUsers = JSON.parse(localStorage.getItem(USERS_STORAGE_KEY) || '[]');
-      if (Array.isArray(currentLocalUsers) && currentLocalUsers.length > 0) {
-        const validUsers = currentLocalUsers.filter((u: any) => u.id && !PURGED_MOCK_IDS.has(u.id));
-        if (validUsers.length > 0) {
-          fetch(apiUrl('/api/users/sync-all'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ users: validUsers }),
-          }).catch(() => {});
-        }
-      }
-    } catch {}
-
     const pollCentralServer = async () => {
       try {
-        const supabase = getSupabase();
-        if (supabase) {
-          // 0. Fetch dedicated app_config table if present in Supabase
-          try {
-            const { data: appConfigs } = await supabase.from('app_config').select('*');
-            if (appConfigs && Array.isArray(appConfigs) && isMounted) {
-              const nowTime = Date.now();
-              const configUpdateSafe = nowTime - lastConfigUpdateRef.current > 10000;
-              if (configUpdateSafe) {
-                for (const cfg of appConfigs) {
-                  if (cfg.key === 'admin_config_prompts' && cfg.value) {
-                    setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
-                  } else if (cfg.key === 'admin_config_hero' && cfg.value) {
-                    setHeroConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
-                  } else if (cfg.key === 'admin_config_tutorial' && cfg.value) {
-                    setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
-                  } else if (cfg.key === 'admin_config_extensions' && cfg.value) {
-                    setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(cfg.value) ? prev : cfg.value));
+        // 1. Fetch public application configs (tutorials, extensions, hero, prompts)
+        try {
+          const configRes = await fetch(apiUrl('/api/config'));
+          if (configRes.ok) {
+            const cfgData = await configRes.json();
+            if (cfgData.supabaseConfig && cfgData.supabaseConfig.url && cfgData.supabaseConfig.anonKey) {
+              const currentCfg = getSupabaseConfig();
+              if (!currentCfg.isConnected || currentCfg.url !== cfgData.supabaseConfig.url || currentCfg.anonKey !== cfgData.supabaseConfig.anonKey) {
+                saveSupabaseConfig(cfgData.supabaseConfig.url, cfgData.supabaseConfig.anonKey);
+              }
+            }
+            if (cfgData.planExtensions && isMounted) {
+              setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.planExtensions) ? prev : cfgData.planExtensions));
+            }
+            if (cfgData.tutorialConfig && isMounted) {
+              setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.tutorialConfig) ? prev : cfgData.tutorialConfig));
+            }
+            if (cfgData.promptConfig && isMounted && Date.now() - lastConfigUpdateRef.current > 10000) {
+              setPromptConfig(prev => {
+                const localHasPrompts = prev.servers?.some(s => s.prompt && s.prompt.trim());
+                const incomingHasPrompts = cfgData.promptConfig.servers?.some((s: any) => s.prompt && s.prompt.trim());
+                if (!incomingHasPrompts && localHasPrompts) {
+                  return prev;
+                }
+                const mergedServers = (cfgData.promptConfig.servers || prev.servers || []).map((inSrv: any) => {
+                  const localSrv = prev.servers?.find(ls => ls.id === inSrv.id);
+                  if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
+                    return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
                   }
+                  return inSrv;
+                });
+                const merged = {
+                  ...DEFAULT_PROMPT_CONFIG,
+                  ...prev,
+                  ...cfgData.promptConfig,
+                  servers: mergedServers,
+                };
+                if (prev && JSON.stringify(prev) === JSON.stringify(merged)) {
+                  return prev;
+                }
+                return merged;
+              });
+            }
+          }
+        } catch {}
+
+        // 2. If a user is logged in, refresh ONLY their own user profile (NO all-users fetch!)
+        if (currentUser && isMounted) {
+          try {
+            const profRes = await fetch(apiUrl('/api/users/profile'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                userId: currentUser.id,
+                email: currentUser.email,
+                sessionToken: currentUser.sessionToken,
+              }),
+            });
+            if (profRes.ok) {
+              const profData = await profRes.json();
+              if (profData.user && isMounted) {
+                const u = profData.user;
+                if (u.status === 'suspended' || u.status === 'inactive') {
+                  setSessionTerminatedNotice(true);
+                  logout();
+                } else {
+                  setCurrentUser(prev => {
+                    if (!prev) return null;
+                    if (
+                      prev.credits !== u.credits ||
+                      prev.maxCredits !== u.maxCredits ||
+                      prev.plan !== u.plan ||
+                      prev.planDaysLeft !== u.planDaysLeft ||
+                      prev.status !== u.status ||
+                      prev.extensionAccess !== u.extensionAccess ||
+                      Boolean(prev.canEditPrompts) !== Boolean(u.canEditPrompts)
+                    ) {
+                      return { ...prev, ...u };
+                    }
+                    return prev;
+                  });
                 }
               }
             }
           } catch {}
-
-          // 1. Fetch from Supabase Cloud (Users table for user accounts & config rows)
-          const { data: supaUsers, error: userErr } = await supabase.from('users').select('*');
-          if (!userErr && supaUsers && Array.isArray(supaUsers) && isMounted) {
-            const nowTime = Date.now();
-            const configUpdateSafe = nowTime - lastConfigUpdateRef.current > 10000;
-
-            const sysConfigExtensions = supaUsers.find((u: any) => u.id === 'admin_config_extensions');
-            if (sysConfigExtensions && sysConfigExtensions.name && configUpdateSafe) {
-              try {
-                const parsed = JSON.parse(sysConfigExtensions.name);
-                if (parsed.basic && parsed.ultra) {
-                  setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
-                }
-              } catch (e) {
-                console.error("Failed to parse plan extensions from Supabase", e);
-              }
-            }
-
-            const sysConfigTutorial = supaUsers.find((u: any) => u.id === 'admin_config_tutorial');
-            if (sysConfigTutorial && sysConfigTutorial.name && configUpdateSafe) {
-              try {
-                const parsed = JSON.parse(sysConfigTutorial.name);
-                if (parsed.desktopVideoUrl !== undefined) {
-                  setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
-                }
-              } catch (e) {
-                console.error("Failed to parse tutorial config from Supabase", e);
-              }
-            }
-
-            const sysConfigHero = supaUsers.find((u: any) => u.id === 'admin_config_hero');
-            if (sysConfigHero && sysConfigHero.name && configUpdateSafe) {
-              try {
-                const parsed = JSON.parse(sysConfigHero.name);
-                if (parsed.items !== undefined || parsed.title !== undefined) {
-                  setHeroConfig(prev => (JSON.stringify(prev) === JSON.stringify(parsed) ? prev : parsed));
-                }
-              } catch (e) {
-                console.error("Failed to parse hero config from Supabase", e);
-              }
-            }
-
-            const sysConfigPrompts = supaUsers.find((u: any) => u.id === 'admin_config_prompts');
-            if (sysConfigPrompts && sysConfigPrompts.name && configUpdateSafe) {
-              try {
-                const parsed = JSON.parse(sysConfigPrompts.name);
-                if (parsed && Array.isArray(parsed.servers)) {
-                  setPromptConfig(prev => {
-                    const localHasPrompts = prev.servers?.some(s => s.prompt && s.prompt.trim());
-                    const incomingHasPrompts = parsed.servers.some((s: any) => s.prompt && s.prompt.trim());
-                    if (!incomingHasPrompts && localHasPrompts) {
-                      return prev;
-                    }
-                    const mergedServers = parsed.servers.map((inSrv: any) => {
-                      const localSrv = prev.servers?.find(ls => ls.id === inSrv.id);
-                      if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
-                        return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
-                      }
-                      return inSrv;
-                    });
-                    const merged = { ...prev, ...parsed, servers: mergedServers };
-                    return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
-                  });
-                }
-              } catch (e) {
-                console.error("Failed to parse prompt config from Supabase", e);
-              }
-            }
-
-            // Auto-initialize missing configs to Supabase only if filled to prevent overwriting with blanks
-            if (currentUser?.role === 'admin') {
-              const hasPrompts = promptConfig.servers?.some(s => s.prompt && s.prompt.trim());
-              if (!sysConfigPrompts && hasPrompts) {
-                syncConfigToSupabase('admin_config_prompts', promptConfig);
-              }
-              if (!sysConfigHero) {
-                syncConfigToSupabase('admin_config_hero', heroConfig);
-              }
-              if (!sysConfigTutorial) {
-                syncConfigToSupabase('admin_config_tutorial', tutorialConfig);
-              }
-              if (!sysConfigExtensions) {
-                syncConfigToSupabase('admin_config_extensions', planExtensions);
-              }
-            }
-
-            const mappedUsers: User[] = supaUsers
-              .filter((su: any) => 
-                su.id && 
-                !su.id.startsWith('admin_config_') && 
-                !su.id.startsWith('sys_config_') && 
-                !su.email?.includes('@system.local')
-              )
-              .map((su: any) => {
-                const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
-                const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime <= 120000 && Date.now() - lastActiveTime >= -60000);
-                const baseUser: User = {
-                  id: su.id,
-                  name: su.name,
-                  email: su.email,
-                  password: su.password,
-                  sessionToken: su.session_token || su.sessionToken || '',
-                  whatsapp: su.whatsapp || '',
-                  telegram: su.telegram || '',
-                  referralCode: su.referral_code || '',
-                  referredBy: su.referred_by || '',
-                  plan: (su.plan as PlanType) || 'basic',
-                  credits: Number(su.credits) !== undefined && !isNaN(Number(su.credits)) ? Number(su.credits) : (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
-                  maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
-                  planDaysLeft: Number(su.plan_days_left) ?? 30,
-                  planExpiresAt: su.plan_expires_at || (su.created_at ? new Date(new Date(su.created_at).getTime() + (Number(su.plan_days_left) || 30) * 86400000).toISOString() : undefined),
-                  role: (su.email && (su.email.toLowerCase() === 'sachinxexplore@gmail.com' || su.email.toLowerCase() === 'sachinkumar629171@gmail.com')) ? 'admin' : ((su.role as any) || 'user'),
-                  resellerId: su.reseller_id,
-                  resellerName: su.reseller_name,
-                  createdAt: su.created_at || new Date().toISOString(),
-                  avatarColor: su.plan === 'unlimited' ? 'from-amber-500 to-yellow-500' : su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
-                  status: (su.status as any) || 'active',
-                  extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
-                  canEditPrompts: su.can_edit_prompts === true,
-                  isOnline: isRecent,
-                  lastActive: su.last_active || '',
-                };
-
-                const { user: finalUser, changed } = checkAndDowngradeExpiredUser(baseUser);
-                if (changed) {
-                  const supaClient = getSupabase();
-                  if (supaClient) {
-                    safeSupabaseUserUpdate(supaClient, finalUser.id, finalUser.email, {
-                      plan: 'basic',
-                      credits: finalUser.credits,
-                      max_credits: 100,
-                      plan_days_left: 0,
-                    }).catch(() => {});
-                  }
-                }
-                return finalUser;
-              });
-            
-            const now = Date.now();
-            const mergedUsers = mappedUsers.map((su: User) => {
-              if (currentUser && (su.id === currentUser.id || (su.email && su.email.toLowerCase() === currentUser.email.toLowerCase()))) {
-                return { ...su, isOnline: true, lastActive: new Date().toISOString() };
-              }
-              const pending = lastUpdatedUsersRef.current.get(su.id) || (su.email ? lastUpdatedUsersRef.current.get(su.email.toLowerCase()) : undefined);
-              if (pending && now - pending.timestamp < 30000) {
-                return { ...su, ...pending.data };
-              }
-              return su;
-            });
-
-            setUsers(prev => {
-              const supaUserIds = new Set(mergedUsers.map(u => u.id));
-              const supaUserEmails = new Set(mergedUsers.map(u => u.email.toLowerCase()));
-              const preservedLocalUsers = prev.filter(u => !supaUserIds.has(u.id) && !supaUserEmails.has(u.email.toLowerCase()) && !u.id.startsWith('admin_config_'));
-
-              const prevUserMap = new Map<string, User>(prev.map(u => [u.id, u]));
-              const prevEmailMap = new Map<string, User>(prev.map(u => [u.email.toLowerCase(), u]));
-
-              const enrichedMerged = mergedUsers.map(u => {
-                const prevU = prevUserMap.get(u.id) || (u.email ? prevEmailMap.get(u.email.toLowerCase()) : undefined);
-                if (prevU?.resellerId && !u.resellerId) {
-                  return {
-                    ...u,
-                    resellerId: prevU.resellerId,
-                    resellerName: prevU.resellerName || u.resellerName,
-                  };
-                }
-                return u;
-              });
-
-              return [...enrichedMerged, ...preservedLocalUsers];
-            });
-            if (currentUser) {
-              const currentInList = mergedUsers.find((u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase());
-              const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
-              
-              if (currentInList && (
-                currentInList.status === 'suspended' || 
-                currentInList.status === 'inactive' || 
-                (currentInList.sessionToken && localToken && currentInList.sessionToken !== localToken)
-              )) {
-                console.warn('[SingleSession] Newer login on another device detected during Supabase poll! Terminating session.');
-                setSessionTerminatedNotice(true);
-                logout();
-              } else if (currentInList && (
-                currentInList.plan !== currentUser.plan || 
-                currentInList.credits !== currentUser.credits || 
-                currentInList.maxCredits !== currentUser.maxCredits ||
-                currentInList.planDaysLeft !== currentUser.planDaysLeft ||
-                currentInList.status !== currentUser.status ||
-                Boolean(currentInList.canEditPrompts) !== Boolean(currentUser.canEditPrompts) ||
-                currentInList.role !== currentUser.role ||
-                currentInList.extensionAccess !== currentUser.extensionAccess
-              )) {
-                setCurrentUser(prev => prev ? { ...prev, ...currentInList } : null);
-              }
-            }
-          }
-
-          let rawResellersList: any[] = [];
-          const { data: supaResellers, error: resErr } = await supabase.from('resellers').select('*');
-          if (!resErr && supaResellers && Array.isArray(supaResellers) && supaResellers.length > 0) {
-            rawResellersList = supaResellers;
-          } else {
-            // Robust fallback: check admin_config_resellers row in users table
-            try {
-              const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
-              if (resRow?.name) {
-                const parsed = JSON.parse(resRow.name);
-                if (Array.isArray(parsed) && parsed.length > 0) rawResellersList = parsed;
-              }
-            } catch {}
-          }
-
-          if (rawResellersList.length > 0 && isMounted) {
-            const mappedResellers: Reseller[] = rawResellersList.map((sr: any) => {
-              const baseReseller: Reseller = {
-                id: sr.id,
-                portalName: sr.portal_name || sr.portalName,
-                email: sr.email,
-                password: sr.password,
-                userLimit: sr.user_limit || sr.userLimit || sr.max_users || 20,
-                daysLeft: sr.days_left !== undefined ? sr.days_left : (sr.daysLeft !== undefined ? sr.daysLeft : 30),
-                expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
-                expiresAt: sr.expires_at || sr.expiresAt,
-                status: sr.status || 'active',
-                createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
-                notes: sr.notes || '',
-                apiKey: getOrCreateResellerApiKey(sr),
-              };
-              const expiryInfo = calculateResellerExpiry(baseReseller);
-              return {
-                ...baseReseller,
-                daysLeft: expiryInfo.daysLeft,
-                expiryDate: expiryInfo.expiryDate,
-                expiresAt: expiryInfo.expiresAt,
-                status: expiryInfo.status,
-              };
-            });
-            const now = Date.now();
-            const mergedResellers = mappedResellers.map((sr: Reseller) => {
-              const pending = lastUpdatedResellersRef.current.get(sr.id);
-              if (pending && now - pending.timestamp < 10000) {
-                return { ...sr, ...pending.data };
-              }
-              return sr;
-            });
-            setResellers(mergedResellers);
-          }
         }
 
-        // 2. Fetch config & fallback server
-        const [usersRes, resellersRes, configRes] = await Promise.all([
-          fetch(apiUrl('/api/users')),
-          fetch(apiUrl('/api/resellers')),
-          fetch(apiUrl('/api/config')),
-        ]);
+        // 3. ONLY if current user is an authenticated Master Admin, fetch users and resellers for Admin Panel
+        const isMasterAdmin = Boolean(
+          currentUser && (
+            currentUser.role === 'admin' ||
+            ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email?.toLowerCase())
+          )
+        );
 
-        if (usersRes.ok) {
-          const data = await usersRes.json();
-          if (data.users && Array.isArray(data.users) && isMounted) {
-            const now = Date.now();
-            if (!supabase) {
-              const mergedUsers = data.users.map((u: User) => {
-                if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
-                  return { ...u, isOnline: true, lastActive: new Date().toISOString() };
-                }
-                const pending = lastUpdatedUsersRef.current.get(u.id);
-                if (pending && now - pending.timestamp < 10000) {
-                  return { ...u, ...pending.data };
-                }
-                return u;
-              });
-              setUsers(mergedUsers);
-            } else {
-              // Merge real-time server online status, credit deductions, and NEW API-created users into current users list
-              const serverUsersMap = new Map<string, User>(data.users.map((u: User) => [u.id, u]));
-              const serverUsersEmailMap = new Map<string, User>(data.users.map((u: User) => [(u.email || '').toLowerCase(), u]));
-              
-              setUsers(prev => {
-                const existingIds = new Set(prev.map(u => u.id));
-                const existingEmails = new Set(prev.map(u => (u.email || '').toLowerCase()));
-
-                const updatedExisting = prev.map((u: User) => {
-                  const srv: User | undefined = serverUsersMap.get(u.id) || (u.email ? serverUsersEmailMap.get(u.email.toLowerCase()) : undefined);
-                  if (srv) {
-                    return {
-                      ...u,
-                      ...srv,
-                      resellerId: srv.resellerId || u.resellerId,
-                      resellerName: srv.resellerName || u.resellerName,
-                      isOnline: Boolean(srv.isOnline || u.isOnline),
-                      lastActive: srv.lastActive || u.lastActive || '',
-                      credits: srv.credits !== undefined ? srv.credits : u.credits,
-                      sessionToken: srv.sessionToken || u.sessionToken,
-                    };
-                  }
-                  return u;
-                });
-
-                // Add any users from server that aren't in local state yet (e.g. created via Reseller API)
-                const newServerUsers = data.users.filter((su: User) => 
-                  su.id && 
-                  !existingIds.has(su.id) && 
-                  (!su.email || !existingEmails.has(su.email.toLowerCase())) &&
-                  !su.id.startsWith('admin_config_')
-                );
-
-                return [...updatedExisting, ...newServerUsers];
-              });
-            }
-            // If current user is logged in, refresh their status if updated from admin
-            if (currentUser) {
-              const currentInList = data.users.find((u: User) => u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()));
-              const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
-              
-              if (currentInList && (
-                currentInList.status === 'suspended' || 
-                currentInList.status === 'inactive' || 
-                (currentInList.sessionToken && localToken && currentInList.sessionToken !== localToken)
-              )) {
-                console.warn('[SingleSession] Newer login on another device detected during server poll! Terminating session.');
-                setSessionTerminatedNotice(true);
-                logout();
-              } else if (currentInList && (
-                currentInList.plan !== currentUser.plan || 
-                currentInList.credits !== currentUser.credits || 
-                currentInList.maxCredits !== currentUser.maxCredits ||
-                currentInList.planDaysLeft !== currentUser.planDaysLeft ||
-                currentInList.status !== currentUser.status ||
-                Boolean(currentInList.canEditPrompts) !== Boolean(currentUser.canEditPrompts) ||
-                currentInList.role !== currentUser.role ||
-                currentInList.extensionAccess !== currentUser.extensionAccess
-              )) {
-                setCurrentUser(prev => prev ? { ...prev, ...currentInList } : null);
+        if (isMasterAdmin && currentUser && isMounted) {
+          try {
+            const [usersRes, resellersRes] = await Promise.all([
+              fetch(apiUrl(`/api/users?adminEmail=${encodeURIComponent(currentUser.email)}`)),
+              fetch(apiUrl(`/api/resellers?adminEmail=${encodeURIComponent(currentUser.email)}`)),
+            ]);
+            if (usersRes.ok) {
+              const uData = await usersRes.json();
+              if (Array.isArray(uData.users) && isMounted) {
+                setUsers(uData.users);
               }
             }
-          }
+            if (resellersRes.ok) {
+              const rData = await resellersRes.json();
+              if (Array.isArray(rData.resellers) && isMounted) {
+                setResellers(rData.resellers);
+              }
+            }
+          } catch {}
         }
 
-        if (resellersRes.ok) {
-          const resData = await resellersRes.json();
-          if (resData.resellers && Array.isArray(resData.resellers) && isMounted) {
-            const now = Date.now();
-            setResellers(prev => {
-              const resMap = new Map<string, Reseller>(resData.resellers.map((r: Reseller) => [r.id, r]));
-              const updated = prev.map(r => {
-                const srv = resMap.get(r.id);
-                const pending = lastUpdatedResellersRef.current.get(r.id);
-                if (pending && now - pending.timestamp < 10000) return { ...r, ...pending.data };
-                return srv ? { ...r, ...srv } : r;
-              });
-              const existingIds = new Set(prev.map(r => r.id));
-              const newResellers = resData.resellers.filter((r: Reseller) => !existingIds.has(r.id));
-              return [...updated, ...newResellers];
-            });
-          }
-        }
-
-        if (configRes.ok) {
-          const cfgData = await configRes.json();
-          if (cfgData.supabaseConfig && cfgData.supabaseConfig.url && cfgData.supabaseConfig.anonKey) {
-            const currentCfg = getSupabaseConfig();
-            if (!currentCfg.isConnected || currentCfg.url !== cfgData.supabaseConfig.url || currentCfg.anonKey !== cfgData.supabaseConfig.anonKey) {
-              saveSupabaseConfig(cfgData.supabaseConfig.url, cfgData.supabaseConfig.anonKey);
+        // 4. If logged in as Reseller in Reseller Portal, fetch ONLY assigned users for that reseller
+        if (currentReseller && !isMasterAdmin && isMounted) {
+          try {
+            const rUsersRes = await fetch(apiUrl(`/api/reseller/users?resellerId=${encodeURIComponent(currentReseller.id)}`));
+            if (rUsersRes.ok) {
+              const rUData = await rUsersRes.json();
+              if (Array.isArray(rUData.users) && isMounted) {
+                setUsers(rUData.users);
+              }
             }
-          }
-          if (cfgData.planExtensions && isMounted) {
-            setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.planExtensions) ? prev : cfgData.planExtensions));
-          }
-          if (cfgData.tutorialConfig && isMounted) {
-            setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(cfgData.tutorialConfig) ? prev : cfgData.tutorialConfig));
-          }
-          if (cfgData.promptConfig && isMounted && Date.now() - lastConfigUpdateRef.current > 10000) {
-            setPromptConfig(prev => {
-              const localHasPrompts = prev.servers?.some(s => s.prompt && s.prompt.trim());
-              const incomingHasPrompts = cfgData.promptConfig.servers?.some((s: any) => s.prompt && s.prompt.trim());
-              if (!incomingHasPrompts && localHasPrompts) {
-                return prev;
-              }
-              const mergedServers = (cfgData.promptConfig.servers || prev.servers || []).map((inSrv: any) => {
-                const localSrv = prev.servers?.find(ls => ls.id === inSrv.id);
-                if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
-                  return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
-                }
-                return inSrv;
-              });
-              const merged = {
-                ...DEFAULT_PROMPT_CONFIG,
-                ...prev,
-                ...cfgData.promptConfig,
-                servers: mergedServers,
-              };
-              if (prev && JSON.stringify(prev) === JSON.stringify(merged)) {
-                return prev;
-              }
-              return merged;
-            });
-          }
+          } catch {}
         }
       } catch {
-        // network or offline fallback
+        // network fallback
       }
     };
 
     pollCentralServer();
-    // Balanced Polling: 60s fallback interval (Supabase Realtime WebSocket handles instant live pushes)
     const pollInterval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
       pollCentralServer();
     }, 60000);
 
-    // Instant Supabase Realtime channel for live user presence
-    let usersRealtimeChannel: any = null;
-    try {
-      const supaForRealtime = getSupabase();
-      if (supaForRealtime) {
-        usersRealtimeChannel = supaForRealtime.channel('users_realtime_presence')
-          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, (payload: any) => {
-            const row = payload.new;
-            if (row && row.id && !row.id.startsWith('admin_config_')) {
-              setUsers(prev => prev.map(u => {
-                if (u.id === row.id || (u.email && row.email && u.email.toLowerCase() === row.email.toLowerCase())) {
-                  return {
-                    ...u,
-                    isOnline: row.is_online !== undefined ? row.is_online : u.isOnline,
-                    lastActive: row.last_active || u.lastActive,
-                  };
-                }
-                return u;
-              }));
-            }
-          })
-          .subscribe();
-      }
-    } catch {}
-
-    // Immediate refresh on tab focus
     const handleTabFocus = () => {
       pollCentralServer();
     };
@@ -1138,14 +812,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isMounted = false;
       clearInterval(pollInterval);
       window.removeEventListener('focus', handleTabFocus);
-      if (usersRealtimeChannel) {
-        try {
-          const s = getSupabase();
-          if (s) s.removeChannel(usersRealtimeChannel);
-        } catch {}
-      }
     };
-  }, []); // Run only once on mount to prevent infinite poll cycles
+  }, [currentUser?.id, currentUser?.email, currentUser?.role, currentReseller?.id]);
 
   // Live countdown timer: naturally decreases reseller validity and auto-converts expired Ultra users to Basic plan (0D 0h)
   useEffect(() => {
@@ -1472,73 +1140,34 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
-    // Check local first
-    let reseller = resellers.find(r => r.email.toLowerCase() === cleanEmail);
-
-    // 0. Supabase direct check
-    const supabase = getSupabase();
-    if (supabase) {
-      try {
-        const { data: supaR, error } = await supabase
-          .from('resellers')
-          .select('*')
-          .eq('email', cleanEmail)
-          .maybeSingle();
-
-        if (!error && supaR) {
-          const mapped: Reseller = {
-            id: supaR.id,
-            portalName: supaR.portal_name || supaR.portalName,
-            email: supaR.email,
-            password: supaR.password,
-            userLimit: supaR.user_limit || supaR.userLimit || supaR.max_users || 50,
-            daysLeft: supaR.days_left || supaR.daysLeft || 30,
-            expiryDate: supaR.expiry_date || supaR.expiryDate || '30/10/2026',
-            status: supaR.status || 'active',
-            createdAt: supaR.created_at || new Date().toISOString(),
-            notes: supaR.notes || '',
-          };
-          reseller = mapped;
-          setResellers(prev => {
-            const exists = prev.some(x => x.id === mapped.id);
-            return exists ? prev.map(x => x.id === mapped.id ? mapped : x) : [mapped, ...prev];
-          });
-        }
-      } catch (err) {
-        console.warn('Supabase reseller check error:', err);
+    try {
+      const res = await fetch(apiUrl('/api/reseller/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        return { success: false, error: data.error || 'Invalid reseller credentials.' };
       }
-    }
-
-    // If not found locally, fetch latest resellers from live backend
-    if (!reseller) {
-      try {
-        const res = await fetch(apiUrl('/api/resellers'));
-        if (res.ok) {
-          const data = await res.json();
-          if (data.resellers && Array.isArray(data.resellers)) {
-            setResellers(data.resellers);
-            reseller = data.resellers.find((r: Reseller) => r.email.toLowerCase() === cleanEmail);
+      if (data.reseller) {
+        setCurrentReseller(data.reseller);
+        // Fetch only this reseller's assigned users
+        try {
+          const uRes = await fetch(apiUrl(`/api/reseller/users?resellerId=${encodeURIComponent(data.reseller.id)}`));
+          if (uRes.ok) {
+            const uData = await uRes.json();
+            if (Array.isArray(uData.users)) {
+              setUsers(uData.users);
+            }
           }
-        }
-      } catch (err) {
-        console.error('Error fetching resellers:', err);
+        } catch {}
+        return { success: true };
       }
+      return { success: false, error: 'Failed to authenticate reseller.' };
+    } catch {
+      return { success: false, error: 'Could not connect to authentication server.' };
     }
-
-    if (!reseller) {
-      return { success: false, error: 'No reseller portal found with this email. Contact main administrator.' };
-    }
-
-    if (reseller.password !== cleanPass) {
-      return { success: false, error: 'Incorrect portal password.' };
-    }
-
-    if (reseller.status === 'suspended') {
-      return { success: false, error: 'This reseller portal has been suspended by administration.' };
-    }
-
-    setCurrentReseller(reseller);
-    return { success: true };
   };
 
   const loginAsReseller = (reseller: Reseller) => {
@@ -1849,19 +1478,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
 
-    // Supabase direct database insert & admin_config_all_users backup
+    // Supabase direct database insert
     const supabase = getSupabase();
     if (supabase) {
       safeSupabaseUserUpsert(supabase, newUser).catch(err => {
         console.error('Supabase reseller user insert error:', err);
       });
-      supabase.from('users').upsert({
-        id: 'admin_config_all_users',
-        name: JSON.stringify(updatedUsersList),
-        email: 'all_users_backup@flowmaker.local',
-        role: 'user',
-        status: 'active',
-      }).then(() => {}, () => {});
     }
 
     // Send to central server database immediately
@@ -2069,7 +1691,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: true };
     }
 
-    // 1. First, consult central server login for strict authoritative single-device lock verification
+    // Consult central server login for strict authoritative single-device lock and credentials verification
     try {
       const serverRes = await fetch(apiUrl('/api/users/login'), {
         method: 'POST',
@@ -2088,7 +1710,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (serverRes.status === 401) {
           return { success: false, error: serverData.error || 'Incorrect password. Please try again.' };
         }
-      } else if (serverData.success && serverData.user) {
+        return { success: false, error: serverData.error || 'Account not found. Please sign up first.' };
+      }
+
+      if (serverData.success && serverData.user) {
         const sUser: User = serverData.user;
         if (sUser.sessionToken) {
           localStorage.setItem('flowmaker_session_token', sUser.sessionToken);
@@ -2107,218 +1732,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return exists ? prev.map(u => (u.id === sUser.id || u.email.toLowerCase() === sUser.email.toLowerCase()) ? sUser : u) : [sUser, ...prev];
         });
         setCurrentUser(sUser);
-
-        // Also sync to Supabase if connected
-        const supa = getSupabase();
-        if (supa) {
-          safeSupabaseUserUpdate(supa, sUser.id, sUser.email, {
-            session_token: sUser.sessionToken,
-            is_online: true,
-            last_active: new Date().toISOString(),
-          }).catch(() => {});
-        }
         return { success: true };
       }
-    } catch (err) {
-      console.warn('Central server login attempt error, checking Supabase direct:', err);
+      return { success: false, error: 'Login failed. Please check credentials.' };
+    } catch {
+      return { success: false, error: 'Could not connect to authentication server.' };
     }
-
-    // 2. Direct Supabase Database check if central server was unreachable
-    const supabase = getSupabase();
-    if (supabase) {
-      try {
-        const { data: supaUser, error: supaErr } = await supabase
-          .from('users')
-          .select('*')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-
-        if (!supaErr && supaUser) {
-          if (supaUser.password && supaUser.password !== cleanPass) {
-            return { success: false, error: 'Incorrect password. Please try again.' };
-          }
-          if (supaUser.status === 'suspended') {
-            return { success: false, error: 'This account has been suspended by administration.' };
-          }
-
-          // Single-Device Lock: If account is active on another device, block new login until old device logs out
-          const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
-          const currentLocalToken = localStorage.getItem('flowmaker_session_token');
-          if (!isSystemAdmin && !forceLogin && supaUser.is_online && supaUser.session_token) {
-            const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;
-            const isRecent = Date.now() - lastActiveTime < 3 * 60 * 1000; // 3 mins window
-            if (isRecent && currentLocalToken !== supaUser.session_token) {
-              return {
-                success: false,
-                isDeviceLocked: true,
-                error: '⚠️ Yeh account abhi kisi dusre device / browser par ACTIVE hai! Kripya pehle purane device se logout karein ya Force Login karein.'
-              };
-            }
-          }
-
-          const mappedUser: User = {
-            id: supaUser.id,
-            name: supaUser.name,
-            email: supaUser.email,
-            password: supaUser.password,
-            whatsapp: supaUser.whatsapp || '',
-            telegram: supaUser.telegram || '',
-            referralCode: supaUser.referral_code || '',
-            referredBy: supaUser.referred_by || '',
-            plan: (supaUser.plan as PlanType) || 'basic',
-            credits: Number(supaUser.credits) || 0,
-            maxCredits: Number(supaUser.max_credits) || 100,
-            planDaysLeft: Number(supaUser.plan_days_left) || 30,
-            role: (supaUser.role as any) || 'user',
-            resellerId: supaUser.reseller_id,
-            resellerName: supaUser.reseller_name,
-            createdAt: supaUser.created_at || new Date().toISOString(),
-            avatarColor: supaUser.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
-            status: (supaUser.status as any) || 'active',
-            isOnline: true,
-            lastActive: new Date().toISOString(),
-          };
-
-          const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
-          mappedUser.sessionToken = sessionToken;
-          localStorage.setItem('flowmaker_session_token', sessionToken);
-
-          try {
-            const bc = new BroadcastChannel('flow_user_presence');
-            bc.postMessage({
-              type: 'NEW_LOGIN',
-              email: mappedUser.email,
-              sessionToken: sessionToken,
-            });
-            setTimeout(() => bc.close(), 1000);
-          } catch {}
-
-          setUsers(prev => {
-            const exists = prev.some(u => u.id === mappedUser.id || u.email.toLowerCase() === mappedUser.email.toLowerCase());
-            return exists ? prev.map(u => (u.id === mappedUser.id || u.email.toLowerCase() === mappedUser.email.toLowerCase()) ? mappedUser : u) : [mappedUser, ...prev];
-          });
-          setCurrentUser(mappedUser);
-
-          // Update online status & session token in supabase
-          safeSupabaseUserUpdate(supabase, mappedUser.id, mappedUser.email, {
-            session_token: sessionToken,
-            is_online: true,
-            last_active: new Date().toISOString(),
-          }).catch(() => {});
-
-          return { success: true };
-        }
-      } catch (err) {
-        console.warn('Supabase login check error:', err);
-      }
-    }
-
-    // 2. Direct login via central online server endpoint
-    try {
-      const res = await fetch(apiUrl('/api/users/login'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.user) {
-          const serverUser: User = data.user;
-          if (serverUser.sessionToken) {
-            localStorage.setItem('flowmaker_session_token', serverUser.sessionToken);
-            try {
-              const bc = new BroadcastChannel('flow_user_presence');
-              bc.postMessage({
-                type: 'NEW_LOGIN',
-                email: serverUser.email,
-                sessionToken: serverUser.sessionToken,
-              });
-              setTimeout(() => bc.close(), 1000);
-            } catch {}
-          }
-          // Update local memory and current user
-          setUsers(prev => {
-            const exists = prev.some(u => u.id === serverUser.id || u.email.toLowerCase() === serverUser.email.toLowerCase());
-            if (exists) {
-              return prev.map(u => (u.id === serverUser.id || u.email.toLowerCase() === serverUser.email.toLowerCase()) ? serverUser : u);
-            }
-            return [serverUser, ...prev];
-          });
-          setCurrentUser(serverUser);
-          return { success: true };
-        }
-      } else {
-        const errData = await res.json().catch(() => ({}));
-        if (res.status === 401) {
-          return { success: false, error: errData.error || 'Incorrect password. Please try again.' };
-        }
-        if (res.status === 403) {
-          return { success: false, error: errData.error || 'This account has been suspended by administration.' };
-        }
-        // If 404 or other, fallback to check local cache
-      }
-    } catch (err) {
-      console.warn('Direct server login call error, checking local/sync fallback:', err);
-    }
-
-    // 2. Fallback: Check local memory or fetch latest users list from server
-    let user = users.find(u => u.email.toLowerCase() === cleanEmail);
-
-    if (!user) {
-      try {
-        const res = await fetch(apiUrl('/api/users'));
-        if (res.ok) {
-          const data = await res.json();
-          if (data.users && Array.isArray(data.users)) {
-            setUsers(data.users);
-            user = data.users.find((u: User) => u.email.toLowerCase() === cleanEmail);
-          }
-        }
-      } catch (err) {
-        console.error('Error fetching live users on login:', err);
-      }
-    }
-
-    if (!user) {
-      return { success: false, error: 'No account found with this email. Please sign up.' };
-    }
-
-    if (user.password && user.password !== cleanPass) {
-      return { success: false, error: 'Incorrect password. Please try again.' };
-    }
-
-    if (user.status === 'suspended') {
-      return { success: false, error: 'This account has been suspended by administration.' };
-    }
-
-    const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
-    localStorage.setItem('flowmaker_session_token', sessionToken);
-
-    const updatedUser: User = {
-      ...user,
-      sessionToken,
-      isOnline: true,
-      lastActive: new Date().toISOString(),
-    };
-
-    setUsers(prev => prev.map(u => (u.id === user.id ? updatedUser : u)));
-    setCurrentUser(updatedUser);
-
-    // Update Supabase with session token
-    const supa = getSupabase();
-    if (supa) {
-      supa.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).eq('id', user.id).then(() => {});
-    }
-
-    // Send heartbeat to server with session token
-    fetch(apiUrl('/api/users/heartbeat'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id, isOnline: true, sessionToken }),
-    }).catch(() => {});
-
-    return { success: true };
   };
 
   const signup = async (data: {

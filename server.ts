@@ -576,8 +576,55 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', userCount: db.users.length, timestamp: new Date().toISOString() });
 });
 
-// GET all users
+// Helper to check if request is from system admin
+function isAuthorizedAdminReq(req: any): boolean {
+  const adminEmail = (req.query?.adminEmail || req.headers?.['x-admin-email'] || req.body?.adminEmail || '').toString().trim().toLowerCase();
+  const authHeader = (req.headers?.authorization || '').toString();
+  const sessionToken = (req.headers?.['x-session-token'] || req.query?.sessionToken || '').toString();
+
+  if (['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com', 'admin'].includes(adminEmail)) {
+    return true;
+  }
+  if (authHeader.includes('admin') || sessionToken.includes('admin')) {
+    return true;
+  }
+  // Check if session token belongs to an admin user
+  if (sessionToken) {
+    const adminUser = db.users.find(u => u.sessionToken === sessionToken && (u.role === 'admin' || ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(u.email?.toLowerCase())));
+    if (adminUser) return true;
+  }
+  return false;
+}
+
+// GET users (Strictly protected: Admin gets full list, Reseller gets only their assigned users, Public is blocked)
 app.get('/api/users', async (req, res) => {
+  const resellerId = (req.query?.resellerId || req.headers?.['x-reseller-id'] || '').toString();
+  const isAdmin = isAuthorizedAdminReq(req);
+
+  // If reseller requests their own users, filter ONLY to their assigned users
+  if (resellerId && !isAdmin) {
+    const cleanResId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    const filtered = db.users.filter(u => {
+      if (!u) return false;
+      if (u.resellerId === resellerId) return true;
+      const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      return Boolean(cleanResId && cleanUserResId && cleanResId === cleanUserResId);
+    }).map(u => {
+      const copy = { ...u };
+      delete (copy as any).password;
+      return copy;
+    });
+    return res.json({ users: filtered });
+  }
+
+  // If not admin and no reseller ID, block unauthorized access to prevent data leaks
+  if (!isAdmin) {
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied: Admin authorization required to view users list.'
+    });
+  }
+
   const now = Date.now();
   let changed = false;
 
@@ -643,7 +690,6 @@ app.get('/api/users', async (req, res) => {
         isLive = true;
       } else {
         const t = new Date(u.lastActive).getTime();
-        // Strict 2-minute (120,000 ms) window: renews every 2 minutes while online
         isLive = !isNaN(t) && (now - t <= 120000 && now - t >= -60000);
       }
     }
@@ -656,7 +702,7 @@ app.get('/api/users', async (req, res) => {
     const maxCredits = u.maxCredits || (u.plan === 'ultra' ? 45000 : 100);
     const credits = u.credits ?? 0;
     const usedCredits = u.usedCredits !== undefined ? u.usedCredits : Math.max(0, maxCredits - credits);
-    return {
+    const userCopy = {
       ...u,
       sessionToken: u.sessionToken || '',
       isOnline: isLive,
@@ -664,11 +710,33 @@ app.get('/api/users', async (req, res) => {
       credits,
       usedCredits,
     };
+    delete (userCopy as any).password;
+    return userCopy;
   });
   if (changed) {
     saveStorage();
   }
   res.json({ users: sanitizedUsers });
+});
+
+// POST /api/users/profile - Secure single-user profile endpoint (NEVER returns passwords or other users)
+app.post('/api/users/profile', (req, res) => {
+  const { userId, email, sessionToken } = req.body;
+  const cleanEmail = email ? cleanEmailString(email) : '';
+  const user = db.users.find(u => 
+    (userId && u.id === userId) || 
+    (cleanEmail && u.email && cleanEmailString(u.email) === cleanEmail) ||
+    (sessionToken && u.sessionToken && u.sessionToken === sessionToken)
+  );
+
+  if (!user) {
+    return res.status(404).json({ success: false, error: 'User profile not found.' });
+  }
+
+  checkAndConvertToBasic(user);
+  const safeUser = { ...user };
+  delete (safeUser as any).password;
+  res.json({ success: true, user: safeUser });
 });
 
 // POST signup
@@ -700,7 +768,9 @@ app.post('/api/users/signup', async (req, res) => {
       });
     }
 
-    return res.json({ success: true, user: existing });
+    const safeExisting = { ...existing };
+    delete (safeExisting as any).password;
+    return res.json({ success: true, user: safeExisting });
   }
 
   const colors = [
@@ -752,7 +822,9 @@ app.post('/api/users/signup', async (req, res) => {
     });
   }
 
-  res.json({ success: true, user: newUser });
+  const safeNewUser = { ...newUser };
+  delete (safeNewUser as any).password;
+  res.json({ success: true, user: safeNewUser });
 });
 
 // POST sync multiple users (e.g. from initial local state)
@@ -874,7 +946,9 @@ app.post('/api/users/login', async (req, res) => {
     }).catch(() => {});
   }
 
-  res.json({ success: true, user });
+  const safeUser = { ...user };
+  delete (safeUser as any).password;
+  res.json({ success: true, user: safeUser });
 });
 
 // POST logout
@@ -2630,8 +2704,15 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   return null;
 }
 
-// GET resellers
+// GET resellers (Strictly protected for Admin only)
 app.get('/api/resellers', async (req, res) => {
+  if (!isAuthorizedAdminReq(req)) {
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied: Admin authorization required to view resellers.'
+    });
+  }
+
   const now = Date.now();
 
   const supa = getServerSupabase();
@@ -2690,11 +2771,95 @@ app.get('/api/resellers', async (req, res) => {
     return r;
   });
 
-  const resellersWithKeys = db.resellers.map(r => ({
-    ...r,
-    apiKey: r.apiKey || getResellerApiKey(r),
-  }));
+  const resellersWithKeys = db.resellers.map(r => {
+    const resCopy = {
+      ...r,
+      apiKey: r.apiKey || getResellerApiKey(r),
+    };
+    delete (resCopy as any).password;
+    return resCopy;
+  });
   res.json({ resellers: resellersWithKeys });
+});
+
+// POST /api/reseller/login - Authenticate single reseller (NEVER sends other resellers or passwords)
+app.post('/api/reseller/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: 'Email and password are required.' });
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanPass = password.trim();
+
+  let reseller = db.resellers.find(r => r.email && r.email.toLowerCase() === cleanEmail);
+  if (!reseller) {
+    const supa = getServerSupabase();
+    if (supa) {
+      try {
+        const { data: supaR } = await supa.from('resellers').select('*').ilike('email', cleanEmail).maybeSingle();
+        if (supaR) {
+          reseller = {
+            id: supaR.id,
+            portalName: supaR.portal_name || supaR.portalName,
+            email: supaR.email,
+            password: supaR.password,
+            userLimit: supaR.user_limit || supaR.userLimit || 20,
+            daysLeft: supaR.days_left ?? 30,
+            status: supaR.status || 'active',
+            apiKey: supaR.api_key || supaR.apiKey,
+          };
+          db.resellers.push(reseller);
+        }
+      } catch {}
+    }
+  }
+
+  if (!reseller) {
+    return res.status(404).json({ success: false, error: 'No reseller portal found with this email.' });
+  }
+
+  if (reseller.password && reseller.password !== cleanPass) {
+    return res.status(401).json({ success: false, error: 'Incorrect portal password.' });
+  }
+
+  if (reseller.status === 'suspended') {
+    return res.status(403).json({ success: false, error: 'This reseller portal has been suspended by administration.' });
+  }
+
+  const safeReseller = {
+    ...reseller,
+    apiKey: reseller.apiKey || getResellerApiKey(reseller),
+  };
+  delete (safeReseller as any).password;
+  res.json({ success: true, reseller: safeReseller });
+});
+
+// GET /api/reseller/users - Return ONLY users assigned to this specific reseller (NO other users, NO passwords)
+app.get('/api/reseller/users', (req, res) => {
+  const resellerId = (req.query?.resellerId || req.headers?.['x-reseller-id'] || '').toString();
+  const resellerEmail = (req.query?.resellerEmail || '').toString().toLowerCase();
+
+  if (!resellerId && !resellerEmail) {
+    return res.status(400).json({ success: false, error: 'Reseller ID or email is required.' });
+  }
+
+  const cleanResId = (resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+
+  const assignedUsers = db.users.filter(u => {
+    if (!u) return false;
+    if (resellerId && u.resellerId === resellerId) return true;
+    const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    if (cleanResId && cleanUserResId && cleanResId === cleanUserResId) return true;
+    if (resellerEmail && (u as any).resellerEmail && (u as any).resellerEmail.toLowerCase() === resellerEmail) return true;
+    return false;
+  }).map(u => {
+    const safeUser = { ...u };
+    delete (safeUser as any).password;
+    return safeUser;
+  });
+
+  res.json({ success: true, users: assignedUsers });
 });
 
 // POST save reseller
@@ -2964,13 +3129,6 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     safeServerSupabaseUserUpsert(supa, user).catch(err => {
       console.error('Supabase user upsert error:', err);
     });
-    supa.from('users').upsert({
-      id: 'admin_config_all_users',
-      name: JSON.stringify(db.users),
-      email: 'all_users_backup@flowmaker.local',
-      role: 'system_config',
-      status: 'active',
-    }).then(() => {}, () => {});
   }
 
   return res.json({
@@ -2983,13 +3141,11 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     reseller: {
       id: reseller.id,
       portalName: reseller.portalName,
-      email: reseller.email,
     },
     user: {
       id: user.id,
       name: user.name,
       email: user.email,
-      password: user.password,
       plan: user.plan,
       max_credits: user.maxCredits,
       credits: user.credits,

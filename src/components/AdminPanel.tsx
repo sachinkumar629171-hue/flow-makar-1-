@@ -110,7 +110,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch(apiUrl('/api/users'));
+      const adminEmail = currentUser?.email || 'admin';
+      const res = await fetch(apiUrl(`/api/users?adminEmail=${encodeURIComponent(adminEmail)}`));
       if (res.ok) {
         showToast('Live database refreshed! Latest members synced.');
       } else {
