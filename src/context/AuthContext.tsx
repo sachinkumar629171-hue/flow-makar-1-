@@ -726,29 +726,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const profData = await profRes.json();
               if (profData.user && isMounted) {
                 const u = profData.user;
-                if (u.status === 'suspended' || u.status === 'inactive') {
-                  setSessionTerminatedNotice(true);
-                  logout();
-                } else {
-                  setCurrentUser(prev => {
-                    if (!prev) return null;
-                    const updated = { ...prev, ...u };
-                    if (
-                      prev.credits !== u.credits ||
-                      prev.maxCredits !== u.maxCredits ||
-                      prev.plan !== u.plan ||
-                      prev.planDaysLeft !== u.planDaysLeft ||
-                      prev.status !== u.status ||
-                      prev.extensionAccess !== u.extensionAccess ||
-                      Boolean(prev.canEditPrompts) !== Boolean(u.canEditPrompts) ||
-                      prev.name !== u.name
-                    ) {
-                      localStorage.setItem('flow_current_user_v3', JSON.stringify(updated));
-                      return updated;
-                    }
-                    return prev;
-                  });
-                }
+                setCurrentUser(prev => {
+                  if (!prev) return null;
+                  const updated = { ...prev, ...u };
+                  if (
+                    prev.credits !== u.credits ||
+                    prev.maxCredits !== u.maxCredits ||
+                    prev.plan !== u.plan ||
+                    prev.planDaysLeft !== u.planDaysLeft ||
+                    prev.status !== u.status ||
+                    prev.extensionAccess !== u.extensionAccess ||
+                    Boolean(prev.canEditPrompts) !== Boolean(u.canEditPrompts) ||
+                    prev.name !== u.name
+                  ) {
+                    localStorage.setItem('flow_current_user_v3', JSON.stringify(updated));
+                    return updated;
+                  }
+                  return prev;
+                });
               }
             }
           } catch {}
@@ -912,16 +907,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }));
           }
           if (type === 'NEW_LOGIN' && email && currentUser) {
-            const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
-            if (Date.now() - lastLogin < 60000) return; // Ignore during 60s login grace period
-
-            const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinxexplore@gmail.com' || currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
-            const localToken = localStorage.getItem('flowmaker_session_token');
-            if (!isCurrentUserAdmin && currentUser.email.toLowerCase() === email.toLowerCase() && sessionToken && localToken && sessionToken !== localToken) {
-              console.warn('[SingleSession] BroadcastChannel: new login detected on another tab/window! Logging out old session.');
-              logout();
-              setSessionTerminatedNotice(true);
-            }
+            // Disabled auto logout
           }
         };
       }
@@ -949,16 +935,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         table: 'users',
         filter: `id=eq.${currentUser.id}`,
       }, (payload: any) => {
-        const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
-        if (Date.now() - lastLogin < 60000) return; // Ignore during 60s login grace period
-
-        const newSupaUser = payload.new;
-        const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
-        if (newSupaUser && newSupaUser.session_token && localToken && newSupaUser.session_token !== localToken) {
-          console.warn('[Realtime] Newer session detected on another device! Logging out old session.');
-          setSessionTerminatedNotice(true);
-          logout();
-        }
+        // Disabled auto logout on realtime session update
       })
       .subscribe();
 
@@ -1015,14 +992,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .then(res => res.json())
       .then(data => {
-        const lastLogin = Number(localStorage.getItem('flow_login_timestamp') || '0');
-        if (Date.now() - lastLogin < 60000) return; // Ignore during 60s grace period
-
-        if (data && data.sessionMismatch) {
-          console.warn('[SingleSession] Heartbeat detected session mismatch! Terminating old session.');
-          setSessionTerminatedNotice(true);
-          logout();
-        }
+        // Disabled auto logout on heartbeat session mismatch
       })
       .catch(() => {});
     };
