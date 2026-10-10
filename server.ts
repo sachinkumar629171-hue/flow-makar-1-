@@ -48,9 +48,30 @@ interface DatabaseSchema {
 let serverSupabaseClient: SupabaseClient | null = null;
 let lastSupabaseConfigStr = '';
 
-function getServerSupabase(): SupabaseClient | null {
-  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
-  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
+function getServerSupabase(req?: any): SupabaseClient | null {
+  let url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
+  let key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
+
+  if (req) {
+    const headerUrl = req.headers?.['x-supabase-url'];
+    const headerKey = req.headers?.['x-supabase-key'];
+    if (headerUrl && headerKey) {
+      url = String(headerUrl).trim();
+      key = String(headerKey).trim();
+      if (!db.supabaseConfig || db.supabaseConfig.url !== url || db.supabaseConfig.anonKey !== key) {
+        db.supabaseConfig = { url, anonKey: key };
+        saveStorage();
+      }
+    } else if (req.body?.supabaseConfig?.url && req.body?.supabaseConfig?.anonKey) {
+      url = String(req.body.supabaseConfig.url).trim();
+      key = String(req.body.supabaseConfig.anonKey).trim();
+      if (!db.supabaseConfig || db.supabaseConfig.url !== url || db.supabaseConfig.anonKey !== key) {
+        db.supabaseConfig = { url, anonKey: key };
+        saveStorage();
+      }
+    }
+  }
+
   const configKey = `${url}_${key}`;
   if (serverSupabaseClient && lastSupabaseConfigStr === configKey) {
     return serverSupabaseClient;
@@ -628,7 +649,7 @@ app.get('/api/users', async (req, res) => {
   const now = Date.now();
   let changed = false;
 
-  const supa = getServerSupabase();
+  const supa = getServerSupabase(req);
   if (supa) {
     try {
       const { data: supaUsers } = await supa.from('users').select('*');

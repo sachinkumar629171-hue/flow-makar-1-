@@ -764,9 +764,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (isMasterAdmin && currentUser && isMounted) {
           try {
-            const adminHeaders = {
+            const supaCfg = getSupabaseConfig();
+            const adminHeaders: Record<string, string> = {
               'x-admin-email': currentUser.email,
-              'x-session-token': currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || ''
+              'x-session-token': currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '',
+              ...(supaCfg.isConnected ? {
+                'x-supabase-url': supaCfg.url,
+                'x-supabase-key': supaCfg.anonKey,
+              } : {}),
             };
             const [usersRes, resellersRes] = await Promise.all([
               fetch(apiUrl(`/api/users?adminEmail=${encodeURIComponent(currentUser.email)}`), { headers: adminHeaders }),
