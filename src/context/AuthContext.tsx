@@ -764,9 +764,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (isMasterAdmin && currentUser && isMounted) {
           try {
+            const adminHeaders = {
+              'x-admin-email': currentUser.email,
+              'x-session-token': currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || ''
+            };
             const [usersRes, resellersRes] = await Promise.all([
-              fetch(apiUrl(`/api/users?adminEmail=${encodeURIComponent(currentUser.email)}`)),
-              fetch(apiUrl(`/api/resellers?adminEmail=${encodeURIComponent(currentUser.email)}`)),
+              fetch(apiUrl(`/api/users?adminEmail=${encodeURIComponent(currentUser.email)}`), { headers: adminHeaders }),
+              fetch(apiUrl(`/api/resellers?adminEmail=${encodeURIComponent(currentUser.email)}`), { headers: adminHeaders }),
             ]);
             if (usersRes.ok) {
               const uData = await usersRes.json();
@@ -1999,6 +2003,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Completely clear all session, user, and extension cache keys from localStorage
     const explicitKeys = [
       CURRENT_USER_KEY,
+      USERS_STORAGE_KEY,
+      GENERATIONS_STORAGE_KEY,
+      RESELLERS_STORAGE_KEY,
+      CURRENT_RESELLER_KEY,
       'flowmaker_session_token',
       'flow_extension_bridge_v3',
       'flow_portal_session_v3',
