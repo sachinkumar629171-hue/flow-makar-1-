@@ -35,6 +35,7 @@ import {
   X
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { getSupabaseConfig } from '../lib/supabase';
 import { User, PlanType } from '../types';
 import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime } from '../lib/userStats';
 import { AdminUserEditModal } from './modals/AdminUserEditModal';
@@ -110,7 +111,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     try {
-      const res = await fetch(apiUrl('/api/users'));
+      const adminEmail = currentUser?.email || 'admin';
+      const supaCfg = getSupabaseConfig();
+      const adminHeaders: Record<string, string> = {
+        'x-admin-email': adminEmail,
+        'x-session-token': currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '',
+        ...(supaCfg.isConnected ? {
+          'x-supabase-url': supaCfg.url,
+          'x-supabase-key': supaCfg.anonKey,
+        } : {}),
+      };
+      const res = await fetch(apiUrl(`/api/users?adminEmail=${encodeURIComponent(adminEmail)}`), { headers: adminHeaders });
       if (res.ok) {
         showToast('Live database refreshed! Latest members synced.');
       } else {

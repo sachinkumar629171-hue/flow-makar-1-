@@ -667,8 +667,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const pollCentralServer = async () => {
       try {
-        const supabase = getSupabase();
-        if (supabase) {
+        // NOTE: Requests to app_config?select=*, resellers?select=*, and users?select=* are strictly blocked and disabled.
+        // Central server endpoints /api/users, /api/resellers, /api/config handle all syncing cleanly.
+        const supabase: any = null;
+        if (false as boolean) {
           // 0. Fetch dedicated app_config table if present in Supabase
           try {
             const { data: appConfigs } = await supabase.from('app_config').select('*');
@@ -953,7 +955,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = await usersRes.json();
           if (data.users && Array.isArray(data.users) && isMounted) {
             const now = Date.now();
-            if (!supabase) {
+            if (true) {
               const mergedUsers = data.users.map((u: User) => {
                 if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
                   return { ...u, isOnline: true, lastActive: new Date().toISOString() };

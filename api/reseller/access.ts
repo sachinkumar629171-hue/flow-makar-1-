@@ -115,9 +115,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let reseller: any = null;
   let allResellers: any[] = [];
-  const { data: resellersList, error: resListErr } = await supabase.from('resellers').select('*');
-  if (!resListErr && Array.isArray(resellersList) && resellersList.length > 0) {
-    allResellers = resellersList;
+  // Note: resellers?select=* request to Supabase is disabled
+  if (false as boolean) {
+    const { data: resellersList, error: resListErr } = await supabase.from('resellers').select('*');
+    if (!resListErr && Array.isArray(resellersList) && resellersList.length > 0) {
+      allResellers = resellersList;
+    }
   } else {
     // Robust fallback: check admin_config_resellers backup in users table
     try {

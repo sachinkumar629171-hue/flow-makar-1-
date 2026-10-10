@@ -8,6 +8,59 @@ let cachedClient: SupabaseClient | null = null;
 let currentUrl: string = '';
 let currentKey: string = '';
 
+export function isBlockedSupabaseRequest(urlStr: string): boolean {
+  if (!urlStr) return false;
+  try {
+    const parsed = new URL(urlStr, 'https://dummy.co');
+    const path = parsed.pathname.toLowerCase();
+    const query = parsed.search.toLowerCase();
+    
+    // 1. app_config?select=*
+    if (path.includes('/rest/v1/app_config')) {
+      return true;
+    }
+    
+    // 2. resellers?select=*
+    if (path.includes('/rest/v1/resellers')) {
+      return true;
+    }
+    
+    // 3. users?select=* (bulk select of users table)
+    if (path.includes('/rest/v1/users')) {
+      const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
+      const hasSpecificFilter = query.includes('id=eq.') || 
+                                query.includes('email=eq.') || 
+                                query.includes('email=ilike.') || 
+                                query.includes('session_token=eq.');
+      if (hasWildcardSelect && !hasSpecificFilter) {
+        return true;
+      }
+    }
+  } catch {
+    const lower = urlStr.toLowerCase();
+    if (lower.includes('/rest/v1/app_config')) return true;
+    if (lower.includes('/rest/v1/resellers')) return true;
+    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=')) return true;
+  }
+  return false;
+}
+
+const safeSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
+  if (isBlockedSupabaseRequest(urlStr)) {
+    // Intercept and block: strictly do not send request over the network
+    return Promise.resolve(new Response(JSON.stringify([]), {
+      status: 200,
+      statusText: 'OK',
+      headers: {
+        'Content-Type': 'application/json',
+        'content-range': '0-0/0',
+      },
+    }));
+  }
+  return fetch(input, init);
+};
+
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
@@ -43,7 +96,15 @@ export function saveSupabaseConfig(url: string, anonKey: string): boolean {
 
   localStorage.setItem(SUPABASE_URL_KEY, cleanUrl);
   localStorage.setItem(SUPABASE_ANON_KEY, cleanKey);
-  cachedClient = createClient(cleanUrl, cleanKey);
+  cachedClient = createClient(cleanUrl, cleanKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+    global: {
+      fetch: safeSupabaseFetch,
+    },
+  });
   currentUrl = cleanUrl;
   currentKey = cleanKey;
   return true;
@@ -67,7 +128,15 @@ export function getSupabase(): SupabaseClient | null {
   }
 
   try {
-    cachedClient = createClient(url, anonKey);
+    cachedClient = createClient(url, anonKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      },
+      global: {
+        fetch: safeSupabaseFetch,
+      },
+    });
     currentUrl = url;
     currentKey = anonKey;
     return cachedClient;

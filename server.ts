@@ -48,6 +48,59 @@ interface DatabaseSchema {
 let serverSupabaseClient: SupabaseClient | null = null;
 let lastSupabaseConfigStr = '';
 
+function isBlockedSupabaseServerRequest(urlStr: string): boolean {
+  if (!urlStr) return false;
+  try {
+    const parsed = new URL(urlStr, 'https://dummy.co');
+    const path = parsed.pathname.toLowerCase();
+    const query = parsed.search.toLowerCase();
+    
+    // 1. app_config?select=*
+    if (path.includes('/rest/v1/app_config')) {
+      return true;
+    }
+    
+    // 2. resellers?select=*
+    if (path.includes('/rest/v1/resellers')) {
+      return true;
+    }
+    
+    // 3. users?select=* (bulk select of users table)
+    if (path.includes('/rest/v1/users')) {
+      const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
+      const hasSpecificFilter = query.includes('id=eq.') || 
+                                query.includes('email=eq.') || 
+                                query.includes('email=ilike.') || 
+                                query.includes('session_token=eq.');
+      if (hasWildcardSelect && !hasSpecificFilter) {
+        return true;
+      }
+    }
+  } catch {
+    const lower = urlStr.toLowerCase();
+    if (lower.includes('/rest/v1/app_config')) return true;
+    if (lower.includes('/rest/v1/resellers')) return true;
+    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=')) return true;
+  }
+  return false;
+}
+
+const safeServerSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
+  if (isBlockedSupabaseServerRequest(urlStr)) {
+    // Intercept and strictly block: do not send request to Supabase
+    return Promise.resolve(new Response(JSON.stringify([]), {
+      status: 200,
+      statusText: 'OK',
+      headers: {
+        'Content-Type': 'application/json',
+        'content-range': '0-0/0',
+      },
+    }));
+  }
+  return fetch(input, init);
+};
+
 function getServerSupabase(): SupabaseClient | null {
   const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
   const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
@@ -57,7 +110,15 @@ function getServerSupabase(): SupabaseClient | null {
   }
   if (url && key) {
     try {
-      serverSupabaseClient = createClient(url, key);
+      serverSupabaseClient = createClient(url, key, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+        global: {
+          fetch: safeServerSupabaseFetch,
+        },
+      });
       lastSupabaseConfigStr = configKey;
       return serverSupabaseClient;
     } catch (e) {
@@ -581,10 +642,11 @@ app.get('/api/users', async (req, res) => {
   const now = Date.now();
   let changed = false;
 
-  const supa = getServerSupabase();
-  if (supa) {
+  // Supabase users?select=* request is strictly disabled. Local store db.users is authoritative.
+  if (false as boolean) {
     try {
-      const { data: supaUsers } = await supa.from('users').select('*');
+      const supa = getServerSupabase();
+      const { data: supaUsers } = await supa?.from('users').select('*') || {};
       if (Array.isArray(supaUsers)) {
         for (const supaU of supaUsers) {
           if (!supaU.id || supaU.id.startsWith('admin_config_')) continue;
@@ -2545,12 +2607,13 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
     ''
   ).toString().trim().toLowerCase();
 
-  // Gather all resellers from memory and Supabase
+  // Gather all resellers from memory
   let allResellers: any[] = [...db.resellers];
-  const supa = getServerSupabase();
-  if (supa) {
+  // Note: resellers?select=* request to Supabase is strictly disabled. Local store db.resellers is authoritative.
+  if (false as boolean) {
     try {
-      const { data: supaResellers } = await supa.from('resellers').select('*');
+      const supa = getServerSupabase();
+      const { data: supaResellers } = await supa?.from('resellers').select('*') || {};
       if (Array.isArray(supaResellers) && supaResellers.length > 0) {
         for (const sr of supaResellers) {
           const mapped = {
@@ -2634,10 +2697,11 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
 app.get('/api/resellers', async (req, res) => {
   const now = Date.now();
 
-  const supa = getServerSupabase();
-  if (supa) {
+  // Note: resellers?select=* request to Supabase is strictly disabled. Local store db.resellers is authoritative.
+  if (false as boolean) {
     try {
-      const { data: supaResellers } = await supa.from('resellers').select('*');
+      const supa = getServerSupabase();
+      const { data: supaResellers } = await supa?.from('resellers').select('*') || {};
       if (Array.isArray(supaResellers) && supaResellers.length > 0) {
         for (const sr of supaResellers) {
           const mapped = {
