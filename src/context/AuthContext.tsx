@@ -1995,11 +1995,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         prev.map(u => (u.id === currentUser.id ? { ...u, isOnline: false, sessionToken: '', lastActive: now } : u))
       );
     }
-    localStorage.removeItem(CURRENT_USER_KEY);
-    localStorage.removeItem('flowmaker_session_token');
-    localStorage.removeItem('flow_extension_bridge_v3');
-    localStorage.removeItem('flow_portal_session_v3');
-    localStorage.removeItem('google_flow_user_data');
+
+    // Completely clear all session, user, and extension cache keys from localStorage
+    const explicitKeys = [
+      CURRENT_USER_KEY,
+      'flowmaker_session_token',
+      'flow_extension_bridge_v3',
+      'flow_portal_session_v3',
+      'google_flow_user_data',
+      'flow_user',
+      'portalUser',
+      'flowmaker_user',
+      'sessionToken',
+      'token',
+      'flow_login_timestamp',
+      'flow_current_user_v3'
+    ];
+    explicitKeys.forEach(k => localStorage.removeItem(k));
+
+    // Also loop and remove any flow/user/token related keys
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && (
+        key.startsWith('flowmaker_user_expiry_') ||
+        key.includes('flow') ||
+        key.includes('user') ||
+        key.includes('token') ||
+        key.includes('portal')
+      )) {
+        localStorage.removeItem(key);
+      }
+    }
+
+    // Clear cookies
+    try {
+      document.cookie = 'flow_user_email=; path=/; max-age=0';
+      document.cookie = 'flow_user_token=; path=/; max-age=0';
+    } catch {}
+
+    // Remove DOM bridge element
+    try {
+      const bridgeEl = document.getElementById('flow-portal-bridge');
+      if (bridgeEl) bridgeEl.remove();
+    } catch {}
+
+    // Broadcast extension disconnect
+    window.dispatchEvent(new CustomEvent('FLOW_EXTENSION_DISCONNECT', { detail: { action: 'logout', cleared: true } }));
+    window.dispatchEvent(new CustomEvent('google_flow_auth_sync', { detail: null }));
+    window.postMessage({ type: 'FLOW_PORTAL_DISCONNECT' }, '*');
+
     setCurrentUser(null);
   };
 
