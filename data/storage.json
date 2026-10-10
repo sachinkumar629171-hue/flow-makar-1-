@@ -130,8 +130,8 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": true,
-      "lastActive": "2026-10-10T04:29:00.222Z",
-      "sessionToken": "sess-1791603810203-zdiaya6"
+      "lastActive": "2026-10-09T09:54:50.478Z",
+      "sessionToken": "sys_prompts"
     },
     {
       "id": "usr-admin-1",
@@ -150,9 +150,8 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": false,
-      "lastActive": "2026-10-10T03:07:22.969Z",
-      "extensionAccess": true,
-      "sessionToken": "sess-1791601642969-fz2vsiy"
+      "lastActive": "2026-09-20T19:58:54.075Z",
+      "extensionAccess": true
     },
     {
       "id": "usr-mu5asim1-hxbc",
@@ -343,7 +342,7 @@
       "portalName": "Sachin portal 2",
       "email": "sachin.portal2@gmail.com",
       "userLimit": 10,
-      "daysLeft": 26,
+      "daysLeft": 27,
       "status": "active",
       "apiKey": "flw_res_resellermum1n75tl6gu_7361636869",
       "expiresAt": "2026-11-04T10:52:54.106Z"
@@ -506,7 +505,7 @@
     "websiteFaviconUrl": "",
     "websiteTitle": "",
     "extensionVersion": "3.2.0",
-    "signupTelegramEnabled": false,
-    "signupTelegramUrl": ""
+    "signupTelegramEnabled": true,
+    "signupTelegramUrl": "https://t.me/flowmakersupport"
   }
 }

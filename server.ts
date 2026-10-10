@@ -48,30 +48,9 @@ interface DatabaseSchema {
 let serverSupabaseClient: SupabaseClient | null = null;
 let lastSupabaseConfigStr = '';
 
-function getServerSupabase(req?: any): SupabaseClient | null {
-  let url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
-  let key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
-
-  if (req) {
-    const headerUrl = req.headers?.['x-supabase-url'];
-    const headerKey = req.headers?.['x-supabase-key'];
-    if (headerUrl && headerKey) {
-      url = String(headerUrl).trim();
-      key = String(headerKey).trim();
-      if (!db.supabaseConfig || db.supabaseConfig.url !== url || db.supabaseConfig.anonKey !== key) {
-        db.supabaseConfig = { url, anonKey: key };
-        saveStorage();
-      }
-    } else if (req.body?.supabaseConfig?.url && req.body?.supabaseConfig?.anonKey) {
-      url = String(req.body.supabaseConfig.url).trim();
-      key = String(req.body.supabaseConfig.anonKey).trim();
-      if (!db.supabaseConfig || db.supabaseConfig.url !== url || db.supabaseConfig.anonKey !== key) {
-        db.supabaseConfig = { url, anonKey: key };
-        saveStorage();
-      }
-    }
-  }
-
+function getServerSupabase(): SupabaseClient | null {
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
+  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
   const configKey = `${url}_${key}`;
   if (serverSupabaseClient && lastSupabaseConfigStr === configKey) {
     return serverSupabaseClient;
@@ -597,59 +576,12 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', userCount: db.users.length, timestamp: new Date().toISOString() });
 });
 
-// Helper to check if request is from system admin
-function isAuthorizedAdminReq(req: any): boolean {
-  const adminEmail = (req.query?.adminEmail || req.headers?.['x-admin-email'] || req.body?.adminEmail || '').toString().trim().toLowerCase();
-  const authHeader = (req.headers?.authorization || '').toString();
-  const sessionToken = (req.headers?.['x-session-token'] || req.query?.sessionToken || '').toString();
-
-  if (['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com', 'admin'].includes(adminEmail)) {
-    return true;
-  }
-  if (authHeader.includes('admin') || sessionToken.includes('admin')) {
-    return true;
-  }
-  // Check if session token belongs to an admin user
-  if (sessionToken) {
-    const adminUser = db.users.find(u => u.sessionToken === sessionToken && (u.role === 'admin' || ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(u.email?.toLowerCase())));
-    if (adminUser) return true;
-  }
-  return false;
-}
-
-// GET users (Strictly protected: Admin gets full list, Reseller gets only their assigned users, Public is blocked)
+// GET all users
 app.get('/api/users', async (req, res) => {
-  const resellerId = (req.query?.resellerId || req.headers?.['x-reseller-id'] || '').toString();
-  const isAdmin = isAuthorizedAdminReq(req);
-
-  // If reseller requests their own users, filter ONLY to their assigned users
-  if (resellerId && !isAdmin) {
-    const cleanResId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    const filtered = db.users.filter(u => {
-      if (!u) return false;
-      if (u.resellerId === resellerId) return true;
-      const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-      return Boolean(cleanResId && cleanUserResId && cleanResId === cleanUserResId);
-    }).map(u => {
-      const copy = { ...u };
-      delete (copy as any).password;
-      return copy;
-    });
-    return res.json({ users: filtered });
-  }
-
-  // If not admin and no reseller ID, block unauthorized access to prevent data leaks
-  if (!isAdmin) {
-    return res.status(403).json({
-      success: false,
-      error: 'Access denied: Admin authorization required to view users list.'
-    });
-  }
-
   const now = Date.now();
   let changed = false;
 
-  const supa = getServerSupabase(req);
+  const supa = getServerSupabase();
   if (supa) {
     try {
       const { data: supaUsers } = await supa.from('users').select('*');
@@ -711,6 +643,7 @@ app.get('/api/users', async (req, res) => {
         isLive = true;
       } else {
         const t = new Date(u.lastActive).getTime();
+        // Strict 2-minute (120,000 ms) window: renews every 2 minutes while online
         isLive = !isNaN(t) && (now - t <= 120000 && now - t >= -60000);
       }
     }
@@ -723,7 +656,7 @@ app.get('/api/users', async (req, res) => {
     const maxCredits = u.maxCredits || (u.plan === 'ultra' ? 45000 : 100);
     const credits = u.credits ?? 0;
     const usedCredits = u.usedCredits !== undefined ? u.usedCredits : Math.max(0, maxCredits - credits);
-    const userCopy = {
+    return {
       ...u,
       sessionToken: u.sessionToken || '',
       isOnline: isLive,
@@ -731,33 +664,11 @@ app.get('/api/users', async (req, res) => {
       credits,
       usedCredits,
     };
-    delete (userCopy as any).password;
-    return userCopy;
   });
   if (changed) {
     saveStorage();
   }
   res.json({ users: sanitizedUsers });
-});
-
-// POST /api/users/profile - Secure single-user profile endpoint (NEVER returns passwords or other users)
-app.post('/api/users/profile', (req, res) => {
-  const { userId, email, sessionToken } = req.body;
-  const cleanEmail = email ? cleanEmailString(email) : '';
-  const user = db.users.find(u => 
-    (userId && u.id === userId) || 
-    (cleanEmail && u.email && cleanEmailString(u.email) === cleanEmail) ||
-    (sessionToken && u.sessionToken && u.sessionToken === sessionToken)
-  );
-
-  if (!user) {
-    return res.status(404).json({ success: false, error: 'User profile not found.' });
-  }
-
-  checkAndConvertToBasic(user);
-  const safeUser = { ...user };
-  delete (safeUser as any).password;
-  res.json({ success: true, user: safeUser });
 });
 
 // POST signup
@@ -789,9 +700,7 @@ app.post('/api/users/signup', async (req, res) => {
       });
     }
 
-    const safeExisting = { ...existing };
-    delete (safeExisting as any).password;
-    return res.json({ success: true, user: safeExisting });
+    return res.json({ success: true, user: existing });
   }
 
   const colors = [
@@ -843,9 +752,7 @@ app.post('/api/users/signup', async (req, res) => {
     });
   }
 
-  const safeNewUser = { ...newUser };
-  delete (safeNewUser as any).password;
-  res.json({ success: true, user: safeNewUser });
+  res.json({ success: true, user: newUser });
 });
 
 // POST sync multiple users (e.g. from initial local state)
@@ -866,7 +773,7 @@ app.post('/api/users/sync-all', (req, res) => {
 
 // POST login
 app.post('/api/users/login', async (req, res) => {
-  const { email, password, sessionToken: clientSessionToken, forceLogin, supabaseConfig } = req.body;
+  const { email, password, sessionToken: clientSessionToken, forceLogin } = req.body;
   if (!email) {
     return res.status(400).json({ success: false, error: 'Email is required' });
   }
@@ -876,48 +783,17 @@ app.post('/api/users/login', async (req, res) => {
 
   // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
   let supaUser: any = null;
-  let supa: SupabaseClient | null = null;
-  if (supabaseConfig?.url && supabaseConfig?.anonKey) {
-    try {
-      supa = createClient(supabaseConfig.url, supabaseConfig.anonKey);
-    } catch {}
-  }
-  if (!supa) {
-    supa = getServerSupabase();
-  }
-
+  const supa = getServerSupabase();
   if (supa) {
     try {
-      let foundData: any = null;
-      const { data: ilikeData, error: ilikeErr } = await supa.from('users').select('*').ilike('email', cleanEmail);
-      if (!ilikeErr && ilikeData && ilikeData.length > 0) {
-        const valid = ilikeData.filter((u: any) => u && !u.id?.startsWith('admin_config_'));
-        foundData = valid[0] || ilikeData[0];
-      }
-
-      if (!foundData) {
-        const { data: eqData, error: eqErr } = await supa.from('users').select('*').eq('email', cleanEmail);
-        if (!eqErr && eqData && eqData.length > 0) {
-          const valid = eqData.filter((u: any) => u && !u.id?.startsWith('admin_config_'));
-          foundData = valid[0] || eqData[0];
-        }
-      }
-
-      if (!foundData) {
-        const { data: allData, error: allErr } = await supa.from('users').select('*').limit(300);
-        if (!allErr && allData && allData.length > 0) {
-          const match = allData.find((u: any) => u && u.email && cleanEmailString(u.email) === cleanEmail && !u.id?.startsWith('admin_config_'));
-          if (match) foundData = match;
-        }
-      }
-
-      if (foundData) {
-        supaUser = foundData;
+      const { data } = await supa.from('users').select('*').ilike('email', cleanEmail).maybeSingle();
+      if (data && !data.id?.startsWith('admin_config_')) {
+        supaUser = data;
         const freshUser = {
           id: supaUser.id,
-          name: supaUser.name || 'User',
+          name: supaUser.name,
           email: supaUser.email,
-          password: supaUser.password || 'user123',
+          password: supaUser.password,
           whatsapp: supaUser.whatsapp || '',
           telegram: supaUser.telegram || '',
           referralCode: supaUser.referral_code || '',
@@ -926,7 +802,7 @@ app.post('/api/users/login', async (req, res) => {
           credits: Number(supaUser.credits) ?? 0,
           maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
           planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-          role: supaUser.role || (isSystemAdmin ? 'admin' : 'user'),
+          role: supaUser.role || 'user',
           resellerId: supaUser.reseller_id,
           resellerName: supaUser.reseller_name,
           status: supaUser.status || 'active',
@@ -940,7 +816,7 @@ app.post('/api/users/login', async (req, res) => {
         };
         const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === cleanEmail));
         if (existingIdx >= 0) {
-          db.users[existingIdx] = { ...db.users[existingIdx], ...freshUser };
+          db.users[existingIdx] = freshUser;
         } else {
           db.users.push(freshUser);
         }
@@ -953,33 +829,12 @@ app.post('/api/users/login', async (req, res) => {
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === cleanEmail);
 
-  if (!user && isSystemAdmin) {
-    user = {
-      id: 'usr-admin-' + Date.now(),
-      name: 'Sachin Kumar',
-      email: cleanEmail,
-      password: password || ADMIN_PASSWORD,
-      plan: 'ultra',
-      credits: 45000,
-      maxCredits: 45000,
-      planDaysLeft: 365,
-      role: 'admin',
-      status: 'active',
-      isOnline: true,
-      createdAt: new Date().toISOString(),
-    };
-    db.users.unshift(user);
-    saveStorage();
-  }
-
   if (!user) {
     return res.status(404).json({ success: false, error: 'Account not found. Please sign up first.' });
   }
 
-  if (password && user.password && user.password !== password && !isSystemAdmin) {
-    if (user.password !== 'user123' && password !== 'user123') {
-      return res.status(401).json({ success: false, error: 'Incorrect password.' });
-    }
+  if (password && user.password && user.password !== password) {
+    return res.status(401).json({ success: false, error: 'Incorrect password.' });
   }
 
   if (user.status === 'suspended') {
@@ -1019,9 +874,7 @@ app.post('/api/users/login', async (req, res) => {
     }).catch(() => {});
   }
 
-  const safeUser = { ...user };
-  delete (safeUser as any).password;
-  res.json({ success: true, user: safeUser });
+  res.json({ success: true, user });
 });
 
 // POST logout
@@ -1045,7 +898,7 @@ app.post('/api/users/logout', (req, res) => {
 // Saves >75% Supabase API quota while keeping 2-minute live window perfectly active!
 const lastSupaHeartbeatWrite = new Map<string, number>();
 
-// POST heartbeat with robust presence update
+// POST heartbeat with strict single-device session check
 app.post('/api/users/heartbeat', async (req, res) => {
   const { userId, email, isOnline, sessionToken } = req.body;
   const now = new Date().toISOString();
@@ -1055,8 +908,31 @@ app.post('/api/users/heartbeat', async (req, res) => {
     (cleanEmail && u.email && cleanEmailString(u.email) === cleanEmail)
   );
 
+  // Authoritative check against Supabase
   const supa = getServerSupabase();
+  if (supa && cleanEmail) {
+    try {
+      const { data: supaUser } = await supa.from('users').select('session_token, is_online').ilike('email', cleanEmail).maybeSingle();
+      if (supaUser && supaUser.session_token && sessionToken && supaUser.session_token !== sessionToken) {
+        return res.json({
+          success: false,
+          sessionMismatch: true,
+          error: 'Your account was logged into on another device. This session has been terminated.',
+        });
+      }
+    } catch {}
+  }
+
   if (user) {
+    // Single device enforcement against local memory
+    if (sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
+      return res.json({
+        success: false,
+        sessionMismatch: true,
+        error: 'Your account was logged into on another device. This session has been terminated.',
+      });
+    }
+
     user.isOnline = isOnline ?? true;
     user.lastActive = now;
     if (sessionToken && !user.sessionToken) {
@@ -2754,15 +2630,8 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   return null;
 }
 
-// GET resellers (Strictly protected for Admin only)
+// GET resellers
 app.get('/api/resellers', async (req, res) => {
-  if (!isAuthorizedAdminReq(req)) {
-    return res.status(403).json({
-      success: false,
-      error: 'Access denied: Admin authorization required to view resellers.'
-    });
-  }
-
   const now = Date.now();
 
   const supa = getServerSupabase();
@@ -2821,95 +2690,11 @@ app.get('/api/resellers', async (req, res) => {
     return r;
   });
 
-  const resellersWithKeys = db.resellers.map(r => {
-    const resCopy = {
-      ...r,
-      apiKey: r.apiKey || getResellerApiKey(r),
-    };
-    delete (resCopy as any).password;
-    return resCopy;
-  });
+  const resellersWithKeys = db.resellers.map(r => ({
+    ...r,
+    apiKey: r.apiKey || getResellerApiKey(r),
+  }));
   res.json({ resellers: resellersWithKeys });
-});
-
-// POST /api/reseller/login - Authenticate single reseller (NEVER sends other resellers or passwords)
-app.post('/api/reseller/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ success: false, error: 'Email and password are required.' });
-  }
-
-  const cleanEmail = email.trim().toLowerCase();
-  const cleanPass = password.trim();
-
-  let reseller = db.resellers.find(r => r.email && r.email.toLowerCase() === cleanEmail);
-  if (!reseller) {
-    const supa = getServerSupabase();
-    if (supa) {
-      try {
-        const { data: supaR } = await supa.from('resellers').select('*').ilike('email', cleanEmail).maybeSingle();
-        if (supaR) {
-          reseller = {
-            id: supaR.id,
-            portalName: supaR.portal_name || supaR.portalName,
-            email: supaR.email,
-            password: supaR.password,
-            userLimit: supaR.user_limit || supaR.userLimit || 20,
-            daysLeft: supaR.days_left ?? 30,
-            status: supaR.status || 'active',
-            apiKey: supaR.api_key || supaR.apiKey,
-          };
-          db.resellers.push(reseller);
-        }
-      } catch {}
-    }
-  }
-
-  if (!reseller) {
-    return res.status(404).json({ success: false, error: 'No reseller portal found with this email.' });
-  }
-
-  if (reseller.password && reseller.password !== cleanPass) {
-    return res.status(401).json({ success: false, error: 'Incorrect portal password.' });
-  }
-
-  if (reseller.status === 'suspended') {
-    return res.status(403).json({ success: false, error: 'This reseller portal has been suspended by administration.' });
-  }
-
-  const safeReseller = {
-    ...reseller,
-    apiKey: reseller.apiKey || getResellerApiKey(reseller),
-  };
-  delete (safeReseller as any).password;
-  res.json({ success: true, reseller: safeReseller });
-});
-
-// GET /api/reseller/users - Return ONLY users assigned to this specific reseller (NO other users, NO passwords)
-app.get('/api/reseller/users', (req, res) => {
-  const resellerId = (req.query?.resellerId || req.headers?.['x-reseller-id'] || '').toString();
-  const resellerEmail = (req.query?.resellerEmail || '').toString().toLowerCase();
-
-  if (!resellerId && !resellerEmail) {
-    return res.status(400).json({ success: false, error: 'Reseller ID or email is required.' });
-  }
-
-  const cleanResId = (resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-
-  const assignedUsers = db.users.filter(u => {
-    if (!u) return false;
-    if (resellerId && u.resellerId === resellerId) return true;
-    const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    if (cleanResId && cleanUserResId && cleanResId === cleanUserResId) return true;
-    if (resellerEmail && (u as any).resellerEmail && (u as any).resellerEmail.toLowerCase() === resellerEmail) return true;
-    return false;
-  }).map(u => {
-    const safeUser = { ...u };
-    delete (safeUser as any).password;
-    return safeUser;
-  });
-
-  res.json({ success: true, users: assignedUsers });
 });
 
 // POST save reseller
@@ -3179,6 +2964,13 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     safeServerSupabaseUserUpsert(supa, user).catch(err => {
       console.error('Supabase user upsert error:', err);
     });
+    supa.from('users').upsert({
+      id: 'admin_config_all_users',
+      name: JSON.stringify(db.users),
+      email: 'all_users_backup@flowmaker.local',
+      role: 'system_config',
+      status: 'active',
+    }).then(() => {}, () => {});
   }
 
   return res.json({
@@ -3191,11 +2983,13 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     reseller: {
       id: reseller.id,
       portalName: reseller.portalName,
+      email: reseller.email,
     },
     user: {
       id: user.id,
       name: user.name,
       email: user.email,
+      password: user.password,
       plan: user.plan,
       max_credits: user.maxCredits,
       credits: user.credits,
