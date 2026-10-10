@@ -845,7 +845,7 @@ app.post('/api/users/sync-all', (req, res) => {
 
 // POST login
 app.post('/api/users/login', async (req, res) => {
-  const { email, password, sessionToken: clientSessionToken, forceLogin } = req.body;
+  const { email, password, sessionToken: clientSessionToken, forceLogin, supabaseConfig } = req.body;
   if (!email) {
     return res.status(400).json({ success: false, error: 'Email is required' });
   }
@@ -855,7 +855,16 @@ app.post('/api/users/login', async (req, res) => {
 
   // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
   let supaUser: any = null;
-  const supa = getServerSupabase();
+  let supa: SupabaseClient | null = null;
+  if (supabaseConfig?.url && supabaseConfig?.anonKey) {
+    try {
+      supa = createClient(supabaseConfig.url, supabaseConfig.anonKey);
+    } catch {}
+  }
+  if (!supa) {
+    supa = getServerSupabase();
+  }
+
   if (supa) {
     try {
       let foundData: any = null;

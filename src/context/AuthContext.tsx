@@ -1693,13 +1693,62 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Consult central server login for strict authoritative single-device lock and credentials verification
     try {
+      const supaConfig = getSupabaseConfig();
       const serverRes = await fetch(apiUrl('/api/users/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password: cleanPass, forceLogin }),
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass, forceLogin, supabaseConfig: supaConfig.isConnected ? supaConfig : undefined }),
       });
       const serverData = await serverRes.json().catch(() => ({}));
       if (!serverRes.ok) {
+        // Fallback: If server returned 404 but Supabase is connected, check Supabase directly from client
+        if (serverRes.status === 404 && supaConfig.isConnected) {
+          const clientSupa = getSupabase();
+          if (clientSupa) {
+            try {
+              const { data: supaData, error: supaErr } = await clientSupa.from('users').select('*').ilike('email', cleanEmail);
+              if (!supaErr && supaData && supaData.length > 0) {
+                const foundU = supaData.find((u: any) => u && !u.id?.startsWith('admin_config_')) || supaData[0];
+                if (foundU) {
+                  const loggedUser: User = {
+                    id: foundU.id,
+                    name: foundU.name || 'User',
+                    email: foundU.email,
+                    password: foundU.password || cleanPass,
+                    whatsapp: foundU.whatsapp || '',
+                    telegram: foundU.telegram || '',
+                    referralCode: foundU.referral_code || '',
+                    plan: foundU.plan || 'basic',
+                    credits: Number(foundU.credits) ?? 100,
+                    maxCredits: Number(foundU.max_credits) || 100,
+                    planDaysLeft: Number(foundU.plan_days_left) ?? 30,
+                    role: foundU.role || 'user',
+                    status: foundU.status || 'active',
+                    isOnline: true,
+                    createdAt: foundU.created_at || new Date().toISOString(),
+                  };
+                  const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+                  loggedUser.sessionToken = sessionToken;
+                  localStorage.setItem('flowmaker_session_token', sessionToken);
+                  setCurrentUser(loggedUser);
+                  setUsers(prev => [loggedUser, ...prev.filter(u => u.email.toLowerCase() !== cleanEmail)]);
+                  
+                  // Sync to server in background
+                  fetch(apiUrl('/api/users/signup'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(loggedUser),
+                  }).catch(() => {});
+
+                  return { success: true };
+                }
+              }
+            } catch (fallbackErr) {
+              console.error('Client direct Supabase login fallback error:', fallbackErr);
+            }
+          }
+        }
+
         if (serverRes.status === 403) {
           return {
             success: false,
