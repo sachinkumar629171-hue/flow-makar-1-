@@ -119,7 +119,7 @@ const DEFAULT_PLAN_EXTENSIONS: PlanExtensionsConfig = {
   basic: {
     name: 'Flow Basic Chrome Extension',
     version: '1.8.0',
-    downloadUrl: '',
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc',
     fileName: 'flow-basic-extension-v1.8.0.zip',
     description: 'Standard Video Prompt Sync & Studio Launcher for Basic Plan Members.',
     updatedAt: new Date().toISOString(),
@@ -128,7 +128,7 @@ const DEFAULT_PLAN_EXTENSIONS: PlanExtensionsConfig = {
   ultra: {
     name: 'Flow Ultra VIP Extension',
     version: '3.2.0',
-    downloadUrl: '',
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc',
     fileName: 'flow-ultra-vip-extension-v3.2.0.zip',
     description: 'High-Speed 4K Pipeline, Unlimited Prompt Queue & VIP Multi-Session Sync.',
     updatedAt: new Date().toISOString(),
@@ -137,7 +137,7 @@ const DEFAULT_PLAN_EXTENSIONS: PlanExtensionsConfig = {
 };
 
 const DEFAULT_TUTORIAL_CONFIG: TutorialConfig = {
-  desktopVideoUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+  desktopVideoUrl: 'https://youtu.be/bNZXy0cAv_o?si=_hgtM9DrSpMS4EhN',
   desktopTitle: 'How to Use Flow on Desktop / PC',
   desktopSubtitle: 'Complete tutorial on setting up the Chrome extension & using Desktop Studio.',
   mobileVideoUrl: 'https://www.youtube.com/watch?v=ScMzIvxBSi4',
@@ -151,7 +151,7 @@ const DEFAULT_HERO_CONFIG: HeroConfig = {
       id: '1',
       title: 'Nano Banana 2 is Here!',
       description: "We've updated the original Nano Banana model, with significant improvements in image generation, stylization, multiple references and editing.",
-      mediaUrl: 'https://images.unsplash.com/photo-1552728089-57bdde30beb3?w=2400&auto=format&fit=crop&q=95',
+      mediaUrl: 'https://www.gstatic.com/aitestkitchen/website/flow/banners/io2026-banner-a1cad419-9d9f-49bb-8daf-825cf9d97f11-AppBanner.png',
       mediaType: 'image',
       buttonText: 'Generate Video',
       buttonUrl: 'https://flow.google.com/',
@@ -173,26 +173,26 @@ export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
     video: 30
   },
   headerEmailOpacity: 100,
-  signupEnabled: true,
+  signupEnabled: false,
   signupTelegramEnabled: true,
-  signupTelegramUrl: '',
-  resellerContactUrl: '',
+  signupTelegramUrl: 'https://t.me/google_ultra_veo3_bot',
+  resellerContactUrl: 'https://t.me/google_ultra_veo3_bot',
   resellerContactUrlEnabled: true,
   customPlanContactUrl: '',
   pricing: {
     plans: [
       {
-        id: 'pro',
-        name: 'Pro',
-        label: 'PRO',
+        id: 'basic',
+        name: 'Basic',
+        label: 'BASIC',
         subtitle: 'Contact Your Reseller',
-        credits: '25,000',
-        videos: '750',
+        credits: '100',
+        videos: '5',
         features: [
-          '25,000 credits per month',
-          '750 AI videos / month',
+          '100 credits per month',
+          '5 AI videos / month',
           'Google Flow managed access',
-          '15-day satisfaction warranty',
+          '15–day satisfaction warranty',
           'Session auto-rotation every 24h',
           'Credit tracking dashboard',
           'Reseller support'
@@ -206,17 +206,18 @@ export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
         label: 'ULTRA',
         subtitle: 'Contact Your Reseller',
         credits: '45,000',
-        videos: '1,250',
+        videos: '2,250',
         features: [
           '45,000 credits per month',
-          '1,250 AI videos / month',
+          '2,250 AI videos / month',
           'Google Flow managed access',
           'Priority session pool',
           'Session auto-rotation every 24h',
           'Full generation history',
           'Credit tracking dashboard',
           'Priority reseller support',
-          'Early access to new features'
+          'Early access to new features',
+          'Unlimited image generation'
         ],
         buttonText: 'Get Ultra — Contact Your Reseller',
         badge: 'MOST POPULAR',
@@ -240,7 +241,9 @@ export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
           'Priority reseller support',
           'Early access to new features',
           'Dedicated account manager',
-          'Custom session allocation'
+          'Custom session allocation',
+          'Unlimited image generation',
+          'omni flash use credit base'
         ],
         buttonText: 'Get Unlimited — Contact Your Reseller',
         badge: 'BEST VALUE',
@@ -350,7 +353,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const saved = localStorage.getItem(TUTORIAL_STORAGE_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (!parsed.desktopVideoUrl || parsed.desktopVideoUrl.includes('dQw4w9WgXcQ')) {
+          parsed.desktopVideoUrl = DEFAULT_TUTORIAL_CONFIG.desktopVideoUrl;
+        }
+        return parsed;
       }
     } catch {
       // ignore
@@ -944,10 +951,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // 2. Fetch config & fallback server
+        // 2. Fetch config & fallback server (Strictly token-authenticated: users only fetch their own profile)
+        const activeToken = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
+        const isUserAdmin = currentUser?.role === 'admin' || 
+          (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+
+        const userHeaders: Record<string, string> = activeToken ? { 'x-session-token': activeToken } : {};
+
         const [usersRes, resellersRes, configRes] = await Promise.all([
-          fetch(apiUrl('/api/users')),
-          fetch(apiUrl('/api/resellers')),
+          activeToken 
+            ? fetch(apiUrl('/api/users'), { headers: userHeaders })
+            : Promise.resolve(new Response(JSON.stringify({ users: [] }), { status: 200 })),
+          isUserAdmin
+            ? fetch(apiUrl('/api/resellers'), { headers: userHeaders })
+            : Promise.resolve(new Response(JSON.stringify({ resellers: [] }), { status: 200 })),
           fetch(apiUrl('/api/config')),
         ]);
 
@@ -1005,10 +1022,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               });
             }
             // If current user is logged in, refresh their status if updated from admin
-            if (currentUser) {
+            if (currentUser && activeToken) {
               const currentInList = data.users.find((u: User) => u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()));
               const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
               
+              if (!currentInList) {
+                console.warn('[Session] User session token not found or deleted from database. Terminating session.');
+                logout();
+                return;
+              }
+
               if (currentInList && (
                 currentInList.status === 'suspended' || 
                 currentInList.status === 'inactive' || 

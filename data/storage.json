@@ -129,9 +129,9 @@
       "createdAt": "2025-01-10T10:00:00Z",
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
-      "isOnline": true,
-      "lastActive": "2026-10-10T04:29:00.222Z",
-      "sessionToken": "sess-1791603810203-zdiaya6"
+      "isOnline": false,
+      "lastActive": "2026-10-10T15:08:46.949Z",
+      "sessionToken": ""
     },
     {
       "id": "usr-admin-1",
@@ -150,9 +150,9 @@
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
       "isOnline": false,
-      "lastActive": "2026-10-10T03:07:22.969Z",
+      "lastActive": "2026-10-10T14:54:37.481Z",
       "extensionAccess": true,
-      "sessionToken": "sess-1791601642969-fz2vsiy"
+      "sessionToken": "sess-1791644077481-tzp9tvj"
     },
     {
       "id": "usr-mu5asim1-hxbc",
@@ -366,7 +366,7 @@
     "basic": {
       "name": "Flow Basic Chrome Extension",
       "version": "1.8.0",
-      "downloadUrl": "",
+      "downloadUrl": "https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc",
       "fileName": "flow-basic-extension-v1.8.0.zip",
       "description": "Standard Video Prompt Sync & Studio Launcher for Basic Plan Members.",
       "updatedAt": "2026-10-05T12:05:30.684Z",
@@ -375,7 +375,7 @@
     "ultra": {
       "name": "Flow Ultra VIP Extension",
       "version": "3.2.0",
-      "downloadUrl": "",
+      "downloadUrl": "https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc",
       "fileName": "flow-ultra-vip-extension-v3.2.0.zip",
       "description": "High-Speed 4K Pipeline, Unlimited Prompt Queue & VIP Multi-Session Sync.",
       "updatedAt": "2026-10-05T12:05:30.684Z",
@@ -383,7 +383,7 @@
     }
   },
   "tutorialConfig": {
-    "desktopVideoUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "desktopVideoUrl": "https://youtu.be/bNZXy0cAv_o?si=_hgtM9DrSpMS4EhN",
     "desktopTitle": "How to Use Flow on Desktop / PC",
     "desktopSubtitle": "Complete tutorial on setting up the Chrome extension & using Desktop Studio.",
     "mobileVideoUrl": "https://www.youtube.com/watch?v=ScMzIvxBSi4",
@@ -418,15 +418,15 @@
       "video": 30
     },
     "headerEmailOpacity": 25,
-    "signupEnabled": true,
-    "resellerContactUrl": "",
+    "signupEnabled": false,
+    "resellerContactUrl": "https://t.me/google_ultra_veo3_bot",
     "resellerContactUrlEnabled": true,
     "customPlanContactUrl": "",
     "pricing": {
       "plans": [
         {
           "id": "pro",
-          "name": "Pro",
+          "name": "Basic",
           "label": "BASIC",
           "subtitle": "Contact Your Reseller",
           "credits": "100",
@@ -440,7 +440,7 @@
             "Reseller support",
             "image generate"
           ],
-          "buttonText": "Get Pro — Contact Your Reseller",
+          "buttonText": "Get Pro \u2014 Contact Your Reseller",
           "color": "blue"
         },
         {
@@ -462,7 +462,7 @@
             "Early access to new features",
             "Unlimited  image generate"
           ],
-          "buttonText": "Get Ultra — Contact Your Reseller",
+          "buttonText": "Get Ultra \u2014 Contact Your Reseller",
           "badge": "MOST POPULAR",
           "color": "purple"
         },
@@ -471,8 +471,8 @@
           "name": "Flow Unlimited",
           "label": "UNLIMITED",
           "subtitle": "Contact Your Reseller",
-          "credits": "∞",
-          "videos": "∞",
+          "credits": "\u221e",
+          "videos": "\u221e",
           "features": [
             "Unlimited credits",
             "Unlimited AI videos",
@@ -487,7 +487,7 @@
             "Custom session allocation",
             "Unlimited image generate"
           ],
-          "buttonText": "Get Unlimited — Contact Your Reseller",
+          "buttonText": "Get Unlimited \u2014 Contact Your Reseller",
           "badge": "BEST VALUE",
           "color": "amber"
         }
@@ -506,7 +506,7 @@
     "websiteFaviconUrl": "",
     "websiteTitle": "",
     "extensionVersion": "3.2.0",
-    "signupTelegramEnabled": false,
-    "signupTelegramUrl": ""
+    "signupTelegramEnabled": true,
+    "signupTelegramUrl": "https://t.me/google_ultra_veo3_bot"
   }
 }

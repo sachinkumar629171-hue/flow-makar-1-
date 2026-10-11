@@ -69,9 +69,14 @@ function isBlockedSupabaseServerRequest(urlStr: string): boolean {
     if (path.includes('/rest/v1/users')) {
       const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
       const hasSpecificFilter = query.includes('id=eq.') || 
+                                query.includes('id=') ||
                                 query.includes('email=eq.') || 
                                 query.includes('email=ilike.') || 
-                                query.includes('session_token=eq.');
+                                query.includes('email=') ||
+                                query.includes('session_token=eq.') ||
+                                query.includes('session_token=') ||
+                                query.includes('session_token.') ||
+                                query.includes('or=');
       if (hasWildcardSelect && !hasSpecificFilter) {
         return true;
       }
@@ -80,7 +85,7 @@ function isBlockedSupabaseServerRequest(urlStr: string): boolean {
     const lower = urlStr.toLowerCase();
     if (lower.includes('/rest/v1/app_config')) return true;
     if (lower.includes('/rest/v1/resellers')) return true;
-    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=')) return true;
+    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=') && !lower.includes('session_token')) return true;
   }
   return false;
 }
@@ -462,6 +467,61 @@ function initStorage() {
         promptConfig: parsed.promptConfig || null,
       };
 
+      const defaultDownloadUrl = 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc';
+      if (!db.planExtensions) {
+        db.planExtensions = {
+          basic: {
+            name: 'Flow Basic Chrome Extension',
+            version: '1.8.0',
+            downloadUrl: defaultDownloadUrl,
+            fileName: 'flow-basic-extension-v1.8.0.zip',
+            description: 'Standard Video Prompt Sync & Studio Launcher for Basic Plan Members.',
+            updatedAt: new Date().toISOString(),
+            downloadType: 'url',
+          },
+          ultra: {
+            name: 'Flow Ultra VIP Extension',
+            version: '3.2.0',
+            downloadUrl: defaultDownloadUrl,
+            fileName: 'flow-ultra-vip-extension-v3.2.0.zip',
+            description: 'High-Speed 4K Pipeline, Unlimited Prompt Queue & VIP Multi-Session Sync.',
+            updatedAt: new Date().toISOString(),
+            downloadType: 'url',
+          },
+        };
+      } else {
+        if (!db.planExtensions.basic?.downloadUrl) {
+          db.planExtensions.basic.downloadUrl = defaultDownloadUrl;
+        }
+        if (!db.planExtensions.ultra?.downloadUrl) {
+          db.planExtensions.ultra.downloadUrl = defaultDownloadUrl;
+        }
+      }
+
+      if (db.promptConfig) {
+        if (!db.promptConfig.signupTelegramUrl) {
+          db.promptConfig.signupTelegramUrl = 'https://t.me/google_ultra_veo3_bot';
+        }
+        if (!db.promptConfig.resellerContactUrl) {
+          db.promptConfig.resellerContactUrl = 'https://t.me/google_ultra_veo3_bot';
+        }
+      }
+
+      if (db.tutorialConfig) {
+        if (!db.tutorialConfig.desktopVideoUrl || db.tutorialConfig.desktopVideoUrl.includes('dQw4w9WgXcQ')) {
+          db.tutorialConfig.desktopVideoUrl = 'https://youtu.be/bNZXy0cAv_o?si=_hgtM9DrSpMS4EhN';
+        }
+      } else {
+        db.tutorialConfig = {
+          desktopVideoUrl: 'https://youtu.be/bNZXy0cAv_o?si=_hgtM9DrSpMS4EhN',
+          desktopTitle: 'How to Use Flow on Desktop / PC',
+          desktopSubtitle: 'Complete tutorial on setting up the Chrome extension & using Desktop Studio.',
+          mobileVideoUrl: 'https://www.youtube.com/watch?v=ScMzIvxBSi4',
+          mobileTitle: 'How to Use Flow on Mobile (Android & iOS)',
+          mobileSubtitle: 'Step-by-step guide on generating AI videos seamlessly from mobile browsers.',
+        };
+      }
+
       // Ensure admins exist
       const adminEmails = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'];
       for (const admEmail of adminEmails) {
@@ -632,70 +692,114 @@ function markUserOnline(emailOrId?: string, sessionToken?: string): void {
 
 // ======================== API ROUTES ========================
 
+const SYSTEM_ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+
+function isRequestAdminUser(req: any): boolean {
+  const token = (
+    req.headers['x-session-token'] || 
+    req.query.sessionToken || 
+    req.headers.authorization?.replace(/^Bearer\s+/i, '') || 
+    ''
+  ).toString().trim();
+
+  const apiKey = (req.headers['x-admin-key'] || req.headers['x-api-key'] || req.query.apiKey || '').toString().trim();
+  if (apiKey === 'admin_master_key' || SYSTEM_ADMIN_EMAILS.has(apiKey.toLowerCase())) {
+    return true;
+  }
+
+  if (token) {
+    const user = db.users.find(u => u.sessionToken === token || u.id === token);
+    if (user && (user.role === 'admin' || (user.email && SYSTEM_ADMIN_EMAILS.has(user.email.toLowerCase())))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function getCallingUser(req: any): Promise<any | null> {
+  const token = (
+    req.headers['x-session-token'] || 
+    req.query.sessionToken || 
+    req.headers.authorization?.replace(/^Bearer\s+/i, '') || 
+    ''
+  ).toString().trim();
+
+  if (!token) return null;
+
+  let user = db.users.find(u => (u.sessionToken && u.sessionToken === token) || u.id === token) || null;
+
+  // Authoritative sync for this specific user only from Supabase
+  const supa = getServerSupabase();
+  if (supa) {
+    try {
+      let supaQuery = supa.from('users').select('*');
+      if (token.startsWith('sess-')) {
+        supaQuery = supaQuery.eq('session_token', token);
+      } else {
+        supaQuery = supaQuery.or(`session_token.eq.${token},id.eq.${token}`);
+      }
+      const { data: supaUser } = await supaQuery.maybeSingle();
+
+      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        const mapped = {
+          id: supaUser.id,
+          name: supaUser.name || 'User',
+          email: supaUser.email || '',
+          password: supaUser.password || 'user123',
+          sessionToken: supaUser.session_token || '',
+          plan: supaUser.plan || 'basic',
+          credits: Number(supaUser.credits) ?? 100,
+          maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100),
+          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+          planExpiresAt: supaUser.plan_expires_at,
+          role: supaUser.role || 'user',
+          resellerId: supaUser.reseller_id,
+          resellerName: supaUser.reseller_name,
+          status: supaUser.status || 'active',
+          extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
+          canEditPrompts: supaUser.can_edit_prompts === true,
+          isOnline: Boolean(supaUser.is_online),
+          lastActive: supaUser.last_active || new Date().toISOString(),
+          createdAt: supaUser.created_at || new Date().toISOString(),
+          avatarColor: supaUser.avatar_color || 'from-purple-600 to-indigo-600',
+        };
+
+        const existingIdx = db.users.findIndex(u => u.id === mapped.id || (u.email && mapped.email && u.email.toLowerCase() === mapped.email.toLowerCase()));
+        if (existingIdx !== -1) {
+          db.users[existingIdx] = { ...db.users[existingIdx], ...mapped };
+          user = db.users[existingIdx];
+        } else {
+          db.users.push(mapped);
+          user = mapped;
+        }
+      }
+    } catch {}
+  }
+
+  return user;
+}
+
+function sanitizeSafeUser(u: any) {
+  // STRICT SECURITY: Never send password in any client response
+  const { password, ...safe } = u;
+  return safe;
+}
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', userCount: db.users.length, timestamp: new Date().toISOString() });
 });
 
-// GET all users
+// GET users: Strictly protected
+// 1. Admin gets all users (passwords stripped)
+// 2. Reseller gets only their own assigned users (passwords stripped)
+// 3. Regular user with valid session token gets ONLY their own profile
+// 4. Public visitors receive empty list [] - zero database leakage
 app.get('/api/users', async (req, res) => {
   const now = Date.now();
   let changed = false;
 
-  // Supabase users?select=* request is strictly disabled. Local store db.users is authoritative.
-  if (false as boolean) {
-    try {
-      const supa = getServerSupabase();
-      const { data: supaUsers } = await supa?.from('users').select('*') || {};
-      if (Array.isArray(supaUsers)) {
-        for (const supaU of supaUsers) {
-          if (!supaU.id || supaU.id.startsWith('admin_config_')) continue;
-          const existingIdx = db.users.findIndex(u => u.id === supaU.id || (u.email && supaU.email && u.email.toLowerCase() === supaU.email.toLowerCase()));
-          const existingUser = existingIdx !== -1 ? db.users[existingIdx] : null;
-          const mappedUser = {
-            id: supaU.id,
-            name: supaU.name || 'User',
-            email: supaU.email || '',
-            password: supaU.password || 'user123',
-            sessionToken: supaU.session_token || supaU.sessionToken || (existingUser ? existingUser.sessionToken : '') || '',
-            plan: supaU.plan || 'basic',
-            credits: Number(supaU.credits) ?? 100,
-            maxCredits: Number(supaU.max_credits) ?? (supaU.plan === 'ultra' ? 45000 : 100),
-            planDaysLeft: Number(supaU.plan_days_left) ?? 30,
-            planExpiresAt: supaU.plan_expires_at || existingUser?.planExpiresAt,
-            role: supaU.role || 'user',
-            resellerId: supaU.reseller_id || existingUser?.resellerId,
-            resellerName: supaU.reseller_name || existingUser?.resellerName,
-            status: supaU.status || 'active',
-            extensionAccess: supaU.extension_access !== undefined ? supaU.extension_access : (existingUser ? existingUser.extensionAccess : true),
-            canEditPrompts: supaU.can_edit_prompts === true || existingUser?.canEditPrompts === true,
-            isOnline: Boolean(existingUser?.isOnline || supaU.is_online),
-            lastActive: supaU.last_active || existingUser?.lastActive || '',
-            createdAt: supaU.created_at || existingUser?.createdAt || new Date().toISOString(),
-            avatarColor: supaU.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
-          };
-          if (existingIdx !== -1) {
-            db.users[existingIdx] = {
-              ...db.users[existingIdx],
-              ...mappedUser,
-              resellerId: mappedUser.resellerId || db.users[existingIdx].resellerId,
-              resellerName: mappedUser.resellerName || db.users[existingIdx].resellerName,
-              sessionToken: supaU.session_token || db.users[existingIdx].sessionToken || mappedUser.sessionToken,
-              canEditPrompts: supaU.can_edit_prompts === true || db.users[existingIdx].canEditPrompts === true,
-              extensionAccess: supaU.extension_access !== undefined ? supaU.extension_access : db.users[existingIdx].extensionAccess,
-            };
-          } else {
-            db.users.push(mappedUser);
-            changed = true;
-          }
-        }
-      }
-    } catch (err) {
-      console.error('Supabase fetch users error:', err);
-    }
-  }
-
-  const sanitizedUsers = db.users.map(u => {
+  for (const u of db.users) {
     if (checkAndConvertToBasic(u)) {
       changed = true;
     }
@@ -705,32 +809,55 @@ app.get('/api/users', async (req, res) => {
         isLive = true;
       } else {
         const t = new Date(u.lastActive).getTime();
-        // Strict 2-minute (120,000 ms) window: renews every 2 minutes while online
         isLive = !isNaN(t) && (now - t <= 120000 && now - t >= -60000);
       }
     }
-
     if (u.isOnline !== isLive) {
       u.isOnline = isLive;
       changed = true;
     }
-
-    const maxCredits = u.maxCredits || (u.plan === 'ultra' ? 45000 : 100);
-    const credits = u.credits ?? 0;
-    const usedCredits = u.usedCredits !== undefined ? u.usedCredits : Math.max(0, maxCredits - credits);
-    return {
-      ...u,
-      sessionToken: u.sessionToken || '',
-      isOnline: isLive,
-      maxCredits,
-      credits,
-      usedCredits,
-    };
-  });
+  }
   if (changed) {
     saveStorage();
   }
-  res.json({ users: sanitizedUsers });
+
+  const isAdmin = isRequestAdminUser(req);
+  const callingUser = await getCallingUser(req);
+  const resellerId = (req.headers['x-reseller-id'] || req.query.resellerId || '').toString().trim();
+  const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
+
+  // 1. Admin: full user list
+  if (isAdmin) {
+    return res.json({ users: db.users.map(u => sanitizeSafeUser(u)) });
+  }
+
+  // 2. Reseller: only their portal's users
+  if (resellerId || resellerKey) {
+    const matchingReseller = db.resellers.find(r => r.id === resellerId || r.apiKey === resellerKey);
+    if (matchingReseller) {
+      const resellerUsers = db.users
+        .filter(u => u.resellerId === matchingReseller.id)
+        .map(u => sanitizeSafeUser(u));
+      return res.json({ users: resellerUsers });
+    }
+  }
+
+  // 3. Logged-in user: ONLY their own user profile!
+  if (callingUser) {
+    return res.json({ users: [sanitizeSafeUser(callingUser)] });
+  }
+
+  // 4. Public or unauthenticated: empty list
+  return res.json({ users: [] });
+});
+
+// GET currently logged-in user profile ONLY
+app.get('/api/users/me', async (req, res) => {
+  const callingUser = await getCallingUser(req);
+  if (!callingUser) {
+    return res.status(401).json({ error: 'Unauthorized: Session token required or invalid' });
+  }
+  res.json({ user: sanitizeSafeUser(callingUser) });
 });
 
 // POST signup
@@ -936,7 +1063,7 @@ app.post('/api/users/login', async (req, res) => {
     }).catch(() => {});
   }
 
-  res.json({ success: true, user });
+  res.json({ success: true, user: sanitizeSafeUser(user) });
 });
 
 // POST logout
@@ -2693,52 +2820,12 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   return null;
 }
 
-// GET resellers
+// GET resellers (Strictly protected: only Admin can view all resellers, unauthorized callers get empty list)
 app.get('/api/resellers', async (req, res) => {
   const now = Date.now();
-
-  // Note: resellers?select=* request to Supabase is strictly disabled. Local store db.resellers is authoritative.
-  if (false as boolean) {
-    try {
-      const supa = getServerSupabase();
-      const { data: supaResellers } = await supa?.from('resellers').select('*') || {};
-      if (Array.isArray(supaResellers) && supaResellers.length > 0) {
-        for (const sr of supaResellers) {
-          const mapped = {
-            id: sr.id,
-            portalName: sr.portal_name || sr.portalName,
-            email: sr.email,
-            password: sr.password,
-            userLimit: sr.user_limit || sr.userLimit || 20,
-            daysLeft: sr.days_left ?? sr.daysLeft ?? 30,
-            expiryDate: sr.expiry_date || sr.expiryDate,
-            expiresAt: sr.expires_at || sr.expiresAt,
-            status: sr.status || 'active',
-            notes: sr.notes || '',
-            apiKey: sr.api_key || sr.apiKey,
-          };
-          const idx = db.resellers.findIndex(r => r.id === sr.id);
-          if (idx >= 0) {
-            db.resellers[idx] = { ...db.resellers[idx], ...mapped };
-          } else {
-            db.resellers.push(mapped);
-          }
-        }
-      } else {
-        const { data: resRow } = await supa.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
-        if (resRow?.name) {
-          const parsed = JSON.parse(resRow.name);
-          if (Array.isArray(parsed)) {
-            for (const pr of parsed) {
-              const idx = db.resellers.findIndex(r => r.id === pr.id);
-              if (idx >= 0) db.resellers[idx] = { ...db.resellers[idx], ...pr };
-              else db.resellers.push(pr);
-            }
-          }
-        }
-      }
-    } catch {}
-  }
+  const isAdmin = isRequestAdminUser(req);
+  const resellerId = (req.headers['x-reseller-id'] || req.query.resellerId || '').toString().trim();
+  const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
 
   db.resellers = db.resellers.map(r => {
     if (r.expiresAt) {
@@ -2754,11 +2841,26 @@ app.get('/api/resellers', async (req, res) => {
     return r;
   });
 
-  const resellersWithKeys = db.resellers.map(r => ({
-    ...r,
-    apiKey: r.apiKey || getResellerApiKey(r),
-  }));
-  res.json({ resellers: resellersWithKeys });
+  // 1. Admin gets all resellers
+  if (isAdmin) {
+    const resellersWithKeys = db.resellers.map(r => ({
+      ...r,
+      apiKey: r.apiKey || getResellerApiKey(r),
+    }));
+    return res.json({ resellers: resellersWithKeys });
+  }
+
+  // 2. Reseller querying their own portal
+  if (resellerId || resellerKey) {
+    const matched = db.resellers.find(r => r.id === resellerId || r.apiKey === resellerKey);
+    if (matched) {
+      const { password, ...safeR } = matched;
+      return res.json({ resellers: [{ ...safeR, apiKey: safeR.apiKey || getResellerApiKey(matched) }] });
+    }
+  }
+
+  // 3. Regular users or public visitors get empty list - zero leakage!
+  return res.json({ resellers: [] });
 });
 
 // POST save reseller

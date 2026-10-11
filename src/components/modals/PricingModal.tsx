@@ -31,26 +31,26 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, onO
     }
 
     // Top Plans Section logic
-    if (promptConfig?.resellerContactUrl) {
-      // If 3-click feature is OFF, open link instantly
-      if (promptConfig.resellerContactUrlEnabled === false) {
-        window.open(promptConfig.resellerContactUrl, '_blank');
-        return;
-      }
+    const contactUrl = promptConfig?.resellerContactUrl?.trim() || 'https://t.me/google_ultra_veo3_bot';
 
-      // If 3-click feature is ON, check for 3 clicks in 2 seconds
-      const current = clickCount['plan'] || { count: 0, lastTime: 0 };
-      const isQuick = now - current.lastTime < 2000;
-      const newCount = isQuick ? current.count + 1 : 1;
-
-      if (newCount >= 3) {
-        window.open(promptConfig.resellerContactUrl, '_blank');
-        setClickCount({ ...clickCount, ['plan']: { count: 0, lastTime: 0 } });
-        return;
-      }
-
-      setClickCount({ ...clickCount, ['plan']: { count: newCount, lastTime: now } });
+    // If 3-click feature is OFF, open link instantly
+    if (promptConfig?.resellerContactUrlEnabled === false) {
+      window.open(contactUrl, '_blank');
+      return;
     }
+
+    // 3-click feature: check for 3 clicks within 3 seconds (3000 ms)
+    const current = clickCount['plan'] || { count: 0, lastTime: 0 };
+    const isQuick = now - current.lastTime < 3000;
+    const newCount = isQuick ? current.count + 1 : 1;
+
+    if (newCount >= 3) {
+      window.open(contactUrl, '_blank');
+      setClickCount({ ...clickCount, ['plan']: { count: 0, lastTime: 0 } });
+      return;
+    }
+
+    setClickCount({ ...clickCount, ['plan']: { count: newCount, lastTime: now } });
 
     // Default message / toast behavior
     if (currentUser) requestUpgrade();
@@ -170,7 +170,11 @@ export const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose, onO
                     </div>
                   </div>
 
-                  <div className="text-xs text-neutral-400 font-medium mb-5">
+                  <div 
+                    onClick={() => handleContactReseller('plan')}
+                    className="text-xs text-neutral-400 font-medium mb-5 cursor-pointer hover:text-neutral-300 transition-colors"
+                    title="Click 3 times in 3s to contact reseller"
+                  >
                     {plan.subtitle}
                   </div>
 

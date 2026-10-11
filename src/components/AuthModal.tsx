@@ -425,8 +425,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ initialMode = 'login', onB
           >
             <a
               href={(() => {
-                const raw = promptConfig?.signupTelegramUrl?.trim() || '';
-                if (!raw) return 'https://t.me/';
+                const raw = promptConfig?.signupTelegramUrl?.trim() || 'https://t.me/google_ultra_veo3_bot';
+                if (!raw) return 'https://t.me/google_ultra_veo3_bot';
                 if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
                 if (raw.startsWith('@')) return `https://t.me/${raw.replace(/^@/, '')}`;
                 if (raw.startsWith('t.me/')) return `https://${raw}`;

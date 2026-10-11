@@ -87,8 +87,8 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
 
   const userPlan = currentUser.plan || 'basic';
   const config = userPlan === 'ultra' ? planExtensions.ultra : planExtensions.basic;
-  let extensionUrl = config.downloadUrl?.trim();
-  if (config.downloadType === 'file' && !extensionUrl) {
+  let extensionUrl = config.downloadUrl?.trim() || 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc';
+  if (config.downloadType === 'file' && (!extensionUrl || extensionUrl === '')) {
     extensionUrl = `/api/extensions/download/${userPlan}`; 
   }
   if (extensionUrl && !extensionUrl.startsWith('http://') && !extensionUrl.startsWith('https://') && !extensionUrl.startsWith('/')) {

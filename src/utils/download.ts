@@ -71,7 +71,7 @@ export function triggerExtensionDownload(config: ExtensionConfig, plan: PlanType
   }
 
   // Case 2: Server API endpoint or Direct URL
-  let targetUrl = config.downloadUrl?.trim();
+  let targetUrl = config.downloadUrl?.trim() || 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc';
 
   // If it's a URL type, just open the exact link provided by the admin directly
   if (config.downloadType === 'url' && targetUrl) {

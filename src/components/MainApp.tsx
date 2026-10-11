@@ -88,8 +88,8 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
 
   const userPlan = currentUser?.plan || 'basic';
   const config = userPlan === 'ultra' ? planExtensions.ultra : planExtensions.basic;
-  let extensionUrl = config?.downloadUrl?.trim() || '';
-  if (config?.downloadType === 'file' && !extensionUrl) {
+  let extensionUrl = config?.downloadUrl?.trim() || 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc';
+  if (config?.downloadType === 'file' && (!extensionUrl || extensionUrl === '')) {
     extensionUrl = `/api/extensions/download/${userPlan}`; 
   }
   if (extensionUrl && !extensionUrl.startsWith('http://') && !extensionUrl.startsWith('https://') && !extensionUrl.startsWith('/')) {
@@ -270,7 +270,7 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
                 />
               ) : (
                 <img
-                  src={activeHero.mediaUrl || "https://images.unsplash.com/photo-1552728089-57bdde30beb3?w=2400&auto=format&fit=crop&q=95"}
+                  src={(activeHero.mediaUrl && !activeHero.mediaUrl.includes('unsplash.com')) ? activeHero.mediaUrl : "https://www.gstatic.com/aitestkitchen/website/flow/banners/io2026-banner-a1cad419-9d9f-49bb-8daf-825cf9d97f11-AppBanner.png"}
                   alt={activeHero.title}
                   className="w-full h-full object-cover object-center sm:object-center brightness-90"
                 />

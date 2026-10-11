@@ -73,27 +73,37 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Auto-poll assigned reseller users while on Reseller Portal
+  // Auto-poll every 3 seconds while on Reseller Portal to catch API key requests immediately
   React.useEffect(() => {
     if (!currentReseller) return;
     const interval = setInterval(() => {
-      fetch(`/api/reseller/users?resellerId=${encodeURIComponent(currentReseller.id)}`)
+      fetch('/api/users', {
+        headers: {
+          'x-reseller-id': currentReseller.id,
+          'x-reseller-api-key': currentReseller.apiKey || '',
+        }
+      })
         .then(res => res.json())
         .then(data => {
           if (data?.users && Array.isArray(data.users)) {
+            // Context will automatically merge or state will update
             setTimeTick(t => t + 1);
           }
         })
         .catch(() => {});
-    }, 10000);
+    }, 3000);
     return () => clearInterval(interval);
   }, [currentReseller]);
 
   const handleManualRefresh = async () => {
-    if (!currentReseller) return;
     setIsRefreshing(true);
     try {
-      const res = await fetch(`/api/reseller/users?resellerId=${encodeURIComponent(currentReseller.id)}`);
+      const res = await fetch('/api/users', {
+        headers: {
+          'x-reseller-id': currentReseller?.id || '',
+          'x-reseller-api-key': currentReseller?.apiKey || '',
+        }
+      });
       if (res.ok) {
         showToast('Reseller data refreshed successfully!');
       }
