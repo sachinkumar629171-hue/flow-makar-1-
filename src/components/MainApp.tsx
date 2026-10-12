@@ -396,22 +396,16 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
                   ) : (
                     <div 
                       onClick={() => setDesktopPlaying(true)}
-                      className="relative w-full h-full cursor-pointer group flex items-center justify-center bg-neutral-950 overflow-hidden"
+                      className="relative w-full h-full cursor-pointer group flex flex-col items-center justify-center bg-gradient-to-br from-neutral-900 via-[#0d0e12] to-black overflow-hidden border border-neutral-800/60 p-6 text-center select-none"
                       title="Click to play tutorial"
                     >
-                      <img
-                        src={`https://img.youtube.com/vi/${getYouTubeVideoId(tutorialConfig.desktopVideoUrl)}/hqdefault.jpg`}
-                        alt="Desktop Extension Tutorial"
-                        loading="lazy"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = 'none';
-                        }}
-                      />
-                      <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors" />
-                      <div className="absolute w-14 h-14 rounded-full bg-red-600/90 group-hover:bg-red-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 transition-transform">
-                        <Play className="w-6 h-6 fill-white ml-0.5" />
+                      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-red-600/95 group-hover:bg-red-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 active:scale-95 transition-all mb-3">
+                        <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-white ml-0.5" />
                       </div>
+                      <span className="text-xs sm:text-sm font-bold text-white group-hover:text-blue-300 transition-colors">
+                        Watch Desktop Tutorial
+                      </span>
+                      <span className="text-[10px] text-neutral-400 mt-0.5">Click to load YouTube player</span>
                     </div>
                   )
                 ) : (
@@ -470,22 +464,16 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
                   ) : (
                     <div 
                       onClick={() => setMobilePlaying(true)}
-                      className="relative w-full h-full cursor-pointer group flex items-center justify-center bg-neutral-950 overflow-hidden"
+                      className="relative w-full h-full cursor-pointer group flex flex-col items-center justify-center bg-gradient-to-br from-neutral-900 via-[#0d0e12] to-black overflow-hidden border border-neutral-800/60 p-6 text-center select-none"
                       title="Click to play tutorial"
                     >
-                      <img
-                        src={`https://img.youtube.com/vi/${getYouTubeVideoId(tutorialConfig.mobileVideoUrl)}/hqdefault.jpg`}
-                        alt="Mobile Extension Tutorial"
-                        loading="lazy"
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
-                        onError={(e) => {
-                          (e.target as HTMLElement).style.display = 'none';
-                        }}
-                      />
-                      <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors" />
-                      <div className="absolute w-14 h-14 rounded-full bg-red-600/90 group-hover:bg-red-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 transition-transform">
-                        <Play className="w-6 h-6 fill-white ml-0.5" />
+                      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-emerald-600/95 group-hover:bg-emerald-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 active:scale-95 transition-all mb-3">
+                        <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-white ml-0.5" />
                       </div>
+                      <span className="text-xs sm:text-sm font-bold text-white group-hover:text-emerald-300 transition-colors">
+                        Watch Mobile Tutorial
+                      </span>
+                      <span className="text-[10px] text-neutral-400 mt-0.5">Click to load YouTube player</span>
                     </div>
                   )
                 ) : (

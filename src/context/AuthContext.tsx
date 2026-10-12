@@ -634,6 +634,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isMounted = true;
 
     const pollCentralServer = async () => {
+      // Strictly disabled for non-admin users: normal users do not create any background polling requests
+      const isUserAdmin = currentUser?.role === 'admin' || 
+        (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+      if (!isUserAdmin) return;
+
       try {
         // NOTE: Requests to app_config?select=*, resellers?select=*, and users?select=* are strictly blocked and disabled.
         // Central server endpoints /api/users, /api/resellers, /api/config handle all syncing cleanly.
@@ -1084,58 +1089,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
-    pollCentralServer();
-    // Balanced Polling: 60s fallback interval (Supabase Realtime WebSocket handles instant live pushes)
-    const pollInterval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.hidden) return;
+    const isUserAdmin = currentUser?.role === 'admin' || 
+      (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+
+    let pollInterval: any = null;
+    if (isUserAdmin) {
       pollCentralServer();
-    }, 60000);
+      pollInterval = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        pollCentralServer();
+      }, 60000);
+    }
 
-    // Instant Supabase Realtime channel for live user presence (Admin dashboard only)
-    let usersRealtimeChannel: any = null;
-    try {
-      const isUserAdmin = currentUser?.role === 'admin' || 
-        (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
-      if (isUserAdmin) {
-        const supaForRealtime = getSupabase();
-        if (supaForRealtime) {
-          usersRealtimeChannel = supaForRealtime.channel('users_realtime_presence')
-          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, (payload: any) => {
-            const row = payload.new;
-            if (row && row.id && !row.id.startsWith('admin_config_')) {
-              setUsers(prev => prev.map(u => {
-                if (u.id === row.id || (u.email && row.email && u.email.toLowerCase() === row.email.toLowerCase())) {
-                  return {
-                    ...u,
-                    isOnline: row.is_online !== undefined ? row.is_online : u.isOnline,
-                    lastActive: row.last_active || u.lastActive,
-                  };
-                }
-                return u;
-              }));
-            }
-          })
-          .subscribe();
-        }
-      }
-    } catch {}
-
-    // Immediate refresh on tab focus
+    // Immediate refresh on tab focus for admin only
     const handleTabFocus = () => {
-      pollCentralServer();
+      if (isUserAdmin) pollCentralServer();
     };
     window.addEventListener('focus', handleTabFocus);
 
     return () => {
       isMounted = false;
-      clearInterval(pollInterval);
+      if (pollInterval) clearInterval(pollInterval);
       window.removeEventListener('focus', handleTabFocus);
-      if (usersRealtimeChannel) {
-        try {
-          const s = getSupabase();
-          if (s) s.removeChannel(usersRealtimeChannel);
-        } catch {}
-      }
     };
   }, []); // Run only once on mount to prevent infinite poll cycles
 
@@ -1245,34 +1220,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.email]);
 
-  // Supabase Realtime subscription for immediate (< 500ms) cross-device session termination
-  useEffect(() => {
-    if (!currentUser) return;
-    const supabase = getSupabase();
-    if (!supabase) return;
-
-    const channel = supabase.channel(`user-session-${currentUser.id}`)
-      .on('postgres_changes', {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'users',
-        filter: `id=eq.${currentUser.id}`,
-      }, (payload: any) => {
-        const newSupaUser = payload.new;
-        const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
-        if (newSupaUser && newSupaUser.session_token && localToken && newSupaUser.session_token !== localToken) {
-          console.warn('[Realtime] Newer session detected on another device! Logging out old session.');
-          setSessionTerminatedNotice(true);
-          logout();
-        }
-      })
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [currentUser?.id, currentUser?.email]);
-
   // Heartbeat to keep currentUser active/online & enforce single-session exclusivity
   useEffect(() => {
     if (!currentUser) return;
@@ -1331,18 +1278,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     heartbeat();
-    // Heartbeat every 35 seconds (server throttles Supabase writes to 80s)
+    // Throttled Heartbeat: every 2 minutes (120,000 ms) to keep network tab clean
     const interval = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
       heartbeat();
-    }, 35000);
-
-    const onUserActivity = () => {
-      (window as any)._lastSupaSessionCheck = 0; // Force immediate check on tab focus/activity
-      heartbeat();
-    };
-    window.addEventListener('focus', onUserActivity);
-    window.addEventListener('visibilitychange', onUserActivity);
+    }, 120000);
 
     const handleUnload = () => {
       if (currentUser) {
@@ -1374,7 +1314,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.addEventListener('beforeunload', handleUnload);
     return () => {
       clearInterval(interval);
-      window.removeEventListener('focus', onUserActivity);
       window.removeEventListener('beforeunload', handleUnload);
       if (bc) bc.close();
     };
