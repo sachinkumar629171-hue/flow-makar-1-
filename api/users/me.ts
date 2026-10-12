@@ -59,27 +59,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Build safe sanitized user profile (no password)
+    // Return ONLY essential fields requested by user (No internal IDs, session tokens, reseller or online status)
     const safeUser = {
-      id: supaUser.id,
       name: supaUser.name || 'User',
       email: supaUser.email || '',
       plan: supaUser.plan || 'basic',
       credits: Number(supaUser.credits) ?? 100,
       maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100),
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-      planExpiresAt: supaUser.plan_expires_at || null,
       role: supaUser.role || 'user',
-      resellerId: supaUser.reseller_id || null,
-      resellerName: supaUser.reseller_name || null,
-      status: supaUser.status || 'active',
-      extensionAccess: supaUser.extension_access !== false,
-      canEditPrompts: Boolean(supaUser.can_edit_prompts),
-      isOnline: Boolean(supaUser.is_online),
-      lastActive: supaUser.last_active || new Date().toISOString(),
-      createdAt: supaUser.created_at || new Date().toISOString(),
-      avatarColor: supaUser.avatar_color || 'from-purple-600 to-indigo-600',
-      sessionToken: supaUser.session_token || token,
     };
 
     return res.status(200).json({

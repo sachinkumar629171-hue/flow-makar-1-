@@ -857,7 +857,16 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
   if (!callingUser) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Session token required or invalid' });
   }
-  res.json({ success: true, user: sanitizeSafeUser(callingUser) });
+  const minimalProfile = {
+    name: callingUser.name || 'User',
+    email: callingUser.email || '',
+    plan: callingUser.plan || 'basic',
+    credits: Number(callingUser.credits) ?? 100,
+    maxCredits: Number(callingUser.maxCredits) ?? (callingUser.plan === 'ultra' ? 45000 : 100),
+    planDaysLeft: Number(callingUser.planDaysLeft) ?? 30,
+    role: callingUser.role || 'user',
+  };
+  res.json({ success: true, user: minimalProfile });
 });
 
 // POST signup
