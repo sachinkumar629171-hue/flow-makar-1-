@@ -420,19 +420,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const activePlan = currentUser?.plan || 'basic';
   const extensionConfig = planExtensions[activePlan] || planExtensions.basic;
 
-  // Sync plan extensions to localStorage & central server
+  // Sync plan extensions to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(PLAN_EXTENSIONS_STORAGE_KEY, JSON.stringify(planExtensions));
     } catch {
       // ignore
     }
-
-    fetch(apiUrl('/api/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ planExtensions }),
-    }).catch(() => {});
   }, [planExtensions]);
 
   // Sync tutorial config to localStorage
@@ -442,12 +436,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore
     }
-
-    fetch(apiUrl('/api/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tutorialConfig }),
-    }).catch(() => {});
   }, [tutorialConfig]);
 
   // Sync hero config to localStorage
@@ -457,12 +445,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore
     }
-
-    fetch(apiUrl('/api/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ heroConfig }),
-    }).catch(() => {});
   }, [heroConfig]);
 
   // Sync prompt config to localStorage
@@ -472,12 +454,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // ignore
     }
-
-    fetch(apiUrl('/api/config'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ promptConfig }),
-    }).catch(() => {});
   }, [promptConfig]);
 
   // Sync resellers to localStorage
@@ -656,21 +632,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Real-time Central Server Sync & Polling
   useEffect(() => {
     let isMounted = true;
-
-    // Initial sync of current local users to server (excluding mock/purged IDs)
-    try {
-      const currentLocalUsers = JSON.parse(localStorage.getItem(USERS_STORAGE_KEY) || '[]');
-      if (Array.isArray(currentLocalUsers) && currentLocalUsers.length > 0) {
-        const validUsers = currentLocalUsers.filter((u: any) => u.id && !PURGED_MOCK_IDS.has(u.id));
-        if (validUsers.length > 0) {
-          fetch(apiUrl('/api/users/sync-all'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ users: validUsers }),
-          }).catch(() => {});
-        }
-      }
-    } catch {}
 
     const pollCentralServer = async () => {
       try {
@@ -960,12 +921,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         const [usersRes, resellersRes, configRes] = await Promise.all([
           activeToken 
-            ? fetch(apiUrl('/api/users'), { headers: userHeaders })
+            ? fetch(apiUrl('/api/users'), { headers: userHeaders }).catch(() => new Response(JSON.stringify({ users: [] }), { status: 200 }))
             : Promise.resolve(new Response(JSON.stringify({ users: [] }), { status: 200 })),
-          isUserAdmin
-            ? fetch(apiUrl('/api/resellers'), { headers: userHeaders })
+          isUserAdmin && activeToken
+            ? fetch(apiUrl('/api/resellers'), { headers: userHeaders }).catch(() => new Response(JSON.stringify({ resellers: [] }), { status: 200 }))
             : Promise.resolve(new Response(JSON.stringify({ resellers: [] }), { status: 200 })),
-          fetch(apiUrl('/api/config')),
+          isUserAdmin
+            ? fetch(apiUrl('/api/config')).catch(() => new Response(JSON.stringify({}), { status: 200 }))
+            : Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),
         ]);
 
         if (usersRes.ok) {
@@ -1128,12 +1091,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       pollCentralServer();
     }, 60000);
 
-    // Instant Supabase Realtime channel for live user presence
+    // Instant Supabase Realtime channel for live user presence (Admin dashboard only)
     let usersRealtimeChannel: any = null;
     try {
-      const supaForRealtime = getSupabase();
-      if (supaForRealtime) {
-        usersRealtimeChannel = supaForRealtime.channel('users_realtime_presence')
+      const isUserAdmin = currentUser?.role === 'admin' || 
+        (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+      if (isUserAdmin) {
+        const supaForRealtime = getSupabase();
+        if (supaForRealtime) {
+          usersRealtimeChannel = supaForRealtime.channel('users_realtime_presence')
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'users' }, (payload: any) => {
             const row = payload.new;
             if (row && row.id && !row.id.startsWith('admin_config_')) {
@@ -1150,6 +1116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           })
           .subscribe();
+        }
       }
     } catch {}
 

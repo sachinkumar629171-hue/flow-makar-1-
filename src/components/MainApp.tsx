@@ -29,7 +29,7 @@ import { HistoryModal } from './modals/HistoryModal';
 import { DevicesModal } from './modals/DevicesModal';
 import { HeroSettingsModal } from './modals/HeroSettingsModal';
 import { TutorialSettingsModal } from './modals/TutorialSettingsModal';
-import { getYouTubeEmbedUrl } from '../utils/youtube';
+import { getYouTubeEmbedUrl, getYouTubeVideoId } from '../utils/youtube';
 import { triggerExtensionDownload } from '../utils/download';
 
 interface MainAppProps {
@@ -53,6 +53,8 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
   const [historyOpen, setHistoryOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [tutorialSettingsOpen, setTutorialSettingsOpen] = useState(false);
+  const [desktopPlaying, setDesktopPlaying] = useState(false);
+  const [mobilePlaying, setMobilePlaying] = useState(false);
   const [currentHeroIndex, setCurrentHeroIndex] = useState(0);
 
   // Hero Rotation
@@ -383,13 +385,35 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
               {/* Video Embed */}
               <div className="relative aspect-video w-full bg-black">
                 {desktopEmbedUrl ? (
-                  <iframe
-                    src={desktopEmbedUrl}
-                    title="Desktop Extension Tutorial"
-                    className="w-full h-full border-0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen
-                  />
+                  desktopPlaying ? (
+                    <iframe
+                      src={`${desktopEmbedUrl}${desktopEmbedUrl.includes('?') ? '&' : '?'}autoplay=1`}
+                      title="Desktop Extension Tutorial"
+                      className="w-full h-full border-0"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                    />
+                  ) : (
+                    <div 
+                      onClick={() => setDesktopPlaying(true)}
+                      className="relative w-full h-full cursor-pointer group flex items-center justify-center bg-neutral-950 overflow-hidden"
+                      title="Click to play tutorial"
+                    >
+                      <img
+                        src={`https://img.youtube.com/vi/${getYouTubeVideoId(tutorialConfig.desktopVideoUrl)}/hqdefault.jpg`}
+                        alt="Desktop Extension Tutorial"
+                        loading="lazy"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
+                        onError={(e) => {
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors" />
+                      <div className="absolute w-14 h-14 rounded-full bg-red-600/90 group-hover:bg-red-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 transition-transform">
+                        <Play className="w-6 h-6 fill-white ml-0.5" />
+                      </div>
+                    </div>
+                  )
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-neutral-500 space-y-2">
                     <Youtube className="w-10 h-10 text-red-500/40" />
@@ -435,13 +459,35 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
               {/* Video Embed */}
               <div className="relative aspect-video w-full bg-black">
                 {mobileEmbedUrl ? (
-                  <iframe
-                    src={mobileEmbedUrl}
-                    title="Mobile Extension Tutorial"
-                    className="w-full h-full border-0"
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen
-                  />
+                  mobilePlaying ? (
+                    <iframe
+                      src={`${mobileEmbedUrl}${mobileEmbedUrl.includes('?') ? '&' : '?'}autoplay=1`}
+                      title="Mobile Extension Tutorial"
+                      className="w-full h-full border-0"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                    />
+                  ) : (
+                    <div 
+                      onClick={() => setMobilePlaying(true)}
+                      className="relative w-full h-full cursor-pointer group flex items-center justify-center bg-neutral-950 overflow-hidden"
+                      title="Click to play tutorial"
+                    >
+                      <img
+                        src={`https://img.youtube.com/vi/${getYouTubeVideoId(tutorialConfig.mobileVideoUrl)}/hqdefault.jpg`}
+                        alt="Mobile Extension Tutorial"
+                        loading="lazy"
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-80"
+                        onError={(e) => {
+                          (e.target as HTMLElement).style.display = 'none';
+                        }}
+                      />
+                      <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors" />
+                      <div className="absolute w-14 h-14 rounded-full bg-red-600/90 group-hover:bg-red-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 transition-transform">
+                        <Play className="w-6 h-6 fill-white ml-0.5" />
+                      </div>
+                    </div>
+                  )
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-neutral-500 space-y-2">
                     <Youtube className="w-10 h-10 text-red-500/40" />
