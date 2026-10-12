@@ -49,6 +49,14 @@
   ],
   "rewrites": [
     {
+      "source": "/api/users/me",
+      "destination": "/api/users/me"
+    },
+    {
+      "source": "/api/user/me",
+      "destination": "/api/users/me"
+    },
+    {
       "source": "/api/reseller/access/grant",
       "destination": "/api/reseller/access?action=grant"
     },
