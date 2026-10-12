@@ -53,8 +53,6 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
   const [historyOpen, setHistoryOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [tutorialSettingsOpen, setTutorialSettingsOpen] = useState(false);
-  const [desktopPlaying, setDesktopPlaying] = useState(false);
-  const [mobilePlaying, setMobilePlaying] = useState(false);
   const [currentHeroIndex, setCurrentHeroIndex] = useState(0);
 
   // Hero Rotation
@@ -385,29 +383,13 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
               {/* Video Embed */}
               <div className="relative aspect-video w-full bg-black">
                 {desktopEmbedUrl ? (
-                  desktopPlaying ? (
-                    <iframe
-                      src={`${desktopEmbedUrl}${desktopEmbedUrl.includes('?') ? '&' : '?'}autoplay=1`}
-                      title="Desktop Extension Tutorial"
-                      className="w-full h-full border-0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowFullScreen
-                    />
-                  ) : (
-                    <div 
-                      onClick={() => setDesktopPlaying(true)}
-                      className="relative w-full h-full cursor-pointer group flex flex-col items-center justify-center bg-gradient-to-br from-neutral-900 via-[#0d0e12] to-black overflow-hidden border border-neutral-800/60 p-6 text-center select-none"
-                      title="Click to play tutorial"
-                    >
-                      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-red-600/95 group-hover:bg-red-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 active:scale-95 transition-all mb-3">
-                        <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-white ml-0.5" />
-                      </div>
-                      <span className="text-xs sm:text-sm font-bold text-white group-hover:text-blue-300 transition-colors">
-                        Watch Desktop Tutorial
-                      </span>
-                      <span className="text-[10px] text-neutral-400 mt-0.5">Click to load YouTube player</span>
-                    </div>
-                  )
+                  <iframe
+                    src={desktopEmbedUrl}
+                    title="Desktop Extension Tutorial"
+                    className="w-full h-full border-0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                  />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-neutral-500 space-y-2">
                     <Youtube className="w-10 h-10 text-red-500/40" />
@@ -453,29 +435,13 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
               {/* Video Embed */}
               <div className="relative aspect-video w-full bg-black">
                 {mobileEmbedUrl ? (
-                  mobilePlaying ? (
-                    <iframe
-                      src={`${mobileEmbedUrl}${mobileEmbedUrl.includes('?') ? '&' : '?'}autoplay=1`}
-                      title="Mobile Extension Tutorial"
-                      className="w-full h-full border-0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowFullScreen
-                    />
-                  ) : (
-                    <div 
-                      onClick={() => setMobilePlaying(true)}
-                      className="relative w-full h-full cursor-pointer group flex flex-col items-center justify-center bg-gradient-to-br from-neutral-900 via-[#0d0e12] to-black overflow-hidden border border-neutral-800/60 p-6 text-center select-none"
-                      title="Click to play tutorial"
-                    >
-                      <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-emerald-600/95 group-hover:bg-emerald-600 text-white flex items-center justify-center shadow-2xl group-hover:scale-110 active:scale-95 transition-all mb-3">
-                        <Play className="w-6 h-6 sm:w-7 sm:h-7 fill-white ml-0.5" />
-                      </div>
-                      <span className="text-xs sm:text-sm font-bold text-white group-hover:text-emerald-300 transition-colors">
-                        Watch Mobile Tutorial
-                      </span>
-                      <span className="text-[10px] text-neutral-400 mt-0.5">Click to load YouTube player</span>
-                    </div>
-                  )
+                  <iframe
+                    src={mobileEmbedUrl}
+                    title="Mobile Extension Tutorial"
+                    className="w-full h-full border-0"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                  />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center text-neutral-500 space-y-2">
                     <Youtube className="w-10 h-10 text-red-500/40" />

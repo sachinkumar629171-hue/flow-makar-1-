@@ -851,13 +851,13 @@ app.get('/api/users', async (req, res) => {
   return res.json({ users: [] });
 });
 
-// GET currently logged-in user profile ONLY
-app.get('/api/users/me', async (req, res) => {
+// GET currently logged-in user profile ONLY (Standard Bearer Auth)
+app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
   const callingUser = await getCallingUser(req);
   if (!callingUser) {
-    return res.status(401).json({ error: 'Unauthorized: Session token required or invalid' });
+    return res.status(401).json({ success: false, error: 'Unauthorized: Session token required or invalid' });
   }
-  res.json({ user: sanitizeSafeUser(callingUser) });
+  res.json({ success: true, user: sanitizeSafeUser(callingUser) });
 });
 
 // POST signup

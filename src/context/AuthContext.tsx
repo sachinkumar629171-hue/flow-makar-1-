@@ -416,6 +416,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastUpdatedResellersRef = useRef<Map<string, { timestamp: number; data: Partial<Reseller> }>>(new Map());
   const lastConfigUpdateRef = useRef<number>(0);
 
+  // Industry-Standard Authenticated Profile Sync: On load/refresh, fetch authoritative plan, credits, validity with Bearer token
+  useEffect(() => {
+    const token = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken;
+    if (!token) return;
+
+    fetch(apiUrl('/api/users/me'), {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'x-session-token': token,
+      },
+    })
+      .then(async res => {
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.user) {
+            setCurrentUser(prev => {
+              const fresh = { ...(prev || {}), ...data.user };
+              try {
+                localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(fresh));
+              } catch {}
+              return fresh;
+            });
+          }
+        } else if (res.status === 401 || res.status === 403) {
+          console.warn('[Auth] Session token invalid or user removed from database. Logging out.');
+          logout();
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Current user's plan extension (fallback to basic)
   const activePlan = currentUser?.plan || 'basic';
   const extensionConfig = planExtensions[activePlan] || planExtensions.basic;
