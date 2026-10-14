@@ -524,6 +524,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (currentUser) {
         localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(currentUser));
+        if (currentUser.role === 'admin' || ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email?.toLowerCase())) {
+          localStorage.setItem('flowmaker_is_admin', 'true');
+        }
         
         const isUltraOrUnlimited = currentUser.plan === 'ultra' || currentUser.plan === 'unlimited';
         const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';

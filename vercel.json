@@ -1,5 +1,8 @@
 {
   "version": 2,
+  "framework": "vite",
+  "outputDirectory": "dist",
+  "buildCommand": "npm run build",
   "headers": [
     {
       "source": "/assets/(.*)",

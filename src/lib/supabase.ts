@@ -11,15 +11,27 @@ let currentKey: string = '';
 export function isCurrentUserAdmin(): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    const rawUser = localStorage.getItem('flowmaker_user') || localStorage.getItem('flow_current_user');
+    const adminEmails = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'];
+    const rawUser = localStorage.getItem('flowmaker_user') || localStorage.getItem('flow_current_user') || localStorage.getItem('flow_user');
     if (rawUser) {
       const u = JSON.parse(rawUser);
-      if (u.role === 'admin' || (u.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(u.email.toLowerCase()))) {
+      if (u.role === 'admin' || (u.email && adminEmails.includes(u.email.toLowerCase()))) {
         return true;
       }
     }
     const adminFlag = localStorage.getItem('flowmaker_is_admin');
     if (adminFlag === 'true') return true;
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key) {
+        const val = localStorage.getItem(key);
+        if (val && (adminEmails.some(e => val.toLowerCase().includes(e)) || val.includes('"role":"admin"'))) {
+          localStorage.setItem('flowmaker_is_admin', 'true');
+          return true;
+        }
+      }
+    }
   } catch {}
   return false;
 }
