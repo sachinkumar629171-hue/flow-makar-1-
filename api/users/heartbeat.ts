@@ -36,8 +36,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+  const supaUrl = (req.headers['x-supabase-url'] as string) || 
+                  process.env.VITE_SUPABASE_URL || 
+                  process.env.SUPABASE_URL || 
+                  'https://dhtnplocynujkkhqieut.supabase.co';
+  const supaKey = (req.headers['x-supabase-anon-key'] as string) || 
+                  process.env.VITE_SUPABASE_ANON_KEY || 
+                  process.env.SUPABASE_ANON_KEY || 
+                  '';
 
   if (supaUrl && supaKey) {
     try {

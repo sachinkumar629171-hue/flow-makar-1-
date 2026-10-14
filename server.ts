@@ -779,9 +779,41 @@ async function getCallingUser(req: any): Promise<any | null> {
   return user;
 }
 
-function sanitizeSafeUser(u: any) {
-  // STRICT SECURITY: Never send password in any client response
-  const { password, ...safe } = u;
+function sanitizeSafeUser(u: any, isSelf = false, isAdmin = false) {
+  if (!u) return null;
+
+  // Strict rule: NEVER return passwords under any circumstances
+  if (isAdmin) {
+    const { password, sessionToken, session_token, ...adminSafe } = u;
+    return adminSafe;
+  }
+
+  // Regular user (their own profile upon login or in user list):
+  // User requested: "sirf jaruri chije rahenge vahi jaise name,plan, credit, kitna days left etc"
+  // Strictly NO: resellerId, extensionAccess, isOnline, lastActive, whatsapp, telegram, referralCode, password
+  const safe: any = {
+    id: u.id,
+    name: u.name || 'User',
+    email: u.email || '',
+    plan: u.plan || 'basic',
+    credits: Number(u.credits) ?? 100,
+    maxCredits: Number(u.maxCredits) ?? 100,
+    planDaysLeft: Number(u.planDaysLeft) ?? 30,
+    role: u.role || 'user',
+    status: u.status || 'active',
+    avatarColor: u.avatarColor || 'from-purple-600 to-indigo-600',
+  };
+
+  if (u.planExpiresAt) {
+    safe.planExpiresAt = u.planExpiresAt;
+  }
+
+  // Only include sessionToken on direct login/signup for the user themselves so client can store it in localStorage
+  // Never expose sessionToken in /api/users lists or to other users!
+  if (isSelf && u.sessionToken) {
+    safe.sessionToken = u.sessionToken;
+  }
+
   return safe;
 }
 
@@ -791,9 +823,9 @@ app.get('/api/health', (req, res) => {
 });
 
 // GET users: Strictly protected
-// 1. Admin gets all users (passwords stripped)
-// 2. Reseller gets only their own assigned users (passwords stripped)
-// 3. Regular user with valid session token gets ONLY their own profile
+// 1. Admin gets all users (passwords and session tokens stripped)
+// 2. Reseller gets only their own assigned users
+// 3. Regular user with valid session token gets ONLY their own profile (essential fields only)
 // 4. Public visitors receive empty list [] - zero database leakage
 app.get('/api/users', async (req, res) => {
   const now = Date.now();
@@ -826,9 +858,9 @@ app.get('/api/users', async (req, res) => {
   const resellerId = (req.headers['x-reseller-id'] || req.query.resellerId || '').toString().trim();
   const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
 
-  // 1. Admin: full user list
+  // 1. Admin: full user list (passwords and session tokens stripped)
   if (isAdmin) {
-    return res.json({ users: db.users.map(u => sanitizeSafeUser(u)) });
+    return res.json({ users: db.users.map(u => sanitizeSafeUser(u, false, true)) });
   }
 
   // 2. Reseller: only their portal's users
@@ -837,14 +869,14 @@ app.get('/api/users', async (req, res) => {
     if (matchingReseller) {
       const resellerUsers = db.users
         .filter(u => u.resellerId === matchingReseller.id)
-        .map(u => sanitizeSafeUser(u));
+        .map(u => sanitizeSafeUser(u, false, false));
       return res.json({ users: resellerUsers });
     }
   }
 
-  // 3. Logged-in user: ONLY their own user profile!
+  // 3. Logged-in user: ONLY their own user profile (essential fields only)!
   if (callingUser) {
-    return res.json({ users: [sanitizeSafeUser(callingUser)] });
+    return res.json({ users: [sanitizeSafeUser(callingUser, false, false)] });
   }
 
   // 4. Public or unauthenticated: empty list
@@ -898,7 +930,7 @@ app.post('/api/users/signup', async (req, res) => {
       });
     }
 
-    return res.json({ success: true, user: existing });
+    return res.json({ success: true, user: sanitizeSafeUser(existing, true, false) });
   }
 
   const colors = [
@@ -950,7 +982,7 @@ app.post('/api/users/signup', async (req, res) => {
     });
   }
 
-  res.json({ success: true, user: newUser });
+  res.json({ success: true, user: sanitizeSafeUser(newUser, true, false) });
 });
 
 // POST sync multiple users (e.g. from initial local state)
@@ -1072,7 +1104,8 @@ app.post('/api/users/login', async (req, res) => {
     }).catch(() => {});
   }
 
-  res.json({ success: true, user: sanitizeSafeUser(user) });
+  const isUserAdmin = user.role === 'admin' || isSystemAdmin;
+  res.json({ success: true, user: sanitizeSafeUser(user, true, isUserAdmin) });
 });
 
 // POST logout
@@ -1191,7 +1224,7 @@ app.post('/api/users/update', async (req, res) => {
     });
   }
 
-  res.json({ success: true, user: db.users[userIndex] });
+  res.json({ success: true, user: sanitizeSafeUser(db.users[userIndex], false, isRequestAdminUser(req)) });
 });
 
 // DELETE user

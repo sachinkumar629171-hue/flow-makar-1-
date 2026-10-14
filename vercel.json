@@ -49,6 +49,22 @@
   ],
   "rewrites": [
     {
+      "source": "/api/users/login",
+      "destination": "/api/users/login"
+    },
+    {
+      "source": "/api/users/heartbeat",
+      "destination": "/api/users/heartbeat"
+    },
+    {
+      "source": "/api/users",
+      "destination": "/api/users"
+    },
+    {
+      "source": "/api/users/update",
+      "destination": "/api/users/update"
+    },
+    {
       "source": "/api/users/me",
       "destination": "/api/users/me"
     },
