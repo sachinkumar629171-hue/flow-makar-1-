@@ -2017,15 +2017,75 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setTimeout(() => bc.close(), 1000);
       } catch {}
 
-      // Update Supabase so older devices running this account immediately terminate
+      // Update Supabase & server database so older devices running this account immediately terminate
       const supa = getSupabase();
       if (supa) {
         supa.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).ilike('email', cleanEmail).then(() => {});
       }
+      fetch(apiUrl('/api/users/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass, sessionToken, forceLogin }),
+      }).catch(() => {});
+
       return { success: true };
     }
 
-    // 1. Direct Supabase Database check
+    // 1. First, consult central server login for strict authoritative single-device lock verification
+    try {
+      const serverRes = await fetch(apiUrl('/api/users/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass, forceLogin }),
+      });
+      const serverData = await serverRes.json().catch(() => ({}));
+      if (!serverRes.ok) {
+        if (serverRes.status === 403) {
+          return {
+            success: false,
+            isDeviceLocked: serverData.isDeviceLocked || false,
+            error: serverData.error || '⚠️ Yeh account pehle se kisi dusre device / browser par login hai! Kripya pehle waha se logout karein.'
+          };
+        }
+        if (serverRes.status === 401) {
+          return { success: false, error: serverData.error || 'Incorrect password. Please try again.' };
+        }
+      } else if (serverData.success && serverData.user) {
+        const sUser: User = serverData.user;
+        if (sUser.sessionToken) {
+          localStorage.setItem('flowmaker_session_token', sUser.sessionToken);
+          try {
+            const bc = new BroadcastChannel('flow_user_presence');
+            bc.postMessage({
+              type: 'NEW_LOGIN',
+              email: sUser.email,
+              sessionToken: sUser.sessionToken,
+            });
+            setTimeout(() => bc.close(), 1000);
+          } catch {}
+        }
+        setUsers(prev => {
+          const exists = prev.some(u => u.id === sUser.id || u.email.toLowerCase() === sUser.email.toLowerCase());
+          return exists ? prev.map(u => (u.id === sUser.id || u.email.toLowerCase() === sUser.email.toLowerCase()) ? sUser : u) : [sUser, ...prev];
+        });
+        setCurrentUser(sUser);
+
+        // Also sync to Supabase if connected
+        const supa = getSupabase();
+        if (supa) {
+          safeSupabaseUserUpdate(supa, sUser.id, sUser.email, {
+            session_token: sUser.sessionToken,
+            is_online: true,
+            last_active: new Date().toISOString(),
+          }).catch(() => {});
+        }
+        return { success: true };
+      }
+    } catch (err) {
+      console.warn('Central server login attempt error, checking Supabase direct:', err);
+    }
+
+    // 2. Direct Supabase Database check if central server was unreachable
     const supabase = getSupabase();
     if (supabase) {
       try {
@@ -2115,7 +2175,54 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    // 2. Direct login via central online server endpoint
+    try {
+      const res = await fetch(apiUrl('/api/users/login'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+      });
 
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          const serverUser: User = data.user;
+          if (serverUser.sessionToken) {
+            localStorage.setItem('flowmaker_session_token', serverUser.sessionToken);
+            try {
+              const bc = new BroadcastChannel('flow_user_presence');
+              bc.postMessage({
+                type: 'NEW_LOGIN',
+                email: serverUser.email,
+                sessionToken: serverUser.sessionToken,
+              });
+              setTimeout(() => bc.close(), 1000);
+            } catch {}
+          }
+          // Update local memory and current user
+          setUsers(prev => {
+            const exists = prev.some(u => u.id === serverUser.id || u.email.toLowerCase() === serverUser.email.toLowerCase());
+            if (exists) {
+              return prev.map(u => (u.id === serverUser.id || u.email.toLowerCase() === serverUser.email.toLowerCase()) ? serverUser : u);
+            }
+            return [serverUser, ...prev];
+          });
+          setCurrentUser(serverUser);
+          return { success: true };
+        }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          return { success: false, error: errData.error || 'Incorrect password. Please try again.' };
+        }
+        if (res.status === 403) {
+          return { success: false, error: errData.error || 'This account has been suspended by administration.' };
+        }
+        // If 404 or other, fallback to check local cache
+      }
+    } catch (err) {
+      console.warn('Direct server login call error, checking local/sync fallback:', err);
+    }
 
     // 2. Fallback: Check local memory or fetch latest users list from server
     let user = users.find(u => u.email.toLowerCase() === cleanEmail);
