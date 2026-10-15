@@ -21,79 +21,12 @@
           "value": "public, max-age=31536000, immutable"
         }
       ]
-    },
-    {
-      "source": "/api/extension/servers",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-store, no-cache, must-revalidate"
-        }
-      ]
-    },
-    {
-      "source": "/api/extension/user",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "no-store, no-cache, must-revalidate"
-        }
-      ]
-    },
-    {
-      "source": "/api/extension/version",
-      "headers": [
-        {
-          "key": "Cache-Control",
-          "value": "public, max-age=3600, s-maxage=3600"
-        }
-      ]
     }
   ],
   "rewrites": [
     {
-      "source": "/api/users/login",
-      "destination": "/api/users/login"
-    },
-    {
-      "source": "/api/users/heartbeat",
-      "destination": "/api/users/heartbeat"
-    },
-    {
-      "source": "/api/users",
-      "destination": "/api/users"
-    },
-    {
-      "source": "/api/users/update",
-      "destination": "/api/users/update"
-    },
-    {
-      "source": "/api/users/me",
-      "destination": "/api/users/me"
-    },
-    {
-      "source": "/api/user/me",
-      "destination": "/api/users/me"
-    },
-    {
-      "source": "/api/reseller/access/grant",
-      "destination": "/api/reseller/access?action=grant"
-    },
-    {
-      "source": "/api/reseller/access/revoke",
-      "destination": "/api/reseller/access?action=revoke"
-    },
-    {
-      "source": "/api/reseller/access/status",
-      "destination": "/api/reseller/access?action=status"
-    },
-    {
-      "source": "/api/reseller/grant-access",
-      "destination": "/api/reseller/access?action=grant"
-    },
-    {
-      "source": "/api/reseller/revoke-access",
-      "destination": "/api/reseller/access?action=revoke"
+      "source": "/api/(.*)",
+      "destination": "/api/index"
     },
     {
       "source": "/((?!api/).*)",
@@ -101,4 +34,3 @@
     }
   ]
 }
-
