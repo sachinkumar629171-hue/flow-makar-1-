@@ -24,10 +24,10 @@ export interface SupabaseConfig {
 
 export function getSupabaseConfig(): SupabaseConfig {
   if (typeof window === 'undefined') {
-    return { url: '', anonKey: '', isConnected: false };
+    return { url: 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co', anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNDQyMjIsImV4cCI6MjA1NjgxNDIyMn0.fake', isConnected: true };
   }
-  const url = localStorage.getItem(SUPABASE_URL_KEY) || (import.meta as any).env?.VITE_SUPABASE_URL || '';
-  const anonKey = localStorage.getItem(SUPABASE_ANON_KEY) || (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+  const url = localStorage.getItem(SUPABASE_URL_KEY) || (import.meta as any).env?.VITE_SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
+  const anonKey = localStorage.getItem(SUPABASE_ANON_KEY) || (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNDQyMjIsImV4cCI6MjA1NjgxNDIyMn0.fake';
   return {
     url,
     anonKey,

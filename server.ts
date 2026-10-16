@@ -57,8 +57,8 @@ const safeServerSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: 
 };
 
 function getServerSupabase(): SupabaseClient | null {
-  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
-  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
+  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNDQyMjIsImV4cCI6MjA1NjgxNDIyMn0.fake';
   const configKey = `${url}_${key}`;
   if (serverSupabaseClient && lastSupabaseConfigStr === configKey) {
     return serverSupabaseClient;
