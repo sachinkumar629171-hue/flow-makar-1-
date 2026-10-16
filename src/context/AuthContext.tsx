@@ -667,7 +667,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const pollCentralServer = async () => {
       // Strictly disabled for non-admin users: normal users do not create any background polling requests
       const isUserAdmin = currentUser?.role === 'admin' || 
-        (currentUser?.email && currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com');
+        (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
       if (!isUserAdmin) return;
 
       try {
@@ -808,7 +808,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
                   planDaysLeft: Number(su.plan_days_left) ?? 30,
                   planExpiresAt: su.plan_expires_at || (su.created_at ? new Date(new Date(su.created_at).getTime() + (Number(su.plan_days_left) || 30) * 86400000).toISOString() : undefined),
-                  role: (su.email && su.email.toLowerCase() === 'sachinkumar629171@gmail.com') ? 'admin' : ((su.role as any) || 'user'),
+                  role: (su.email && (su.email.toLowerCase() === 'sachinxexplore@gmail.com' || su.email.toLowerCase() === 'sachinkumar629171@gmail.com')) ? 'admin' : ((su.role as any) || 'user'),
                   resellerId: su.reseller_id,
                   resellerName: su.reseller_name,
                   createdAt: su.created_at || new Date().toISOString(),
@@ -951,7 +951,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // 2. Fetch config & fallback server (Strictly token-authenticated: users only fetch their own profile)
         const activeToken = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
         const isUserAdmin = currentUser?.role === 'admin' || 
-          (currentUser?.email && currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com');
+          (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
 
         const userHeaders: Record<string, string> = activeToken ? { 'x-session-token': activeToken } : {};
 
@@ -1121,7 +1121,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const isUserAdmin = currentUser?.role === 'admin' || 
-      (currentUser?.email && currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com');
+      (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
 
     let pollInterval: any = null;
     if (isUserAdmin) {
@@ -1230,7 +1230,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }));
           }
           if (type === 'NEW_LOGIN' && email && currentUser) {
-            const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
+            const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinxexplore@gmail.com' || currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
             const localToken = localStorage.getItem('flowmaker_session_token');
             if (!isCurrentUserAdmin && currentUser.email.toLowerCase() === email.toLowerCase() && sessionToken && localToken && sessionToken !== localToken) {
               console.warn('[SingleSession] BroadcastChannel: new login detected on another tab/window! Logging out old session.');
@@ -1427,7 +1427,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [promptConfig]);
 
-  const adminEmails = ['sachinkumar629171@gmail.com'];
+  const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
   const isAdmin = (currentUser?.email && adminEmails.includes(currentUser.email.toLowerCase())) || currentUser?.role === 'admin';
 
   const resellerLogin = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
@@ -1976,7 +1976,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
-    const adminEmails = ['sachinkumar629171@gmail.com'];
+    const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
     // Special Check for configured Admin credentials
     if (adminEmails.includes(cleanEmail) && cleanPass === ADMIN_PASSWORD) {
       let adminUser = users.find(u => adminEmails.includes(u.email.toLowerCase()));
@@ -2104,7 +2104,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           // Single-Device Lock: If account is active on another device, block new login until old device logs out
-          const isSystemAdmin = cleanEmail === 'sachinkumar629171@gmail.com';
+          const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
           const currentLocalToken = localStorage.getItem('flowmaker_session_token');
           if (!isSystemAdmin && !forceLogin && supaUser.is_online && supaUser.session_token) {
             const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;

@@ -1,6 +1,6 @@
 import { User, ShowcaseVideo, Generation, DeviceSession, Reseller } from '../types';
 
-export const ADMIN_EMAIL = 'sachinkumar629171@gmail.com';
+export const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
 export const ADMIN_PASSWORD = '147258';
 
 export const INITIAL_RESELLERS: Reseller[] = [];
