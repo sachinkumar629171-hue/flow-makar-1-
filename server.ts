@@ -48,61 +48,11 @@ interface DatabaseSchema {
 let serverSupabaseClient: SupabaseClient | null = null;
 let lastSupabaseConfigStr = '';
 
-function isBlockedSupabaseServerRequest(urlStr: string): boolean {
-  if (!urlStr) return false;
-  try {
-    const parsed = new URL(urlStr, 'https://dummy.co');
-    const path = parsed.pathname.toLowerCase();
-    const query = parsed.search.toLowerCase();
-    
-    // 1. app_config?select=*
-    if (path.includes('/rest/v1/app_config')) {
-      return true;
-    }
-    
-    // 2. resellers?select=*
-    if (path.includes('/rest/v1/resellers')) {
-      return true;
-    }
-    
-    // 3. users?select=* (bulk select of users table)
-    if (path.includes('/rest/v1/users')) {
-      const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
-      const hasSpecificFilter = query.includes('id=eq.') || 
-                                query.includes('id=') ||
-                                query.includes('email=eq.') || 
-                                query.includes('email=ilike.') || 
-                                query.includes('email=') ||
-                                query.includes('session_token=eq.') ||
-                                query.includes('session_token=') ||
-                                query.includes('session_token.') ||
-                                query.includes('or=');
-      if (hasWildcardSelect && !hasSpecificFilter) {
-        return true;
-      }
-    }
-  } catch {
-    const lower = urlStr.toLowerCase();
-    if (lower.includes('/rest/v1/app_config')) return true;
-    if (lower.includes('/rest/v1/resellers')) return true;
-    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=') && !lower.includes('session_token')) return true;
-  }
+function isBlockedSupabaseServerRequest(_urlStr: string): boolean {
   return false;
 }
 
 const safeServerSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-  const urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
-  if (isBlockedSupabaseServerRequest(urlStr)) {
-    // Intercept and strictly block: do not send request to Supabase
-    return Promise.resolve(new Response(JSON.stringify([]), {
-      status: 200,
-      statusText: 'OK',
-      headers: {
-        'Content-Type': 'application/json',
-        'content-range': '0-0/0',
-      },
-    }));
-  }
   return fetch(input, init);
 };
 
@@ -381,37 +331,18 @@ async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptC
   }
 }
 
-const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
+const ADMIN_EMAIL = 'sachinkumar629171@gmail.com';
 const ADMIN_PASSWORD = '147258';
 
 const DEFAULT_USERS = [
   {
     id: 'usr-admin-1',
     name: 'Sachin Kumar',
-    email: 'sachinxexplore@gmail.com',
-    password: ADMIN_PASSWORD,
-    whatsapp: '+91 9876543210',
-    telegram: '@sachinkumar_admin',
-    referralCode: 'FLOWADMIN',
-    plan: 'ultra',
-    credits: 45000,
-    maxCredits: 45000,
-    planDaysLeft: 30,
-    role: 'admin',
-    createdAt: '2025-01-10T10:00:00Z',
-    avatarColor: 'from-purple-600 to-indigo-600',
-    status: 'active',
-    isOnline: true,
-    lastActive: new Date().toISOString(),
-  },
-  {
-    id: 'usr-admin-2',
-    name: 'Sachin Kumar (Alt)',
     email: 'sachinkumar629171@gmail.com',
     password: ADMIN_PASSWORD,
     whatsapp: '+91 9876543210',
     telegram: '@sachinkumar_admin',
-    referralCode: 'FLOWADMIN2',
+    referralCode: 'FLOWADMIN',
     plan: 'ultra',
     credits: 45000,
     maxCredits: 45000,
@@ -523,7 +454,7 @@ function initStorage() {
       }
 
       // Ensure admins exist
-      const adminEmails = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'];
+      const adminEmails = ['sachinkumar629171@gmail.com'];
       for (const admEmail of adminEmails) {
         const adminExists = db.users.some(u => u.email && u.email.toLowerCase() === admEmail.toLowerCase());
         if (!adminExists) {
@@ -531,6 +462,12 @@ function initStorage() {
           if (matchDefault) {
             db.users.unshift(matchDefault);
           }
+        }
+      }
+      // Ensure sachinxexplore@gmail.com is NOT admin
+      for (const u of db.users) {
+        if (u.email && u.email.toLowerCase() === 'sachinxexplore@gmail.com' && u.role === 'admin') {
+          u.role = 'user';
         }
       }
       let changed = false;
@@ -563,7 +500,7 @@ function saveStorage() {
 }
 
 function checkAndConvertToBasic(u: any): boolean {
-  if (!u || u.role === 'admin' || (u.email && u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || (u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com')) {
+  if (!u || (u.role === 'admin' && u.email?.toLowerCase() !== 'sachinxexplore@gmail.com') || (u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com')) {
     return false;
   }
   if (u.plan === 'ultra' || u.plan === 'unlimited') {
@@ -692,7 +629,7 @@ function markUserOnline(emailOrId?: string, sessionToken?: string): void {
 
 // ======================== API ROUTES ========================
 
-const SYSTEM_ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const SYSTEM_ADMIN_EMAILS = new Set(['sachinkumar629171@gmail.com']);
 
 function isRequestAdminUser(req: any): boolean {
   const token = (
@@ -709,7 +646,7 @@ function isRequestAdminUser(req: any): boolean {
 
   if (token) {
     const user = db.users.find(u => u.sessionToken === token || u.id === token);
-    if (user && (user.role === 'admin' || (user.email && SYSTEM_ADMIN_EMAILS.has(user.email.toLowerCase())))) {
+    if (user && user.email?.toLowerCase() !== 'sachinxexplore@gmail.com' && (user.role === 'admin' || (user.email && SYSTEM_ADMIN_EMAILS.has(user.email.toLowerCase())))) {
       return true;
     }
   }
@@ -828,6 +765,53 @@ app.get('/api/users', async (req, res) => {
 
   // 1. Admin: full user list
   if (isAdmin) {
+    const supa = getServerSupabase();
+    if (supa) {
+      try {
+        const { data: supaUsers } = await supa.from('users').select('*');
+        if (supaUsers && Array.isArray(supaUsers)) {
+          let supaChanged = false;
+          for (const su of supaUsers) {
+            if (su.id && !su.id.startsWith('admin_config_') && !su.id.startsWith('sys_config_')) {
+              const cleanSupaEmail = (su.email || '').trim().toLowerCase();
+              const existingIdx = db.users.findIndex(u => (su.id && u.id === su.id) || (cleanSupaEmail && u.email && u.email.toLowerCase() === cleanSupaEmail));
+              const mapped = {
+                id: su.id,
+                name: su.name || '',
+                email: su.email || '',
+                password: su.password || '',
+                plan: su.plan || 'basic',
+                credits: Number(su.credits) !== undefined && !isNaN(Number(su.credits)) ? Number(su.credits) : (su.plan === 'ultra' ? 45000 : 100),
+                maxCredits: Number(su.max_credits) || (su.plan === 'ultra' ? 45000 : 100),
+                planDaysLeft: Number(su.plan_days_left) ?? 30,
+                role: (cleanSupaEmail === 'sachinkumar629171@gmail.com') ? 'admin' : (su.role === 'admin' && cleanSupaEmail !== 'sachinxexplore@gmail.com' ? 'admin' : 'user'),
+                whatsapp: su.whatsapp || '',
+                telegram: su.telegram || '',
+                resellerId: su.reseller_id,
+                resellerName: su.reseller_name,
+                status: su.status || 'active',
+                isOnline: Boolean(su.is_online),
+                lastActive: su.last_active || su.created_at || new Date().toISOString(),
+                createdAt: su.created_at || new Date().toISOString(),
+                sessionToken: su.session_token || '',
+                avatarColor: su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'
+              };
+              if (existingIdx >= 0) {
+                db.users[existingIdx] = { ...mapped, ...db.users[existingIdx] };
+              } else {
+                db.users.push(mapped);
+                supaChanged = true;
+              }
+            }
+          }
+          if (supaChanged) {
+            saveStorage();
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching Supabase users for admin in /api/users:', err);
+      }
+    }
     return res.json({ users: db.users.map(u => sanitizeSafeUser(u)) });
   }
 
@@ -977,7 +961,7 @@ app.post('/api/users/login', async (req, res) => {
   }
 
   const cleanEmail = cleanEmailString(email);
-  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
+  const isSystemAdmin = cleanEmail === 'sachinkumar629171@gmail.com';
 
   // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
   let supaUser: any = null;
@@ -2789,7 +2773,7 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   }
 
   // Master key check
-  if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com' || apiKey === 'sachinkumar629171@gmail.com') {
+  if (apiKey === 'admin_master_key' || apiKey === 'sachinkumar629171@gmail.com') {
     if (resellerId) {
       return allResellers.find(r => r.id === resellerId) || allResellers[0] || { id: 'admin', portalName: 'Admin Portal', email: 'admin' };
     }
@@ -2852,6 +2836,46 @@ app.get('/api/resellers', async (req, res) => {
 
   // 1. Admin gets all resellers
   if (isAdmin) {
+    const supa = getServerSupabase();
+    if (supa) {
+      try {
+        const { data: supaResellers } = await supa.from('resellers').select('*');
+        if (supaResellers && Array.isArray(supaResellers)) {
+          let resChanged = false;
+          for (const sr of supaResellers) {
+            if (sr.id) {
+              const cleanEmail = (sr.email || '').trim().toLowerCase();
+              const existingIdx = db.resellers.findIndex(r => r.id === sr.id || (cleanEmail && r.email && r.email.toLowerCase() === cleanEmail));
+              const mapped = {
+                id: sr.id,
+                portalName: sr.portal_name || sr.portalName || '',
+                email: sr.email || '',
+                password: sr.password || '',
+                userLimit: sr.user_limit || sr.userLimit || sr.max_users || 20,
+                daysLeft: sr.days_left !== undefined ? sr.days_left : 30,
+                expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
+                expiresAt: sr.expires_at || sr.expiresAt,
+                status: sr.status || 'active',
+                createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
+                notes: sr.notes || '',
+                apiKey: sr.api_key || sr.apiKey || getResellerApiKey(sr),
+              };
+              if (existingIdx >= 0) {
+                db.resellers[existingIdx] = { ...mapped, ...db.resellers[existingIdx] };
+              } else {
+                db.resellers.push(mapped);
+                resChanged = true;
+              }
+            }
+          }
+          if (resChanged) {
+            saveStorage();
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching Supabase resellers for admin in /api/resellers:', err);
+      }
+    }
     const resellersWithKeys = db.resellers.map(r => ({
       ...r,
       apiKey: r.apiKey || getResellerApiKey(r),

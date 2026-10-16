@@ -113,26 +113,7 @@
       "lastActive": "2026-10-05T10:53:04.324Z",
       "avatarColor": "from-purple-600 to-indigo-600"
     },
-    {
-      "id": "usr-admin-1",
-      "name": "Sachin Kumar",
-      "email": "sachinxexplore@gmail.com",
-      "password": "147258",
-      "whatsapp": "+91 9876543210",
-      "telegram": "@sachinkumar_admin",
-      "referralCode": "FLOWADMIN",
-      "plan": "ultra",
-      "credits": 45000,
-      "maxCredits": 45000,
-      "planDaysLeft": 30,
-      "role": "admin",
-      "createdAt": "2025-01-10T10:00:00Z",
-      "avatarColor": "from-purple-600 to-indigo-600",
-      "status": "active",
-      "isOnline": false,
-      "lastActive": "2026-10-10T15:08:46.949Z",
-      "sessionToken": ""
-    },
+
     {
       "id": "usr-admin-1",
       "name": "Sachin Kumar",
@@ -343,7 +324,7 @@
       "portalName": "Sachin portal 2",
       "email": "sachin.portal2@gmail.com",
       "userLimit": 10,
-      "daysLeft": 26,
+      "daysLeft": 19,
       "status": "active",
       "apiKey": "flw_res_resellermum1n75tl6gu_7361636869",
       "expiresAt": "2026-11-04T10:52:54.106Z"
@@ -440,7 +421,7 @@
             "Reseller support",
             "image generate"
           ],
-          "buttonText": "Get Pro \u2014 Contact Your Reseller",
+          "buttonText": "Get Pro — Contact Your Reseller",
           "color": "blue"
         },
         {
@@ -462,7 +443,7 @@
             "Early access to new features",
             "Unlimited  image generate"
           ],
-          "buttonText": "Get Ultra \u2014 Contact Your Reseller",
+          "buttonText": "Get Ultra — Contact Your Reseller",
           "badge": "MOST POPULAR",
           "color": "purple"
         },
@@ -471,8 +452,8 @@
           "name": "Flow Unlimited",
           "label": "UNLIMITED",
           "subtitle": "Contact Your Reseller",
-          "credits": "\u221e",
-          "videos": "\u221e",
+          "credits": "∞",
+          "videos": "∞",
           "features": [
             "Unlimited credits",
             "Unlimited AI videos",
@@ -487,7 +468,7 @@
             "Custom session allocation",
             "Unlimited image generate"
           ],
-          "buttonText": "Get Unlimited \u2014 Contact Your Reseller",
+          "buttonText": "Get Unlimited — Contact Your Reseller",
           "badge": "BEST VALUE",
           "color": "amber"
         }

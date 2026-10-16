@@ -666,15 +666,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const pollCentralServer = async () => {
       // Strictly disabled for non-admin users: normal users do not create any background polling requests
-      const isUserAdmin = currentUser?.role === 'admin' || 
-        (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+      const isUserAdmin = (currentUser?.role === 'admin' && currentUser?.email?.toLowerCase() !== 'sachinxexplore@gmail.com') || 
+        (currentUser?.email && currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com');
       if (!isUserAdmin) return;
 
       try {
-        // NOTE: Requests to app_config?select=*, resellers?select=*, and users?select=* are strictly blocked and disabled.
-        // Central server endpoints /api/users, /api/resellers, /api/config handle all syncing cleanly.
-        const supabase: any = null;
-        if (false as boolean) {
+        const supabase = getSupabase();
+        if (supabase) {
           // 0. Fetch dedicated app_config table if present in Supabase
           try {
             const { data: appConfigs } = await supabase.from('app_config').select('*');
@@ -808,7 +806,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
                   planDaysLeft: Number(su.plan_days_left) ?? 30,
                   planExpiresAt: su.plan_expires_at || (su.created_at ? new Date(new Date(su.created_at).getTime() + (Number(su.plan_days_left) || 30) * 86400000).toISOString() : undefined),
-                  role: (su.email && (su.email.toLowerCase() === 'sachinxexplore@gmail.com' || su.email.toLowerCase() === 'sachinkumar629171@gmail.com')) ? 'admin' : ((su.role as any) || 'user'),
+                  role: (su.email && su.email.toLowerCase() === 'sachinkumar629171@gmail.com') ? 'admin' : ((su.role as any) === 'admin' && su.email?.toLowerCase() !== 'sachinxexplore@gmail.com' ? 'admin' : 'user'),
                   resellerId: su.reseller_id,
                   resellerName: su.reseller_name,
                   createdAt: su.created_at || new Date().toISOString(),
@@ -950,8 +948,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // 2. Fetch config & fallback server (Strictly token-authenticated: users only fetch their own profile)
         const activeToken = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
-        const isUserAdmin = currentUser?.role === 'admin' || 
-          (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+        const isUserAdmin = (currentUser?.role === 'admin' && currentUser?.email?.toLowerCase() !== 'sachinxexplore@gmail.com') || 
+          (currentUser?.email && currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com');
 
         const userHeaders: Record<string, string> = activeToken ? { 'x-session-token': activeToken } : {};
 
@@ -971,55 +969,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = await usersRes.json();
           if (data.users && Array.isArray(data.users) && isMounted) {
             const now = Date.now();
-            if (true) {
-              const mergedUsers = data.users.map((u: User) => {
-                if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
-                  return { ...u, isOnline: true, lastActive: new Date().toISOString() };
+            const serverUsers = data.users.map((u: User) => {
+              if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
+                return { ...u, isOnline: true, lastActive: new Date().toISOString() };
+              }
+              const pending = lastUpdatedUsersRef.current.get(u.id);
+              if (pending && now - pending.timestamp < 10000) {
+                return { ...u, ...pending.data };
+              }
+              return u;
+            });
+            // Merge with current users so Supabase users and server users are both retained!
+            setUsers(prev => {
+              const userMap = new Map<string, User>();
+              for (const u of prev) {
+                userMap.set(u.id, u);
+                if (u.email) userMap.set(u.email.toLowerCase(), u);
+              }
+              for (const su of serverUsers) {
+                const existing = userMap.get(su.id) || (su.email ? userMap.get(su.email.toLowerCase()) : undefined);
+                if (existing) {
+                  userMap.set(existing.id, { ...existing, ...su });
+                } else {
+                  userMap.set(su.id, su);
                 }
-                const pending = lastUpdatedUsersRef.current.get(u.id);
-                if (pending && now - pending.timestamp < 10000) {
-                  return { ...u, ...pending.data };
+              }
+              const uniqueList: User[] = [];
+              const seen = new Set<string>();
+              for (const u of userMap.values()) {
+                if (!seen.has(u.id)) {
+                  seen.add(u.id);
+                  uniqueList.push(u);
                 }
-                return u;
-              });
-              setUsers(mergedUsers);
-            } else {
-              // Merge real-time server online status, credit deductions, and NEW API-created users into current users list
-              const serverUsersMap = new Map<string, User>(data.users.map((u: User) => [u.id, u]));
-              const serverUsersEmailMap = new Map<string, User>(data.users.map((u: User) => [(u.email || '').toLowerCase(), u]));
-              
-              setUsers(prev => {
-                const existingIds = new Set(prev.map(u => u.id));
-                const existingEmails = new Set(prev.map(u => (u.email || '').toLowerCase()));
-
-                const updatedExisting = prev.map((u: User) => {
-                  const srv: User | undefined = serverUsersMap.get(u.id) || (u.email ? serverUsersEmailMap.get(u.email.toLowerCase()) : undefined);
-                  if (srv) {
-                    return {
-                      ...u,
-                      ...srv,
-                      resellerId: srv.resellerId || u.resellerId,
-                      resellerName: srv.resellerName || u.resellerName,
-                      isOnline: Boolean(srv.isOnline || u.isOnline),
-                      lastActive: srv.lastActive || u.lastActive || '',
-                      credits: srv.credits !== undefined ? srv.credits : u.credits,
-                      sessionToken: srv.sessionToken || u.sessionToken,
-                    };
-                  }
-                  return u;
-                });
-
-                // Add any users from server that aren't in local state yet (e.g. created via Reseller API)
-                const newServerUsers = data.users.filter((su: User) => 
-                  su.id && 
-                  !existingIds.has(su.id) && 
-                  (!su.email || !existingEmails.has(su.email.toLowerCase())) &&
-                  !su.id.startsWith('admin_config_')
-                );
-
-                return [...updatedExisting, ...newServerUsers];
-              });
-            }
+              }
+              return uniqueList;
+            });
+          }
             // If current user is logged in, refresh their status if updated from admin
             if (currentUser && activeToken) {
               const currentInList = data.users.find((u: User) => u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()));
@@ -1053,7 +1038,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
             }
           }
-        }
 
         if (resellersRes.ok) {
           const resData = await resellersRes.json();
@@ -1120,8 +1104,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
-    const isUserAdmin = currentUser?.role === 'admin' || 
-      (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+    const isUserAdmin = (currentUser?.role === 'admin' && currentUser?.email?.toLowerCase() !== 'sachinxexplore@gmail.com') || 
+      (currentUser?.email && currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com');
 
     let pollInterval: any = null;
     if (isUserAdmin) {
@@ -1230,7 +1214,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }));
           }
           if (type === 'NEW_LOGIN' && email && currentUser) {
-            const isCurrentUserAdmin = currentUser.email.toLowerCase() === 'sachinxexplore@gmail.com' || currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin';
+            const isCurrentUserAdmin = (currentUser.email.toLowerCase() !== 'sachinxexplore@gmail.com') && (currentUser.email.toLowerCase() === 'sachinkumar629171@gmail.com' || currentUser.role === 'admin');
             const localToken = localStorage.getItem('flowmaker_session_token');
             if (!isCurrentUserAdmin && currentUser.email.toLowerCase() === email.toLowerCase() && sessionToken && localToken && sessionToken !== localToken) {
               console.warn('[SingleSession] BroadcastChannel: new login detected on another tab/window! Logging out old session.');
@@ -1427,8 +1411,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [promptConfig]);
 
-  const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
-  const isAdmin = (currentUser?.email && adminEmails.includes(currentUser.email.toLowerCase())) || currentUser?.role === 'admin';
+  const adminEmails = ['sachinkumar629171@gmail.com'];
+  const isAdmin = Boolean(
+    (currentUser?.email && adminEmails.includes(currentUser.email.toLowerCase())) || 
+    (currentUser?.role === 'admin' && currentUser?.email?.toLowerCase() !== 'sachinxexplore@gmail.com')
+  );
 
   const resellerLogin = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
@@ -1976,7 +1963,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
-    const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
+    const adminEmails = ['sachinkumar629171@gmail.com'];
     // Special Check for configured Admin credentials
     if (adminEmails.includes(cleanEmail) && cleanPass === ADMIN_PASSWORD) {
       let adminUser = users.find(u => adminEmails.includes(u.email.toLowerCase()));
@@ -2104,7 +2091,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
 
           // Single-Device Lock: If account is active on another device, block new login until old device logs out
-          const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
+          const isSystemAdmin = cleanEmail === 'sachinkumar629171@gmail.com';
           const currentLocalToken = localStorage.getItem('flowmaker_session_token');
           if (!isSystemAdmin && !forceLogin && supaUser.is_online && supaUser.session_token) {
             const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;
