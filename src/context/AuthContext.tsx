@@ -425,7 +425,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       headers: {
         'Authorization': `Bearer ${token}`,
         'x-session-token': token,
-        'x-user-email': currentUser?.email || localStorage.getItem('flowmaker_user_email') || '',
       },
     })
       .then(async res => {
@@ -1012,12 +1011,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const localToken = localStorage.getItem('flowmaker_session_token') || currentUser.sessionToken;
               
               if (!currentInList) {
-                const isAdmin = currentUser?.role === 'admin' || currentUser?.email?.toLowerCase() === 'sachinkumar629171@gmail.com';
-                if (!isAdmin) {
-                  console.warn('[Session] User session token not found or deleted from database. Terminating session.');
-                  logout();
-                  return;
-                }
+                console.warn('[Session] User session token not found or deleted from database. Terminating session.');
+                logout();
+                return;
               }
 
               if (currentInList && (
@@ -1995,7 +1991,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
       adminUser.sessionToken = sessionToken;
       localStorage.setItem('flowmaker_session_token', sessionToken);
-      localStorage.setItem('flowmaker_user_email', adminUser.email);
       setCurrentUser(adminUser);
 
       // Broadcast across tabs
@@ -2136,7 +2131,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
           mappedUser.sessionToken = sessionToken;
           localStorage.setItem('flowmaker_session_token', sessionToken);
-          localStorage.setItem('flowmaker_user_email', mappedUser.email);
 
           try {
             const bc = new BroadcastChannel('flow_user_presence');

@@ -57,8 +57,8 @@ const safeServerSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: 
 };
 
 function getServerSupabase(): SupabaseClient | null {
-  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNDQyMjIsImV4cCI6MjA1NjgxNDIyMn0.fake';
+  const url = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url;
+  const key = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey;
   const configKey = `${url}_${key}`;
   if (serverSupabaseClient && lastSupabaseConfigStr === configKey) {
     return serverSupabaseClient;
@@ -661,32 +661,9 @@ async function getCallingUser(req: any): Promise<any | null> {
     ''
   ).toString().trim();
 
-  const userEmailHeader = (req.headers['x-user-email'] || '').toString().trim().toLowerCase();
+  if (!token) return null;
 
-  let user = db.users.find(u => 
-    (token && (u.sessionToken === token || u.id === token)) ||
-    (userEmailHeader && u.email && u.email.toLowerCase() === userEmailHeader)
-  ) || null;
-
-  if (!user && (userEmailHeader === 'sachinkumar629171@gmail.com' || token === 'sachinkumar629171@gmail.com')) {
-    user = db.users.find(u => u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com') || {
-      id: 'usr-admin-1',
-      name: 'Sachin Kumar',
-      email: 'sachinkumar629171@gmail.com',
-      role: 'admin',
-      plan: 'ultra',
-      credits: 45000,
-      maxCredits: 45000,
-      planDaysLeft: 30,
-    };
-  }
-
-  if (user && user.email && user.email.toLowerCase() === 'sachinkumar629171@gmail.com') {
-    user.role = 'admin';
-    return user;
-  }
-
-  if (!token) return user;
+  let user = db.users.find(u => (u.sessionToken && u.sessionToken === token) || u.id === token) || null;
 
   // Authoritative sync for this specific user only from Supabase
   const supa = getServerSupabase();
@@ -712,7 +689,7 @@ async function getCallingUser(req: any): Promise<any | null> {
           maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100),
           planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
           planExpiresAt: supaUser.plan_expires_at,
-          role: (supaUser.email?.toLowerCase() === 'sachinkumar629171@gmail.com') ? 'admin' : (supaUser.role || 'user'),
+          role: supaUser.role || 'user',
           resellerId: supaUser.reseller_id,
           resellerName: supaUser.reseller_name,
           status: supaUser.status || 'active',
@@ -1115,9 +1092,7 @@ app.post('/api/users/heartbeat', async (req, res) => {
 
   // Authoritative check against Supabase
   const supa = getServerSupabase();
-  const isAdmin = user?.role === 'admin' || SYSTEM_ADMIN_EMAILS.has(user?.email?.toLowerCase() || '');
-  
-  if (supa && cleanEmail && !isAdmin) {
+  if (supa && cleanEmail) {
     try {
       const { data: supaUser } = await supa.from('users').select('session_token, is_online').ilike('email', cleanEmail).maybeSingle();
       if (supaUser && supaUser.session_token && sessionToken && supaUser.session_token !== sessionToken) {
@@ -1132,7 +1107,7 @@ app.post('/api/users/heartbeat', async (req, res) => {
 
   if (user) {
     // Single device enforcement against local memory
-    if (!isAdmin && sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
+    if (sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
       return res.json({
         success: false,
         sessionMismatch: true,
