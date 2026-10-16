@@ -116,7 +116,7 @@
     {
       "id": "usr-admin-1",
       "name": "Sachin Kumar",
-      "email": "sachinxexplore@gmail.com",
+      "email": "sachinkumar629171@gmail.com",
       "password": "147258",
       "whatsapp": "+91 9876543210",
       "telegram": "@sachinkumar_admin",
@@ -440,7 +440,7 @@
             "Reseller support",
             "image generate"
           ],
-          "buttonText": "Get Pro \u2014 Contact Your Reseller",
+          "buttonText": "Get Pro — Contact Your Reseller",
           "color": "blue"
         },
         {
@@ -462,7 +462,7 @@
             "Early access to new features",
             "Unlimited  image generate"
           ],
-          "buttonText": "Get Ultra \u2014 Contact Your Reseller",
+          "buttonText": "Get Ultra — Contact Your Reseller",
           "badge": "MOST POPULAR",
           "color": "purple"
         },
@@ -471,8 +471,8 @@
           "name": "Flow Unlimited",
           "label": "UNLIMITED",
           "subtitle": "Contact Your Reseller",
-          "credits": "\u221e",
-          "videos": "\u221e",
+          "credits": "∞",
+          "videos": "∞",
           "features": [
             "Unlimited credits",
             "Unlimited AI videos",
@@ -487,7 +487,7 @@
             "Custom session allocation",
             "Unlimited image generate"
           ],
-          "buttonText": "Get Unlimited \u2014 Contact Your Reseller",
+          "buttonText": "Get Unlimited — Contact Your Reseller",
           "badge": "BEST VALUE",
           "color": "amber"
         }

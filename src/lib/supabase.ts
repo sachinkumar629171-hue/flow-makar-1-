@@ -8,6 +8,34 @@ let cachedClient: SupabaseClient | null = null;
 let currentUrl: string = '';
 let currentKey: string = '';
 
+export function isCurrentUserAdmin(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const adminEmails = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'];
+    const rawUser = localStorage.getItem('flowmaker_user') || localStorage.getItem('flow_current_user') || localStorage.getItem('flow_user');
+    if (rawUser) {
+      const u = JSON.parse(rawUser);
+      if (u.role === 'admin' || (u.email && adminEmails.includes(u.email.toLowerCase()))) {
+        return true;
+      }
+    }
+    const adminFlag = localStorage.getItem('flowmaker_is_admin');
+    if (adminFlag === 'true') return true;
+
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key) {
+        const val = localStorage.getItem(key);
+        if (val && (adminEmails.some(e => val.toLowerCase().includes(e)) || val.includes('"role":"admin"'))) {
+          localStorage.setItem('flowmaker_is_admin', 'true');
+          return true;
+        }
+      }
+    }
+  } catch {}
+  return false;
+}
+
 export function isBlockedSupabaseRequest(urlStr: string): boolean {
   if (!urlStr) return false;
   try {
@@ -20,27 +48,23 @@ export function isBlockedSupabaseRequest(urlStr: string): boolean {
       return true;
     }
     
-    // 2. resellers?select=*
-    if (path.includes('/rest/v1/resellers')) {
+    // 2. resellers?select=* (only admin can access resellers)
+    if (path.includes('/rest/v1/resellers') && !isCurrentUserAdmin()) {
       return true;
     }
     
-    // 3. users?select=* (bulk select of users table)
+    // 3. users?select=* (strictly blocked for normal users/public, allowed for admin)
     if (path.includes('/rest/v1/users')) {
       const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
-      const hasSpecificFilter = query.includes('id=eq.') || 
-                                query.includes('email=eq.') || 
-                                query.includes('email=ilike.') || 
-                                query.includes('session_token=eq.');
-      if (hasWildcardSelect && !hasSpecificFilter) {
+      if (hasWildcardSelect && !isCurrentUserAdmin()) {
         return true;
       }
     }
   } catch {
     const lower = urlStr.toLowerCase();
     if (lower.includes('/rest/v1/app_config')) return true;
-    if (lower.includes('/rest/v1/resellers')) return true;
-    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=')) return true;
+    if (lower.includes('/rest/v1/resellers') && !isCurrentUserAdmin()) return true;
+    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !isCurrentUserAdmin()) return true;
   }
   return false;
 }

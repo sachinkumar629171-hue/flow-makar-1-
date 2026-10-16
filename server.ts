@@ -381,37 +381,18 @@ async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptC
   }
 }
 
-const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
+const ADMIN_EMAIL = 'sachinkumar629171@gmail.com';
 const ADMIN_PASSWORD = '147258';
 
 const DEFAULT_USERS = [
   {
     id: 'usr-admin-1',
     name: 'Sachin Kumar',
-    email: 'sachinxexplore@gmail.com',
+    email: ADMIN_EMAIL,
     password: ADMIN_PASSWORD,
     whatsapp: '+91 9876543210',
     telegram: '@sachinkumar_admin',
     referralCode: 'FLOWADMIN',
-    plan: 'ultra',
-    credits: 45000,
-    maxCredits: 45000,
-    planDaysLeft: 30,
-    role: 'admin',
-    createdAt: '2025-01-10T10:00:00Z',
-    avatarColor: 'from-purple-600 to-indigo-600',
-    status: 'active',
-    isOnline: true,
-    lastActive: new Date().toISOString(),
-  },
-  {
-    id: 'usr-admin-2',
-    name: 'Sachin Kumar (Alt)',
-    email: 'sachinkumar629171@gmail.com',
-    password: ADMIN_PASSWORD,
-    whatsapp: '+91 9876543210',
-    telegram: '@sachinkumar_admin',
-    referralCode: 'FLOWADMIN2',
     plan: 'ultra',
     credits: 45000,
     maxCredits: 45000,
@@ -523,7 +504,7 @@ function initStorage() {
       }
 
       // Ensure admins exist
-      const adminEmails = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'];
+      const adminEmails = ['sachinkumar629171@gmail.com'];
       for (const admEmail of adminEmails) {
         const adminExists = db.users.some(u => u.email && u.email.toLowerCase() === admEmail.toLowerCase());
         if (!adminExists) {
@@ -692,7 +673,7 @@ function markUserOnline(emailOrId?: string, sessionToken?: string): void {
 
 // ======================== API ROUTES ========================
 
-const SYSTEM_ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const SYSTEM_ADMIN_EMAILS = new Set(['sachinkumar629171@gmail.com']);
 
 function isRequestAdminUser(req: any): boolean {
   const token = (
@@ -977,7 +958,7 @@ app.post('/api/users/login', async (req, res) => {
   }
 
   const cleanEmail = cleanEmailString(email);
-  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
+  const isSystemAdmin = cleanEmail === 'sachinkumar629171@gmail.com';
 
   // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
   let supaUser: any = null;
@@ -2789,7 +2770,7 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   }
 
   // Master key check
-  if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com' || apiKey === 'sachinkumar629171@gmail.com') {
+  if (apiKey === 'admin_master_key' || apiKey === 'sachinkumar629171@gmail.com') {
     if (resellerId) {
       return allResellers.find(r => r.id === resellerId) || allResellers[0] || { id: 'admin', portalName: 'Admin Portal', email: 'admin' };
     }
