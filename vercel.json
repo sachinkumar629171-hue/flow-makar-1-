@@ -1,8 +1,5 @@
 {
   "version": 2,
-  "framework": "vite",
-  "outputDirectory": "dist",
-  "buildCommand": "npm run build",
   "headers": [
     {
       "source": "/assets/(.*)",
@@ -21,12 +18,63 @@
           "value": "public, max-age=31536000, immutable"
         }
       ]
+    },
+    {
+      "source": "/api/extension/servers",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/api/extension/user",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store, no-cache, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/api/extension/version",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600, s-maxage=3600"
+        }
+      ]
     }
   ],
   "rewrites": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index"
+      "source": "/api/users/me",
+      "destination": "/api/users/me"
+    },
+    {
+      "source": "/api/user/me",
+      "destination": "/api/users/me"
+    },
+    {
+      "source": "/api/reseller/access/grant",
+      "destination": "/api/reseller/access?action=grant"
+    },
+    {
+      "source": "/api/reseller/access/revoke",
+      "destination": "/api/reseller/access?action=revoke"
+    },
+    {
+      "source": "/api/reseller/access/status",
+      "destination": "/api/reseller/access?action=status"
+    },
+    {
+      "source": "/api/reseller/grant-access",
+      "destination": "/api/reseller/access?action=grant"
+    },
+    {
+      "source": "/api/reseller/revoke-access",
+      "destination": "/api/reseller/access?action=revoke"
     },
     {
       "source": "/((?!api/).*)",
@@ -34,3 +82,4 @@
     }
   ]
 }
+
