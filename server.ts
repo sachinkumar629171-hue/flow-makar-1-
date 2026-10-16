@@ -1092,7 +1092,9 @@ app.post('/api/users/heartbeat', async (req, res) => {
 
   // Authoritative check against Supabase
   const supa = getServerSupabase();
-  if (supa && cleanEmail) {
+  const isAdmin = user?.role === 'admin' || SYSTEM_ADMIN_EMAILS.has(user?.email?.toLowerCase() || '');
+  
+  if (supa && cleanEmail && !isAdmin) {
     try {
       const { data: supaUser } = await supa.from('users').select('session_token, is_online').ilike('email', cleanEmail).maybeSingle();
       if (supaUser && supaUser.session_token && sessionToken && supaUser.session_token !== sessionToken) {
@@ -1107,7 +1109,7 @@ app.post('/api/users/heartbeat', async (req, res) => {
 
   if (user) {
     // Single device enforcement against local memory
-    if (sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
+    if (!isAdmin && sessionToken && user.sessionToken && user.sessionToken !== sessionToken) {
       return res.json({
         success: false,
         sessionMismatch: true,
