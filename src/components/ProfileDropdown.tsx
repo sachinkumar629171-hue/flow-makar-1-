@@ -47,10 +47,10 @@ export const ProfileDropdown: React.FC<ProfileDropdownProps> = ({
   const [copiedEmail, setCopiedEmail] = useState(false);
   const [, setTick] = useState(0);
 
-  // Real-time tick every 30 seconds so remaining time & progress update dynamically
+  // Real-time tick every 1 second so remaining time & progress update dynamically
   useEffect(() => {
     if (!isOpen) return;
-    const interval = setInterval(() => setTick((t) => t + 1), 30000);
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(interval);
   }, [isOpen]);
 
