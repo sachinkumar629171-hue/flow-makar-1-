@@ -36,7 +36,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { User, PlanType } from '../types';
-import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime, setUserExpiryMs } from '../lib/userStats';
+import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime } from '../lib/userStats';
 import { AdminUserEditModal } from './modals/AdminUserEditModal';
 import { AdminExtensionModal } from './modals/AdminExtensionModal';
 import { TutorialSettingsModal } from './modals/TutorialSettingsModal';
@@ -99,11 +99,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [, setTimeTick] = useState(0);
 
-  // Auto-tick every 1 second for live dynamic countdown decreasing in real time
+  // Auto-tick every 10 seconds for live dynamic countdown and online status updates
   useEffect(() => {
     const timer = setInterval(() => {
       setTimeTick(t => t + 1);
-    }, 1000);
+    }, 10000);
     return () => clearInterval(timer);
   }, []);
 
@@ -137,9 +137,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const handleQuickAdjustDays = (user: User, deltaDays: number) => {
     const current = user.planDaysLeft ?? 30;
     const updated = Math.max(0, current + deltaDays);
-    const newExpiresAt = new Date(Date.now() + updated * 86400000).toISOString();
-    setUserExpiryMs(user.id, updated, new Date(newExpiresAt).getTime());
-    updateUserDetails(user.id, { planDaysLeft: updated, planExpiresAt: newExpiresAt });
+    updateUserDetails(user.id, { planDaysLeft: updated });
     showToast(`${user.name}'s validity set to ${updated} days.`);
   };
 
@@ -1177,11 +1175,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
         onClose={() => setSelectedUserForCustomTime(null)}
         titlePrefix="Adjust Plan Validity (Admin)"
         onSave={(userId, newDaysLeft) => {
-          const finalDays = Math.max(0, newDaysLeft);
-          const newExpiresAt = new Date(Date.now() + finalDays * 86400000).toISOString();
-          setUserExpiryMs(userId, finalDays, new Date(newExpiresAt).getTime());
-          updateUserDetails(userId, { planDaysLeft: finalDays, planExpiresAt: newExpiresAt });
-          showToast(`User validity successfully updated to ${finalDays} days.`);
+          updateUserDetails(userId, { planDaysLeft: newDaysLeft });
+          showToast(`User validity successfully updated to ${newDaysLeft} days.`);
         }}
       />
 

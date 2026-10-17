@@ -101,7 +101,6 @@ interface AuthContextType {
   promptConfig: PromptConfig;
   sessionTerminatedNotice: boolean;
   dismissSessionTerminatedNotice: () => void;
-  syncServerUsers: (users: User[]) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -661,50 +660,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [generations]);
 
-  const syncServerUsers = (serverUsers: User[]) => {
-    if (!Array.isArray(serverUsers) || serverUsers.length === 0) return;
-    setUsers(prev => {
-      const serverMap = new Map<string, User>(serverUsers.map(u => [u.id, u]));
-      const serverEmailMap = new Map<string, User>(serverUsers.map(u => [(u.email || '').toLowerCase(), u]));
-
-      const updated = prev.map(u => {
-        const srv = serverMap.get(u.id) || (u.email ? serverEmailMap.get(u.email.toLowerCase()) : undefined);
-        if (srv) {
-          return {
-            ...u,
-            ...srv,
-            planDaysLeft: srv.planDaysLeft !== undefined ? srv.planDaysLeft : u.planDaysLeft,
-            planExpiresAt: srv.planExpiresAt || u.planExpiresAt,
-            credits: srv.credits !== undefined ? srv.credits : u.credits,
-            maxCredits: srv.maxCredits !== undefined ? srv.maxCredits : u.maxCredits,
-            isOnline: srv.isOnline !== undefined ? srv.isOnline : u.isOnline,
-            lastActive: srv.lastActive || u.lastActive,
-          };
-        }
-        return u;
-      });
-
-      const existingIds = new Set(prev.map(u => u.id));
-      const existingEmails = new Set(prev.map(u => (u.email || '').toLowerCase()));
-      const brandNew = serverUsers.filter(su => 
-        su.id && 
-        !existingIds.has(su.id) && 
-        (!su.email || !existingEmails.has(su.email.toLowerCase()))
-      );
-
-      return [...updated, ...brandNew];
-    });
-  };
-
   // Real-time Central Server Sync & Polling
   useEffect(() => {
     let isMounted = true;
 
     const pollCentralServer = async () => {
-      const isResellerActive = Boolean(currentReseller);
+      // Strictly disabled for non-admin users: normal users do not create any background polling requests
       const isUserAdmin = currentUser?.role === 'admin' || 
         (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
-      if (!isUserAdmin && !isResellerActive) return;
+      if (!isUserAdmin) return;
 
       try {
         // NOTE: Requests to app_config?select=*, resellers?select=*, and users?select=* are strictly blocked and disabled.
@@ -986,15 +950,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // 2. Fetch config & fallback server (Strictly token-authenticated: users only fetch their own profile)
         const activeToken = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
-        const isResellerActive = Boolean(currentReseller);
+        const isUserAdmin = currentUser?.role === 'admin' || 
+          (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
+
         const userHeaders: Record<string, string> = activeToken ? { 'x-session-token': activeToken } : {};
-        if (isResellerActive && currentReseller) {
-          userHeaders['x-reseller-id'] = currentReseller.id;
-          userHeaders['x-reseller-api-key'] = currentReseller.apiKey || '';
-        }
 
         const [usersRes, resellersRes, configRes] = await Promise.all([
-          (activeToken || isResellerActive)
+          activeToken 
             ? fetch(apiUrl('/api/users'), { headers: userHeaders }).catch(() => new Response(JSON.stringify({ users: [] }), { status: 200 }))
             : Promise.resolve(new Response(JSON.stringify({ users: [] }), { status: 200 })),
           isUserAdmin && activeToken
@@ -1008,7 +970,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (usersRes.ok) {
           const data = await usersRes.json();
           if (data.users && Array.isArray(data.users) && isMounted) {
-            syncServerUsers(data.users);
+            const now = Date.now();
+            if (true) {
+              const mergedUsers = data.users.map((u: User) => {
+                if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
+                  return { ...u, isOnline: true, lastActive: new Date().toISOString() };
+                }
+                const pending = lastUpdatedUsersRef.current.get(u.id);
+                if (pending && now - pending.timestamp < 10000) {
+                  return { ...u, ...pending.data };
+                }
+                return u;
+              });
+              setUsers(mergedUsers);
+            } else {
+              // Merge real-time server online status, credit deductions, and NEW API-created users into current users list
+              const serverUsersMap = new Map<string, User>(data.users.map((u: User) => [u.id, u]));
+              const serverUsersEmailMap = new Map<string, User>(data.users.map((u: User) => [(u.email || '').toLowerCase(), u]));
+              
+              setUsers(prev => {
+                const existingIds = new Set(prev.map(u => u.id));
+                const existingEmails = new Set(prev.map(u => (u.email || '').toLowerCase()));
+
+                const updatedExisting = prev.map((u: User) => {
+                  const srv: User | undefined = serverUsersMap.get(u.id) || (u.email ? serverUsersEmailMap.get(u.email.toLowerCase()) : undefined);
+                  if (srv) {
+                    return {
+                      ...u,
+                      ...srv,
+                      resellerId: srv.resellerId || u.resellerId,
+                      resellerName: srv.resellerName || u.resellerName,
+                      isOnline: Boolean(srv.isOnline || u.isOnline),
+                      lastActive: srv.lastActive || u.lastActive || '',
+                      credits: srv.credits !== undefined ? srv.credits : u.credits,
+                      sessionToken: srv.sessionToken || u.sessionToken,
+                    };
+                  }
+                  return u;
+                });
+
+                // Add any users from server that aren't in local state yet (e.g. created via Reseller API)
+                const newServerUsers = data.users.filter((su: User) => 
+                  su.id && 
+                  !existingIds.has(su.id) && 
+                  (!su.email || !existingEmails.has(su.email.toLowerCase())) &&
+                  !su.id.startsWith('admin_config_')
+                );
+
+                return [...updatedExisting, ...newServerUsers];
+              });
+            }
             // If current user is logged in, refresh their status if updated from admin
             if (currentUser && activeToken) {
               const currentInList = data.users.find((u: User) => u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()));
@@ -2993,7 +3004,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         promptConfig,
         sessionTerminatedNotice,
         dismissSessionTerminatedNotice,
-        syncServerUsers,
       }}
     >
       {children}

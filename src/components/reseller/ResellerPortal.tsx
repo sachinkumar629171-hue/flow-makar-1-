@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { User, PlanType } from '../../types';
-import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime, setUserExpiryMs } from '../../lib/userStats';
+import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime } from '../../lib/userStats';
 import { calculateResellerExpiry } from '../../lib/resellerUtils';
 import { ResellerNewUserModal } from './ResellerNewUserModal';
 import { ResellerEditUserModal } from './ResellerEditUserModal';
@@ -48,8 +48,7 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     updateUserDetails, 
     updateUserEmail,
     deleteUser, 
-    isAdmin,
-    syncServerUsers
+    isAdmin
   } = useAuth();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -64,17 +63,17 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
   const [, setTimeTick] = useState(0);
 
-  // Auto-tick every 1 second for live dynamic countdown decreasing in real time!
+  // Auto-tick every 10 seconds for live dynamic countdown and online updates
   React.useEffect(() => {
     const timer = setInterval(() => {
       setTimeTick(t => t + 1);
-    }, 1000);
+    }, 10000);
     return () => clearInterval(timer);
   }, []);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Auto-poll every 3 seconds while on Reseller Portal to catch API key requests and live user validity immediately
+  // Auto-poll every 3 seconds while on Reseller Portal to catch API key requests immediately
   React.useEffect(() => {
     if (!currentReseller) return;
     const interval = setInterval(() => {
@@ -87,14 +86,14 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
         .then(res => res.json())
         .then(data => {
           if (data?.users && Array.isArray(data.users)) {
-            syncServerUsers(data.users);
+            // Context will automatically merge or state will update
             setTimeTick(t => t + 1);
           }
         })
         .catch(() => {});
     }, 3000);
     return () => clearInterval(interval);
-  }, [currentReseller, syncServerUsers]);
+  }, [currentReseller]);
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
@@ -106,10 +105,6 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
         }
       });
       if (res.ok) {
-        const data = await res.json();
-        if (data?.users && Array.isArray(data.users)) {
-          syncServerUsers(data.users);
-        }
         showToast('Reseller data refreshed successfully!');
       }
     } catch {}
@@ -707,9 +702,7 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
         titlePrefix="Adjust Member Validity (Reseller)"
         onSave={(userId, newDaysLeft) => {
           const finalDays = Math.max(0, newDaysLeft);
-          const newExpiresAt = new Date(Date.now() + finalDays * 86400000).toISOString();
-          setUserExpiryMs(userId, finalDays, new Date(newExpiresAt).getTime());
-          updateUserDetails(userId, { planDaysLeft: finalDays, planExpiresAt: newExpiresAt });
+          updateUserDetails(userId, { planDaysLeft: finalDays });
           showToast(`Member validity updated to ${finalDays} days.`);
         }}
       />

@@ -142,7 +142,6 @@ const SERVER_ALLOWED_USER_COLUMNS = new Set([
   'max_credits',
   'credits',
   'plan_days_left',
-  'plan_expires_at',
   'session_token',
   'is_online',
   'whatsapp',
@@ -179,9 +178,6 @@ function formatServerSupabaseUserPayload(user: Record<string, any>): Record<stri
   
   if (user.planDaysLeft !== undefined) payload.plan_days_left = Number(user.planDaysLeft) ?? 30;
   else if (user.plan_days_left !== undefined) payload.plan_days_left = Number(user.plan_days_left) ?? 30;
-
-  if (user.planExpiresAt !== undefined && user.planExpiresAt !== null) payload.plan_expires_at = String(user.planExpiresAt);
-  else if (user.plan_expires_at !== undefined && user.plan_expires_at !== null) payload.plan_expires_at = String(user.plan_expires_at);
 
   if (user.sessionToken !== undefined) payload.session_token = String(user.sessionToken || '');
   else if (user.session_token !== undefined) payload.session_token = String(user.session_token || '');
@@ -539,7 +535,7 @@ function initStorage() {
       }
       let changed = false;
       for (const u of db.users) {
-        if (updateUserPlanValidity(u, Date.now())) {
+        if (checkAndConvertToBasic(u)) {
           changed = true;
         }
       }
@@ -566,92 +562,52 @@ function saveStorage() {
   }
 }
 
-function updateUserPlanValidity(u: any, now: number = Date.now()): boolean {
-  if (!u) return false;
-  let changed = false;
-
-  // Admin users have permanent lifetime access
-  if (u.role === 'admin' || (u.email && SYSTEM_ADMIN_EMAILS.has(cleanEmailString(u.email)))) {
+function checkAndConvertToBasic(u: any): boolean {
+  if (!u || u.role === 'admin' || (u.email && u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || (u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com')) {
     return false;
   }
-
-  // Ensure user has a valid planExpiresAt timestamp
-  if (!u.planExpiresAt) {
-    if (u.createdAt && u.planDaysLeft !== undefined && Number(u.planDaysLeft) > 0) {
+  if (u.plan === 'ultra' || u.plan === 'unlimited') {
+    let expired = false;
+    const now = Date.now();
+    if (u.planExpiresAt) {
+      const expMs = new Date(u.planExpiresAt).getTime();
+      if (!isNaN(expMs) && expMs <= now) {
+        expired = true;
+      }
+    }
+    if (!expired && u.planDaysLeft !== undefined && Number(u.planDaysLeft) <= 0) {
+      expired = true;
+    }
+    if (!expired && u.createdAt && u.planDaysLeft) {
       const createdMs = new Date(u.createdAt).getTime();
-      if (!isNaN(createdMs)) {
-        u.planExpiresAt = new Date(createdMs + Number(u.planDaysLeft) * 86400000).toISOString();
-        changed = true;
+      if (!isNaN(createdMs) && (createdMs + Number(u.planDaysLeft) * 86400000) <= now) {
+        expired = true;
       }
-    } else if (u.planDaysLeft !== undefined && Number(u.planDaysLeft) > 0) {
-      u.planExpiresAt = new Date(now + Number(u.planDaysLeft) * 86400000).toISOString();
-      changed = true;
     }
-  }
 
-  if (u.planExpiresAt) {
-    const expMs = new Date(u.planExpiresAt).getTime();
-    if (!isNaN(expMs)) {
-      const diffMs = expMs - now;
-      if (diffMs <= 0) {
-        if (u.planDaysLeft !== 0) {
-          u.planDaysLeft = 0;
-          changed = true;
-        }
-        if (u.plan === 'ultra' || u.plan === 'unlimited') {
-          u.plan = 'basic';
-          u.credits = Math.min(Number(u.credits) || 0, 100);
-          u.maxCredits = 100;
-          u.avatarColor = 'from-blue-600 to-cyan-600';
-          changed = true;
-          const supa = getServerSupabase();
-          if (supa && u.id && !u.id.startsWith('admin_config_')) {
-            supa.from('users').update({
-              plan: 'basic',
-              credits: u.credits,
-              max_credits: 100,
-              plan_days_left: 0,
-            }).eq('id', u.id).then(() => {}, () => {});
-          }
-        }
-      } else {
-        const remainingDays = Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
-        if (u.planDaysLeft !== remainingDays) {
-          u.planDaysLeft = remainingDays;
-          changed = true;
-        }
-      }
-    }
-  } else if (u.planDaysLeft !== undefined && Number(u.planDaysLeft) <= 0) {
-    if (u.plan === 'ultra' || u.plan === 'unlimited') {
+    if (expired) {
       u.plan = 'basic';
       u.credits = Math.min(Number(u.credits) || 0, 100);
       u.maxCredits = 100;
+      u.planDaysLeft = 0;
       u.avatarColor = 'from-blue-600 to-cyan-600';
-      changed = true;
+
+      const supa = getServerSupabase();
+      if (supa && u.id && !u.id.startsWith('admin_config_')) {
+        supa.from('users').update({
+          plan: 'basic',
+          credits: u.credits,
+          max_credits: 100,
+          plan_days_left: 0,
+        }).eq('id', u.id).then(({ error }) => {
+          if (error) console.error('Error auto-switching expired user in Supabase:', error);
+        });
+      }
+      return true;
     }
   }
-
-  return changed;
+  return false;
 }
-
-function checkAndConvertToBasic(u: any): boolean {
-  return updateUserPlanValidity(u, Date.now());
-}
-
-// Background loop: continuously recalculate and decrease plan days remaining as real time progresses
-setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-  for (const u of db.users) {
-    if (updateUserPlanValidity(u, now)) {
-      changed = true;
-    }
-  }
-  if (changed) {
-    saveStorage();
-  }
-}, 20000);
 
 initStorage();
 
@@ -844,7 +800,7 @@ app.get('/api/users', async (req, res) => {
   let changed = false;
 
   for (const u of db.users) {
-    if (updateUserPlanValidity(u, now)) {
+    if (checkAndConvertToBasic(u)) {
       changed = true;
     }
     let isLive = false;
@@ -877,28 +833,10 @@ app.get('/api/users', async (req, res) => {
 
   // 2. Reseller: only their portal's users
   if (resellerId || resellerKey) {
-    const cleanId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    const matchingReseller = db.resellers.find(r => 
-      r.id === resellerId || 
-      r.apiKey === resellerKey || 
-      (cleanId && String(r.id || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === cleanId) ||
-      (r.apiKey && resellerKey && r.apiKey.trim() === resellerKey.trim())
-    );
+    const matchingReseller = db.resellers.find(r => r.id === resellerId || r.apiKey === resellerKey);
     if (matchingReseller) {
-      const cleanMatchId = (matchingReseller.id || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-      const currentPortalName = (matchingReseller.portalName || '').trim().toLowerCase();
-      const currentEmail = (matchingReseller.email || '').trim().toLowerCase();
-
       const resellerUsers = db.users
-        .filter(u => {
-          if (!u) return false;
-          if (u.resellerId && u.resellerId === matchingReseller.id) return true;
-          const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-          if (cleanMatchId && cleanUserResId && cleanMatchId === cleanUserResId) return true;
-          if (u.resellerName && currentPortalName && u.resellerName.trim().toLowerCase() === currentPortalName) return true;
-          if (u.resellerEmail && currentEmail && u.resellerEmail.trim().toLowerCase() === currentEmail) return true;
-          return false;
-        })
+        .filter(u => u.resellerId === matchingReseller.id)
         .map(u => sanitizeSafeUser(u));
       return res.json({ users: resellerUsers });
     }
@@ -1220,16 +1158,11 @@ app.post('/api/users/update', async (req, res) => {
     return res.status(404).json({ success: false, error: 'User not found' });
   }
 
-  if (data.planDaysLeft !== undefined && !data.planExpiresAt) {
-    const newDays = Math.max(0, Number(data.planDaysLeft));
-    data.planExpiresAt = new Date(Date.now() + newDays * 86400000).toISOString();
-  }
-
   db.users[userIndex] = {
     ...db.users[userIndex],
     ...data,
   };
-  updateUserPlanValidity(db.users[userIndex], Date.now());
+  checkAndConvertToBasic(db.users[userIndex]);
   saveStorage();
 
   const supa = getServerSupabase();
