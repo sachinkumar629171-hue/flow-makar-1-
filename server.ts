@@ -853,6 +853,71 @@ app.get('/api/users', async (req, res) => {
   return res.json({ users: [] });
 });
 
+// Single-Route All-In-One Admin Data Endpoint (Users + Resellers + Configs from Supabase)
+app.get('/api/admin/data', async (req, res) => {
+  const supa = getServerSupabase();
+  const now = Date.now();
+  let usersList = db.users.map(u => sanitizeSafeUser(u));
+  let resellersList = db.resellers;
+  
+  if (supa) {
+    try {
+      const { data: supaUsers } = await supa.from('users').select('*');
+      if (supaUsers && Array.isArray(supaUsers)) {
+        usersList = supaUsers
+          .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
+          .map((u: any) => {
+            const userEmail = (u.email || '').toLowerCase().trim();
+            const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
+            const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
+            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
+            return {
+              id: u.id,
+              name: u.name || 'User',
+              email: u.email || '',
+              plan: isSysAdmin ? 'ultra' : (u.plan || 'basic'),
+              credits: isSysAdmin ? 45000 : (Number(u.credits) ?? 100),
+              maxCredits: isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100)),
+              planDaysLeft: Number(u.plan_days_left) ?? 30,
+              planExpiresAt: u.plan_expires_at,
+              role: isSysAdmin ? 'admin' : (u.role || 'user'),
+              resellerId: u.reseller_id,
+              resellerName: u.reseller_name,
+              status: u.status || 'active',
+              extensionAccess: u.extension_access !== false,
+              canEditPrompts: u.can_edit_prompts === true,
+              isOnline: isLive || Boolean(u.is_online),
+              lastActive: u.last_active || new Date().toISOString(),
+              createdAt: u.created_at || new Date().toISOString(),
+              avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
+            };
+          });
+      }
+    } catch {}
+
+    try {
+      const { data: supaResellers } = await supa.from('resellers').select('*');
+      if (supaResellers && Array.isArray(supaResellers) && supaResellers.length > 0) {
+        resellersList = supaResellers.map((sr: any) => ({
+          ...sr,
+          portalName: sr.portal_name || sr.portalName,
+          apiKey: sr.api_key || sr.apiKey,
+        }));
+      }
+    } catch {}
+  }
+
+  res.json({
+    success: true,
+    users: usersList,
+    resellers: resellersList,
+    promptConfig: db.promptConfig,
+    planExtensions: db.planExtensions,
+    tutorialConfig: db.tutorialConfig,
+    serverTimestamp: new Date().toISOString(),
+  });
+});
+
 // GET currently logged-in user profile ONLY (Standard Bearer Auth)
 app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
   const callingUser = await getCallingUser(req);

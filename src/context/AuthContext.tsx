@@ -965,6 +965,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           ...(isUserAdmin ? { 'x-admin-key': 'admin_master_key' } : {}),
         };
 
+        // 1. Single Route: All Supabase data in one request (/api/admin/data)
+        if (isUserAdmin) {
+          try {
+            const adminDataRes = await fetch(apiUrl('/api/admin/data'), { headers: userHeaders });
+            if (adminDataRes.ok) {
+              const adminData = await adminDataRes.json();
+              if (adminData && adminData.success && isMounted) {
+                if (Array.isArray(adminData.users)) {
+                  const now = Date.now();
+                  const mergedUsers = adminData.users.map((u: User) => {
+                    if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
+                      return { ...u, isOnline: true, lastActive: new Date().toISOString() };
+                    }
+                    const pending = lastUpdatedUsersRef.current.get(u.id);
+                    if (pending && now - pending.timestamp < 10000) {
+                      return { ...u, ...pending.data };
+                    }
+                    return u;
+                  });
+                  setUsers(mergedUsers);
+                }
+
+                if (Array.isArray(adminData.resellers)) {
+                  setResellers(adminData.resellers);
+                }
+
+                if (adminData.promptConfig) {
+                  setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(adminData.promptConfig) ? prev : adminData.promptConfig));
+                }
+                if (adminData.planExtensions) {
+                  setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(adminData.planExtensions) ? prev : adminData.planExtensions));
+                }
+                if (adminData.tutorialConfig) {
+                  setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(adminData.tutorialConfig) ? prev : adminData.tutorialConfig));
+                }
+                return; // Successfully loaded all Supabase data from single route!
+              }
+            }
+          } catch (e) {
+            console.warn('Single route admin data fetch error, checking individual fallback:', e);
+          }
+        }
+
         const [usersRes, resellersRes, configRes] = await Promise.all([
           activeToken 
             ? fetch(apiUrl('/api/users'), { headers: userHeaders }).catch(() => new Response(JSON.stringify({ users: [] }), { status: 200 }))

@@ -22,6 +22,10 @@
   ],
   "rewrites": [
     {
+      "source": "/api/admin/data",
+      "destination": "/api/admin/data"
+    },
+    {
       "source": "/api/users",
       "destination": "/api/users"
     },

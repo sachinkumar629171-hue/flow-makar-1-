@@ -1,0 +1,246 @@
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { createClient } from '@supabase/supabase-js';
+
+const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+
+const DEFAULT_PLAN_EXTENSIONS = {
+  basic: {
+    name: 'Flow Basic Chrome Extension',
+    version: '1.8.0',
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc',
+    fileName: 'flow-basic-extension-v1.8.0.zip',
+    description: 'Standard Video Prompt Sync & Studio Launcher for Basic Plan Members.',
+    updatedAt: new Date().toISOString(),
+    downloadType: 'url',
+  },
+  ultra: {
+    name: 'Flow Ultra VIP Extension',
+    version: '3.2.0',
+    downloadUrl: 'https://drive.google.com/uc?export=download&id=1ow7jqVhIgJZiJfXw9AsYMTNw_AzPZLwc',
+    fileName: 'flow-ultra-vip-extension-v3.2.0.zip',
+    description: 'High-Speed 4K Pipeline, Unlimited Prompt Queue & VIP Multi-Session Sync.',
+    updatedAt: new Date().toISOString(),
+    downloadType: 'url',
+  },
+};
+
+const DEFAULT_TUTORIAL_CONFIG = {
+  desktopVideoUrl: 'https://youtu.be/bNZXy0cAv_o?si=_hgtM9DrSpMS4EhN',
+  desktopTitle: 'How to Use Flow on Desktop / PC',
+  desktopSubtitle: 'Complete tutorial on setting up the Chrome extension & using Desktop Studio.',
+  mobileVideoUrl: 'https://www.youtube.com/watch?v=ScMzIvxBSi4',
+  mobileTitle: 'How to Use Flow on Mobile (Android & iOS)',
+  mobileSubtitle: 'Step-by-step guide on generating AI videos seamlessly from mobile browsers.',
+};
+
+const DEFAULT_PROMPT_CONFIG = {
+  servers: [
+    {
+      id: 'server1',
+      label: 'Server 1',
+      prompt: '',
+    }
+  ],
+  costs: {
+    image: 20,
+    video: 30
+  },
+  signupTelegramUrl: 'https://t.me/google_ultra_veo3_bot',
+  resellerContactUrl: 'https://t.me/google_ultra_veo3_bot',
+};
+
+function getResellerApiKey(reseller: any): string {
+  if (reseller.apiKey || reseller.api_key) return reseller.apiKey || reseller.api_key;
+  const cleanId = String(reseller.id || '').replace(/[^a-zA-Z0-9]/g, '');
+  return `flw_res_${cleanId}`;
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-key');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
+  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+
+  if (!supaUrl || !supaKey) {
+    return res.status(500).json({ success: false, error: 'Database configuration missing' });
+  }
+
+  const supabase = createClient(supaUrl, supaKey);
+
+  try {
+    const now = Date.now();
+
+    // 1. Fetch Users
+    let usersList: any[] = [];
+    try {
+      const { data: allUsers } = await supabase.from('users').select('*');
+      if (allUsers && Array.isArray(allUsers)) {
+        usersList = allUsers
+          .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
+          .map((u: any) => {
+            const userEmail = (u.email || '').toLowerCase().trim();
+            const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
+            const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
+            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
+
+            return {
+              id: u.id,
+              name: u.name || 'User',
+              email: u.email || '',
+              plan: isSysAdmin ? 'ultra' : (u.plan || 'basic'),
+              credits: isSysAdmin ? 45000 : (Number(u.credits) ?? 100),
+              maxCredits: isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100)),
+              planDaysLeft: Number(u.plan_days_left) ?? 30,
+              planExpiresAt: u.plan_expires_at,
+              role: isSysAdmin ? 'admin' : (u.role || 'user'),
+              resellerId: u.reseller_id,
+              resellerName: u.reseller_name,
+              status: u.status || 'active',
+              extensionAccess: u.extension_access !== false,
+              canEditPrompts: u.can_edit_prompts === true,
+              isOnline: isLive || Boolean(u.is_online),
+              lastActive: u.last_active || new Date().toISOString(),
+              createdAt: u.created_at || new Date().toISOString(),
+              avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
+            };
+          });
+      }
+    } catch (e) {
+      console.error('Error fetching users in /api/admin/data:', e);
+    }
+
+    // Ensure system admins are present
+    const ensureAdmins = [
+      { email: 'sachinxexplore@gmail.com', name: 'Sachin Kumar', ref: 'FLOWADMIN' },
+      { email: 'sachinkumar629171@gmail.com', name: 'Sachin Kumar (Alt)', ref: 'FLOWADMIN2' },
+    ];
+    for (const adm of ensureAdmins) {
+      if (!usersList.some(u => u.email.toLowerCase() === adm.email.toLowerCase())) {
+        usersList.unshift({
+          id: `usr-admin-${adm.ref}`,
+          name: adm.name,
+          email: adm.email,
+          plan: 'ultra',
+          credits: 45000,
+          maxCredits: 45000,
+          planDaysLeft: 30,
+          planExpiresAt: undefined,
+          role: 'admin',
+          resellerId: undefined,
+          resellerName: undefined,
+          status: 'active',
+          extensionAccess: true,
+          canEditPrompts: true,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+          createdAt: '2025-01-10T10:00:00Z',
+          avatarColor: 'from-purple-600 to-indigo-600',
+        });
+      }
+    }
+
+    // 2. Fetch Resellers
+    let resellersList: any[] = [];
+    try {
+      const { data: supaResellers } = await supabase.from('resellers').select('*');
+      let rawResellers = supaResellers || [];
+      if (!rawResellers.length) {
+        const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
+        if (resRow?.name) {
+          try {
+            const parsed = JSON.parse(resRow.name);
+            if (Array.isArray(parsed)) rawResellers = parsed;
+          } catch {}
+        }
+      }
+
+      resellersList = rawResellers.map((sr: any) => {
+        let daysLeft = sr.days_left !== undefined ? Number(sr.days_left) : (sr.daysLeft !== undefined ? Number(sr.daysLeft) : 30);
+        const expiresAt = sr.expires_at || sr.expiresAt;
+        if (expiresAt) {
+          const diff = new Date(expiresAt).getTime() - now;
+          daysLeft = Math.max(0, Math.ceil(diff / 86400000));
+        }
+        const isExp = daysLeft <= 0;
+        const status = sr.status === 'suspended' ? 'suspended' : (isExp ? 'expired' : 'active');
+
+        return {
+          id: sr.id,
+          portalName: sr.portal_name || sr.portalName || 'Reseller Portal',
+          email: sr.email || '',
+          userLimit: sr.user_limit || sr.userLimit || sr.max_users || 50,
+          daysLeft,
+          expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
+          expiresAt,
+          status,
+          createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
+          notes: sr.notes || '',
+          apiKey: getResellerApiKey(sr),
+        };
+      });
+    } catch (e) {
+      console.error('Error fetching resellers in /api/admin/data:', e);
+    }
+
+    // 3. Fetch Configs
+    let promptConfig: any = DEFAULT_PROMPT_CONFIG;
+    let planExtensions: any = DEFAULT_PLAN_EXTENSIONS;
+    let tutorialConfig: any = DEFAULT_TUTORIAL_CONFIG;
+
+    try {
+      const { data: configs } = await supabase.from('app_config').select('*');
+      if (configs && Array.isArray(configs)) {
+        for (const cfg of configs) {
+          if (cfg.key === 'admin_config_prompts' && cfg.value) promptConfig = cfg.value;
+          else if (cfg.key === 'admin_config_extensions' && cfg.value) planExtensions = cfg.value;
+          else if (cfg.key === 'admin_config_tutorial' && cfg.value) tutorialConfig = cfg.value;
+        }
+      }
+    } catch {}
+
+    try {
+      const { data: promptRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+      if (promptRow?.name) {
+        const parsed = JSON.parse(promptRow.name);
+        if (parsed && typeof parsed === 'object') promptConfig = { ...promptConfig, ...parsed };
+      }
+    } catch {}
+
+    try {
+      const { data: extRow } = await supabase.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+      if (extRow?.name) {
+        const parsed = JSON.parse(extRow.name);
+        if (parsed && typeof parsed === 'object') planExtensions = { ...planExtensions, ...parsed };
+      }
+    } catch {}
+
+    try {
+      const { data: tutRow } = await supabase.from('users').select('name').eq('id', 'admin_config_tutorial').maybeSingle();
+      if (tutRow?.name) {
+        const parsed = JSON.parse(tutRow.name);
+        if (parsed && typeof parsed === 'object') tutorialConfig = { ...tutorialConfig, ...parsed };
+      }
+    } catch {}
+
+    // Return ALL Supabase data in ONE single response!
+    return res.status(200).json({
+      success: true,
+      users: usersList,
+      resellers: resellersList,
+      promptConfig,
+      planExtensions,
+      tutorialConfig,
+      serverTimestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    console.error('/api/admin/data error:', err);
+    return res.status(500).json({ success: false, error: err?.message || 'Server error' });
+  }
+}
