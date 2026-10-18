@@ -969,10 +969,23 @@ app.post('/api/users/sync-all', (req, res) => {
   res.json({ success: true, count: db.users.length });
 });
 
-// POST login
-app.post('/api/users/login', async (req, res) => {
-  const { email, password, sessionToken: clientSessionToken, forceLogin } = req.body;
+// GET / POST login
+app.all('/api/users/login', async (req, res) => {
+  const body = req.body || {};
+  const query = req.query || {};
+  const email = body.email || query.email;
+  const password = body.password || query.password;
+  const clientSessionToken = body.sessionToken || body.sessionId || query.sessionToken || query.sessionId;
+  const forceLogin = body.forceLogin === true || body.forceLogin === 'true' || query.forceLogin === 'true';
+
   if (!email) {
+    if (req.method === 'GET') {
+      return res.json({
+        success: false,
+        message: 'FlowMaker AI Login API is active. Send POST with email and password to log in.',
+        endpoint: '/api/users/login'
+      });
+    }
     return res.status(400).json({ success: false, error: 'Email is required' });
   }
 
@@ -1072,7 +1085,20 @@ app.post('/api/users/login', async (req, res) => {
     }).catch(() => {});
   }
 
-  res.json({ success: true, user: sanitizeSafeUser(user) });
+  const safeUserData = {
+    ...sanitizeSafeUser(user),
+    sessionId: newSessionToken,
+    session_id: newSessionToken,
+    sessionToken: newSessionToken,
+  };
+
+  res.json({
+    success: true,
+    sessionId: newSessionToken,
+    session_token: newSessionToken,
+    sessionToken: newSessionToken,
+    user: safeUserData
+  });
 });
 
 // POST logout

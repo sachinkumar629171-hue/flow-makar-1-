@@ -69,7 +69,7 @@ export function getOrInitUserExpiryMs(user: User): number {
     return now;
   }
 
-  // 1. If explicit planExpiresAt is provided on user object, respect it
+  // 1. If explicit planExpiresAt is provided on user object, respect it as single source of truth
   if (user.planExpiresAt) {
     const parsedExp = new Date(user.planExpiresAt).getTime();
     if (!isNaN(parsedExp)) {
@@ -80,7 +80,7 @@ export function getOrInitUserExpiryMs(user: User): number {
 
   // 2. Check memory cache
   const cached = userExpiryCache.get(user.id);
-  if (cached && cached.daysLeft === daysLeft) {
+  if (cached && (cached.daysLeft === daysLeft || cached.expiryMs > now)) {
     return cached.expiryMs;
   }
 
@@ -90,7 +90,7 @@ export function getOrInitUserExpiryMs(user: User): number {
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (parsed && typeof parsed.expiryMs === 'number' && parsed.daysLeft === daysLeft) {
+      if (parsed && typeof parsed.expiryMs === 'number' && parsed.expiryMs > now) {
         userExpiryCache.set(user.id, { daysLeft, expiryMs: parsed.expiryMs, setAt: parsed.setAt || now });
         return parsed.expiryMs;
       }
@@ -103,7 +103,7 @@ export function getOrInitUserExpiryMs(user: User): number {
   let calculatedExpiryMs: number;
   if (user.createdAt) {
     const createdMs = new Date(user.createdAt).getTime();
-    if (!isNaN(createdMs) && createdMs <= now && (now - createdMs) < (daysLeft * 86400000)) {
+    if (!isNaN(createdMs)) {
       calculatedExpiryMs = createdMs + (daysLeft * 86400000);
     } else {
       calculatedExpiryMs = now + (daysLeft * 86400000);
@@ -147,7 +147,7 @@ export function setUserExpiryMs(userId: string, newDays: number, exactExpiryMs?:
 }
 
 /**
- * Computes exact real-time validity remaining in Days, Hours, and Minutes (e.g. "24D 23h", "24D 4h", "5h 30m").
+ * Computes exact real-time validity remaining in Days, Hours, and Minutes (e.g. "29D 19h 42m", "14D 8h 15m", "45m 12s").
  * As real-world time progresses, remaining validity automatically and continuously ticks down in real-time.
  */
 export function getUserValidityTime(user: User | null | undefined): {
@@ -155,23 +155,24 @@ export function getUserValidityTime(user: User | null | undefined): {
   days: number;
   hours: number;
   minutes: number;
+  seconds: number;
   profileDays: number;
   isExpired: boolean;
   displayText: string;
   percentageRemaining: number;
 } {
   if (!user) {
-    return { totalMs: 0, days: 0, hours: 0, minutes: 0, profileDays: 0, isExpired: true, displayText: '0D 0h', percentageRemaining: 0 };
+    return { totalMs: 0, days: 0, hours: 0, minutes: 0, seconds: 0, profileDays: 0, isExpired: true, displayText: '0D 0h', percentageRemaining: 0 };
   }
 
   // Admin user has lifetime access (100% full line)
   if (user.role === 'admin' || (user.email && (user.email.toLowerCase() === 'sachinxexplore@gmail.com' || user.email.toLowerCase() === 'sachinkumar629171@gmail.com'))) {
-    return { totalMs: Infinity, days: 999, hours: 0, minutes: 0, profileDays: 999, isExpired: false, displayText: 'Lifetime', percentageRemaining: 100 };
+    return { totalMs: Infinity, days: 999, hours: 0, minutes: 0, seconds: 0, profileDays: 999, isExpired: false, displayText: 'Lifetime', percentageRemaining: 100 };
   }
 
   const daysLeft = typeof user.planDaysLeft === 'number' ? Math.max(0, user.planDaysLeft) : 30;
   if (daysLeft <= 0 || user.status === 'suspended') {
-    return { totalMs: 0, days: 0, hours: 0, minutes: 0, profileDays: 0, isExpired: true, displayText: '0D 0h', percentageRemaining: 0 };
+    return { totalMs: 0, days: 0, hours: 0, minutes: 0, seconds: 0, profileDays: 0, isExpired: true, displayText: 'Expired', percentageRemaining: 0 };
   }
 
   const now = Date.now();
@@ -179,20 +180,22 @@ export function getUserValidityTime(user: User | null | undefined): {
   const diffMs = Math.max(0, expiryMs - now);
 
   if (diffMs <= 0) {
-    return { totalMs: 0, days: 0, hours: 0, minutes: 0, profileDays: 0, isExpired: true, displayText: '0D 0h', percentageRemaining: 0 };
+    return { totalMs: 0, days: 0, hours: 0, minutes: 0, seconds: 0, profileDays: 0, isExpired: true, displayText: 'Expired', percentageRemaining: 0 };
   }
 
+  const totalSeconds = Math.floor(diffMs / 1000);
   const totalMinutes = Math.floor(diffMs / (60 * 1000));
   const totalHours = Math.floor(diffMs / (60 * 60 * 1000));
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
   const minutes = totalMinutes % 60;
+  const seconds = totalSeconds % 60;
   const profileDays = Math.max(1, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
 
-  let displayText = `${days}D ${hours}h`;
+  let displayText = `${days}D ${hours}h ${minutes}m`;
   if (days === 0) {
     if (hours === 0) {
-      displayText = `${Math.max(1, minutes)}m`;
+      displayText = `${minutes}m ${seconds}s`;
     } else {
       displayText = `${hours}h ${minutes}m`;
     }
@@ -206,6 +209,7 @@ export function getUserValidityTime(user: User | null | undefined): {
     days,
     hours,
     minutes,
+    seconds,
     profileDays,
     isExpired: false,
     displayText,

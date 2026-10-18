@@ -133,7 +133,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (apiKey) {
-    if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com' || apiKey === 'sachinkumar629171@gmail.com') {
+    if (apiKey === 'admin_master_key' || apiKey === 'sachinkumar629171@gmail.com') {
       reseller = allResellers.find(r => r.id === resellerId) || allResellers[0] || { id: 'admin', portal_name: 'Admin Portal', email: 'admin' };
     } else {
       const cleanKey = apiKey.trim();

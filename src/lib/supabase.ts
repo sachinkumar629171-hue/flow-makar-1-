@@ -8,56 +8,11 @@ let cachedClient: SupabaseClient | null = null;
 let currentUrl: string = '';
 let currentKey: string = '';
 
-export function isBlockedSupabaseRequest(urlStr: string): boolean {
-  if (!urlStr) return false;
-  try {
-    const parsed = new URL(urlStr, 'https://dummy.co');
-    const path = parsed.pathname.toLowerCase();
-    const query = parsed.search.toLowerCase();
-    
-    // 1. app_config?select=*
-    if (path.includes('/rest/v1/app_config')) {
-      return true;
-    }
-    
-    // 2. resellers?select=*
-    if (path.includes('/rest/v1/resellers')) {
-      return true;
-    }
-    
-    // 3. users?select=* (bulk select of users table)
-    if (path.includes('/rest/v1/users')) {
-      const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
-      const hasSpecificFilter = query.includes('id=eq.') || 
-                                query.includes('email=eq.') || 
-                                query.includes('email=ilike.') || 
-                                query.includes('session_token=eq.');
-      if (hasWildcardSelect && !hasSpecificFilter) {
-        return true;
-      }
-    }
-  } catch {
-    const lower = urlStr.toLowerCase();
-    if (lower.includes('/rest/v1/app_config')) return true;
-    if (lower.includes('/rest/v1/resellers')) return true;
-    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=')) return true;
-  }
+export function isBlockedSupabaseRequest(_urlStr: string): boolean {
   return false;
 }
 
 const safeSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-  const urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
-  if (isBlockedSupabaseRequest(urlStr)) {
-    // Intercept and block: strictly do not send request over the network
-    return Promise.resolve(new Response(JSON.stringify([]), {
-      status: 200,
-      statusText: 'OK',
-      headers: {
-        'Content-Type': 'application/json',
-        'content-range': '0-0/0',
-      },
-    }));
-  }
   return fetch(input, init);
 };
 
@@ -69,10 +24,10 @@ export interface SupabaseConfig {
 
 export function getSupabaseConfig(): SupabaseConfig {
   if (typeof window === 'undefined') {
-    return { url: '', anonKey: '', isConnected: false };
+    return { url: 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co', anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNDQyMjIsImV4cCI6MjA1NjgxNDIyMn0.fake', isConnected: true };
   }
-  const url = localStorage.getItem(SUPABASE_URL_KEY) || (import.meta as any).env?.VITE_SUPABASE_URL || '';
-  const anonKey = localStorage.getItem(SUPABASE_ANON_KEY) || (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
+  const url = localStorage.getItem(SUPABASE_URL_KEY) || (import.meta as any).env?.VITE_SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
+  const anonKey = localStorage.getItem(SUPABASE_ANON_KEY) || (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEyNDQyMjIsImV4cCI6MjA1NjgxNDIyMn0.fake';
   return {
     url,
     anonKey,

@@ -2052,14 +2052,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else if (serverData.success && serverData.user) {
         const sUser: User = serverData.user;
-        if (sUser.sessionToken) {
-          localStorage.setItem('flowmaker_session_token', sUser.sessionToken);
+        const assignedSession = serverData.sessionId || serverData.session_token || serverData.sessionToken || sUser.sessionToken;
+        if (assignedSession) {
+          sUser.sessionToken = assignedSession;
+          localStorage.setItem('flowmaker_session_token', assignedSession);
           try {
             const bc = new BroadcastChannel('flow_user_presence');
             bc.postMessage({
               type: 'NEW_LOGIN',
               email: sUser.email,
-              sessionToken: sUser.sessionToken,
+              sessionToken: assignedSession,
             });
             setTimeout(() => bc.close(), 1000);
           } catch {}

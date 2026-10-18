@@ -49,6 +49,14 @@
   ],
   "rewrites": [
     {
+      "source": "/api/users/login",
+      "destination": "/api/users/login"
+    },
+    {
+      "source": "/api/user/login",
+      "destination": "/api/users/login"
+    },
+    {
       "source": "/api/users/me",
       "destination": "/api/users/me"
     },
