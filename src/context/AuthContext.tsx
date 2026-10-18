@@ -960,7 +960,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const isUserAdmin = currentUser?.role === 'admin' || 
           (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
 
-        const userHeaders: Record<string, string> = activeToken ? { 'x-session-token': activeToken } : {};
+        const userHeaders: Record<string, string> = {
+          ...(activeToken ? { 'x-session-token': activeToken, 'Authorization': `Bearer ${activeToken}` } : {}),
+          ...(isUserAdmin ? { 'x-admin-key': 'admin_master_key' } : {}),
+        };
 
         const [usersRes, resellersRes, configRes] = await Promise.all([
           activeToken 
