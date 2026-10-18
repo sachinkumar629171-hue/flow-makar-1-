@@ -13,20 +13,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const token = (body.token || body.sessionToken || query.token || query.sessionToken || req.headers['authorization'] || '').toString().replace(/^Bearer\s+/i, '').trim();
   const clientVersion = (body.version || body.extensionVersion || query.version || '').toString().trim();
 
-  const requiredVersion = '3.2.0';
-
-  if (!email || !token) {
-    return res.status(401).json({
-      success: false,
-      allowed: false,
-      error: 'Missing email or token (session ID).',
-      requiredVersion,
-    });
-  }
-
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
   const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
 
+  let requiredVersion = '3.2.0';
   let servers = [
     { id: 'server1', label: 'Server 1', prompt: '' },
     { id: 'server2', label: 'Server 2', prompt: '' },
@@ -36,16 +26,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (supaUrl && supaKey) {
     try {
       const supabase = createClient(supaUrl, supaKey);
-      const { data: supaUser } = await supabase.from('users').select('*').ilike('email', email).maybeSingle();
+
+      // 1. Fetch required version and config from Supabase database
+      try {
+        const { data: extRow } = await supabase.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+        if (extRow?.name) {
+          const parsedExt = JSON.parse(extRow.name);
+          if (parsedExt?.ultra?.version) requiredVersion = String(parsedExt.ultra.version).trim();
+        }
+      } catch {}
 
       try {
         const { data: configRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
         if (configRow?.name) {
           const parsed = JSON.parse(configRow.name);
+          if (parsed?.extensionVersion) requiredVersion = String(parsed.extensionVersion).trim();
           if (parsed?.servers) servers = parsed.servers;
           if (parsed?.costs) costs = parsed.costs;
         }
       } catch {}
+
+      // 2. Strict Version Check against Supabase required version
+      if (clientVersion && clientVersion !== requiredVersion) {
+        return res.status(426).json({
+          success: false,
+          allowed: false,
+          updateRequired: true,
+          error: `Update Required: Please update your extension to version ${requiredVersion}. Your version is ${clientVersion}.`,
+          requiredVersion,
+          clientVersion,
+        });
+      }
+
+      if (!email || !token) {
+        return res.status(401).json({
+          success: false,
+          allowed: false,
+          error: 'Missing email or token (session ID).',
+          requiredVersion,
+        });
+      }
+
+      const { data: supaUser } = await supabase.from('users').select('*').ilike('email', email).maybeSingle();
 
       if (!supaUser || supaUser.id?.startsWith('admin_config_')) {
         return res.status(404).json({
@@ -82,7 +104,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      const isUltraOrAdmin = plan === 'ultra' || plan === 'unlimited' || role === 'admin';
+      const isUltraOrAdmin = (plan === 'ultra' || plan === 'unlimited' || role === 'admin') && plan !== 'basic';
       if (!isUltraOrAdmin || planDaysLeft <= 0 || plan === 'basic') {
         return res.status(403).json({
           success: false,
