@@ -1975,58 +1975,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, pass: string, forceLogin = false): Promise<{ success: boolean; isDeviceLocked?: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
-
     const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
-    // Special Check for configured Admin credentials
-    if (adminEmails.includes(cleanEmail) && cleanPass === ADMIN_PASSWORD) {
-      let adminUser = users.find(u => adminEmails.includes(u.email.toLowerCase()));
-      if (!adminUser) {
-        adminUser = {
-          id: 'usr-admin-1',
-          name: 'Sachin Kumar',
-          email: cleanEmail,
-          password: ADMIN_PASSWORD,
-          whatsapp: '+91 9876543210',
-          telegram: '@sachinkumar_admin',
-          referralCode: 'FLOWADMIN',
-          plan: 'ultra',
-          credits: 45000,
-          maxCredits: 45000,
-          planDaysLeft: 30,
-          role: 'admin',
-          createdAt: new Date().toISOString(),
-          status: 'active',
-          isOnline: true,
-          lastActive: new Date().toISOString(),
-        };
-        setUsers(prev => [adminUser!, ...prev]);
-      }
-      const sessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
-      adminUser.sessionToken = sessionToken;
-      localStorage.setItem('flowmaker_session_token', sessionToken);
-      setCurrentUser(adminUser);
 
-      // Broadcast across tabs
-      try {
-        const bc = new BroadcastChannel('flow_user_presence');
-        bc.postMessage({
-          type: 'NEW_LOGIN',
-          email: adminUser.email,
-          sessionToken: sessionToken,
-        });
-        setTimeout(() => bc.close(), 1000);
-      } catch {}
-
-      fetch(apiUrl('/api/users/login'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password: cleanPass, sessionToken, forceLogin }),
-      }).catch(() => {});
-
-      return { success: true };
-    }
-
-    // 1. First, consult central server login for strict authoritative single-device lock verification
+    // 1. Consult central server login (payload only contains email, password, forceLogin - no sessionToken sent)
     try {
       const serverRes = await fetch(apiUrl('/api/users/login'), {
         method: 'POST',
@@ -2069,7 +2020,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: true };
       }
     } catch (err) {
-      console.warn('Central server login attempt error, checking Supabase direct:', err);
+      console.warn('Central server login attempt error, checking fallback:', err);
+      // Offline fallback for admin
+      if (adminEmails.includes(cleanEmail) && cleanPass === ADMIN_PASSWORD) {
+        let adminUser = users.find(u => adminEmails.includes(u.email.toLowerCase())) || {
+          id: 'usr-admin-1',
+          name: 'Sachin Kumar',
+          email: cleanEmail,
+          password: ADMIN_PASSWORD,
+          whatsapp: '+91 9876543210',
+          telegram: '@sachinkumar_admin',
+          referralCode: 'FLOWADMIN',
+          plan: 'ultra' as PlanType,
+          credits: 45000,
+          maxCredits: 45000,
+          planDaysLeft: 30,
+          role: 'admin' as const,
+          createdAt: new Date().toISOString(),
+          status: 'active' as const,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+        };
+        const offlineToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+        adminUser.sessionToken = offlineToken;
+        localStorage.setItem('flowmaker_session_token', offlineToken);
+        setCurrentUser(adminUser);
+        return { success: true };
+      }
     }
 
     // 2. Direct Supabase Database check if central server was unreachable
