@@ -741,18 +741,20 @@ async function getCallingUser(req: any): Promise<any | null> {
       const { data: supaUser } = await supaQuery.maybeSingle();
 
       if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
+        const userEmailLower = (supaUser.email || '').toLowerCase().trim();
+        const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(userEmailLower);
         const mapped = {
           id: supaUser.id,
           name: supaUser.name || 'User',
           email: supaUser.email || '',
           password: supaUser.password || 'user123',
           sessionToken: supaUser.session_token || '',
-          plan: supaUser.plan || 'basic',
-          credits: Number(supaUser.credits) ?? 100,
-          maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100),
+          plan: isSysAdmin ? 'ultra' : (supaUser.plan || 'basic'),
+          credits: isSysAdmin ? 45000 : (Number(supaUser.credits) ?? 100),
+          maxCredits: isSysAdmin ? 45000 : (Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100)),
           planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
           planExpiresAt: supaUser.plan_expires_at,
-          role: supaUser.role || 'user',
+          role: isSysAdmin ? 'admin' : (supaUser.role || 'user'),
           resellerId: supaUser.reseller_id,
           resellerName: supaUser.reseller_name,
           status: supaUser.status || 'active',
@@ -857,14 +859,16 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
   if (!callingUser) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Session token required or invalid' });
   }
+  const callingEmail = (callingUser.email || '').toLowerCase().trim();
+  const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(callingEmail);
   const minimalProfile = {
     name: callingUser.name || 'User',
     email: callingUser.email || '',
-    plan: callingUser.plan || 'basic',
-    credits: Number(callingUser.credits) ?? 100,
-    maxCredits: Number(callingUser.maxCredits) ?? (callingUser.plan === 'ultra' ? 45000 : 100),
+    plan: isSysAdmin ? 'ultra' : (callingUser.plan || 'basic'),
+    credits: isSysAdmin ? 45000 : (Number(callingUser.credits) ?? 100),
+    maxCredits: isSysAdmin ? 45000 : (Number(callingUser.maxCredits) ?? (callingUser.plan === 'ultra' ? 45000 : 100)),
     planDaysLeft: Number(callingUser.planDaysLeft) ?? 30,
-    role: callingUser.role || 'user',
+    role: isSysAdmin ? 'admin' : (callingUser.role || 'user'),
   };
   res.json({ success: true, user: minimalProfile });
 });
@@ -1009,11 +1013,11 @@ app.all('/api/users/login', async (req, res) => {
           telegram: supaUser.telegram || '',
           referralCode: supaUser.referral_code || '',
           referredBy: supaUser.referred_by || '',
-          plan: supaUser.plan || 'basic',
-          credits: Number(supaUser.credits) ?? 0,
-          maxCredits: Number(supaUser.max_credits) || (supaUser.plan === 'ultra' ? 45000 : 100),
+          plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
+          credits: isSystemAdmin ? 45000 : (Number(supaUser.credits) ?? 0),
+          maxCredits: isSystemAdmin ? 45000 : (Number(supaUser.max_credits) || 100),
           planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-          role: supaUser.role || 'user',
+          role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
           resellerId: supaUser.reseller_id,
           resellerName: supaUser.reseller_name,
           status: supaUser.status || 'active',

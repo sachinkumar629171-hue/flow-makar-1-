@@ -154,15 +154,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Supabase login token update error:', updateErr);
     }
 
+    if (isSystemAdmin && supaUser.role !== 'admin') {
+      supabase.from('users').update({ role: 'admin' }).ilike('email', cleanEmail).then(() => {});
+    }
+
     const safeUser = {
       id: supaUser.id,
       name: supaUser.name || 'User',
       email: supaUser.email,
-      plan: supaUser.plan || 'basic',
-      credits: Number(supaUser.credits) ?? 100,
-      maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100),
+      plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
+      credits: isSystemAdmin ? 45000 : (Number(supaUser.credits) ?? 100),
+      maxCredits: isSystemAdmin ? 45000 : (Number(supaUser.max_credits) ?? 100),
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-      role: supaUser.role || (isSystemAdmin ? 'admin' : 'user'),
+      role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
       status: supaUser.status || 'active',
       isOnline: true,
       lastActive: nowIso,

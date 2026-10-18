@@ -431,8 +431,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (res.ok) {
           const data = await res.json();
           if (data && data.user) {
+            const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
+            const targetEmail = (data.user.email || '').toLowerCase().trim();
+            const isAdminEmail = adminEmails.includes(targetEmail);
             setCurrentUser(prev => {
-              const fresh = { ...(prev || {}), ...data.user };
+              const fresh = {
+                ...(prev || {}),
+                ...data.user,
+                role: (isAdminEmail || data.user.role === 'admin') ? 'admin' : (data.user.role || 'user'),
+              };
               try {
                 localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(fresh));
               } catch {}

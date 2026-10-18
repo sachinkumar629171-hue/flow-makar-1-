@@ -59,15 +59,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const userEmail = (supaUser.email || '').toLowerCase().trim();
+    const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+    const isSystemAdmin = ADMIN_EMAILS.has(userEmail) || supaUser.role === 'admin';
+
+    if (isSystemAdmin && supaUser.role !== 'admin') {
+      supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
+    }
+
     // Return ONLY essential fields requested by user (No internal IDs, session tokens, reseller or online status)
     const safeUser = {
       name: supaUser.name || 'User',
       email: supaUser.email || '',
-      plan: supaUser.plan || 'basic',
-      credits: Number(supaUser.credits) ?? 100,
-      maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100),
+      plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
+      credits: Number(supaUser.credits) ?? (isSystemAdmin ? 45000 : 100),
+      maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' || isSystemAdmin ? 45000 : 100),
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-      role: supaUser.role || 'user',
+      role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
     };
 
     return res.status(200).json({
