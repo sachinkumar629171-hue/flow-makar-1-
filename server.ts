@@ -274,8 +274,8 @@ async function safeServerSupabaseUserUpdate(
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
       if (userId) {
-        const { error, data } = await supa.from('users').update(cleanFields).eq('id', userId).select('id');
-        if (!error && data && data.length > 0) return true;
+        const { error } = await supa.from('users').update(cleanFields).eq('id', userId);
+        if (!error) return true;
         if (error) {
           const missingCol = serverExtractMissingColumn(error);
           if (missingCol && cleanFields[missingCol] !== undefined) {
@@ -287,8 +287,8 @@ async function safeServerSupabaseUserUpdate(
       }
 
       if (userEmail) {
-        const { error, data } = await supa.from('users').update(cleanFields).eq('email', userEmail.toLowerCase().trim()).select('id');
-        if (!error && data && data.length > 0) return true;
+        const { error } = await supa.from('users').update(cleanFields).eq('email', userEmail.toLowerCase().trim());
+        if (!error) return true;
         if (error) {
           const missingCol = serverExtractMissingColumn(error);
           if (missingCol && cleanFields[missingCol] !== undefined) {
@@ -1085,18 +1085,15 @@ app.all('/api/users/login', async (req, res) => {
     }).catch(() => {});
   }
 
-  const safeUserData = {
-    ...sanitizeSafeUser(user),
-    sessionId: newSessionToken,
-    session_id: newSessionToken,
-    sessionToken: newSessionToken,
-  };
+  const safeUserData = sanitizeSafeUser(user);
+  delete safeUserData.sessionToken;
+  delete safeUserData.sessionId;
+  delete safeUserData.session_id;
+  delete safeUserData.session_token;
 
   res.json({
     success: true,
     sessionId: newSessionToken,
-    session_token: newSessionToken,
-    sessionToken: newSessionToken,
     user: safeUserData
   });
 });

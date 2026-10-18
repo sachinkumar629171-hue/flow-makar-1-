@@ -74,10 +74,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         role: 'admin',
         status: 'active',
         isOnline: true,
-        sessionToken: newSessionToken,
-        sessionId: newSessionToken,
-        session_id: newSessionToken,
-        session_token: newSessionToken,
         lastActive: new Date().toISOString(),
       };
 
@@ -102,8 +98,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).json({
         success: true,
         sessionId: newSessionToken,
-        session_token: newSessionToken,
-        sessionToken: newSessionToken,
         user: adminUserData,
       });
     }
@@ -170,10 +164,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
       role: supaUser.role || (isSystemAdmin ? 'admin' : 'user'),
       status: supaUser.status || 'active',
-      sessionToken: newSessionToken,
-      sessionId: newSessionToken,
-      session_id: newSessionToken,
-      session_token: newSessionToken,
       isOnline: true,
       lastActive: nowIso,
     };
@@ -181,8 +171,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       sessionId: newSessionToken,
-      session_token: newSessionToken,
-      sessionToken: newSessionToken,
       user: safeUser,
     });
   } catch (err: any) {

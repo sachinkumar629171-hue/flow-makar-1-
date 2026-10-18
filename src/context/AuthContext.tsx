@@ -2017,11 +2017,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setTimeout(() => bc.close(), 1000);
       } catch {}
 
-      // Update Supabase & server database so older devices running this account immediately terminate
-      const supa = getSupabase();
-      if (supa) {
-        supa.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).ilike('email', cleanEmail).then(() => {});
-      }
       fetch(apiUrl('/api/users/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2071,16 +2066,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           return exists ? prev.map(u => (u.id === sUser.id || u.email.toLowerCase() === sUser.email.toLowerCase()) ? sUser : u) : [sUser, ...prev];
         });
         setCurrentUser(sUser);
-
-        // Also sync to Supabase if connected
-        const supa = getSupabase();
-        if (supa) {
-          safeSupabaseUserUpdate(supa, sUser.id, sUser.email, {
-            session_token: sUser.sessionToken,
-            is_online: true,
-            last_active: new Date().toISOString(),
-          }).catch(() => {});
-        }
         return { success: true };
       }
     } catch (err) {
