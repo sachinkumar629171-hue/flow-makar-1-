@@ -72,15 +72,62 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
           const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
 
+          let calculatedDaysLeft = Number(u.plan_days_left) ?? 30;
+          let calculatedPlan = isSysAdmin ? 'ultra' : (u.plan || 'basic');
+          let calculatedCredits = isSysAdmin ? 45000 : (Number(u.credits) ?? 100);
+          let calculatedMaxCredits = isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100));
+          let planExpiresAt = u.plan_expires_at;
+          let needsUpdate = false;
+
+          if (!isSysAdmin) {
+            let expiryMs = 0;
+            if (planExpiresAt) {
+              const parsed = new Date(planExpiresAt).getTime();
+              if (!isNaN(parsed)) expiryMs = parsed;
+            }
+            if (!expiryMs && u.created_at) {
+              const createdMs = new Date(u.created_at).getTime();
+              if (!isNaN(createdMs)) {
+                expiryMs = createdMs + Math.max(1, calculatedDaysLeft) * 86400000;
+                planExpiresAt = new Date(expiryMs).toISOString();
+                needsUpdate = true;
+              }
+            }
+            if (expiryMs > 0) {
+              const diffMs = expiryMs - now;
+              calculatedDaysLeft = Math.max(0, Math.ceil(diffMs / 86400000));
+              if (Number(u.plan_days_left) !== calculatedDaysLeft) {
+                needsUpdate = true;
+              }
+              if (diffMs <= 0 && (calculatedPlan === 'ultra' || calculatedPlan === 'unlimited')) {
+                calculatedPlan = 'basic';
+                calculatedCredits = Math.min(calculatedCredits, 100);
+                calculatedMaxCredits = 100;
+                calculatedDaysLeft = 0;
+                needsUpdate = true;
+              }
+            }
+
+            if (needsUpdate && u.id) {
+              supabase.from('users').update({
+                plan_days_left: calculatedDaysLeft,
+                plan_expires_at: planExpiresAt,
+                plan: calculatedPlan,
+                credits: calculatedCredits,
+                max_credits: calculatedMaxCredits,
+              }).eq('id', u.id).then(() => {});
+            }
+          }
+
           return {
             id: u.id,
             name: u.name || 'User',
             email: u.email || '',
-            plan: isSysAdmin ? 'ultra' : (u.plan || 'basic'),
-            credits: isSysAdmin ? 45000 : (Number(u.credits) ?? 100),
-            maxCredits: isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100)),
-            planDaysLeft: Number(u.plan_days_left) ?? 30,
-            planExpiresAt: u.plan_expires_at,
+            plan: calculatedPlan,
+            credits: calculatedCredits,
+            maxCredits: calculatedMaxCredits,
+            planDaysLeft: calculatedDaysLeft,
+            planExpiresAt,
             role: isSysAdmin ? 'admin' : (u.role || 'user'),
             resellerId: u.reseller_id,
             resellerName: u.reseller_name,
