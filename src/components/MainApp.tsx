@@ -98,6 +98,20 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
 
   return (
     <div className="min-h-screen bg-[#08090b] text-[#f1f2f4] flex flex-col select-none w-full max-w-full overflow-x-hidden">
+      {/* Dashboard Announcement Banner */}
+      {promptConfig?.dashboardAnnouncement?.enabled && promptConfig?.dashboardAnnouncement?.text && (
+        <div className={`w-full px-4 py-2.5 text-xs sm:text-sm font-medium flex items-center justify-center gap-2 border-b text-center shrink-0 ${
+          promptConfig.dashboardAnnouncement.type === 'success'
+            ? 'bg-emerald-950/90 border-emerald-800/80 text-emerald-200'
+            : promptConfig.dashboardAnnouncement.type === 'warning'
+            ? 'bg-amber-950/90 border-amber-800/80 text-amber-200'
+            : 'bg-purple-950/90 border-purple-800/80 text-purple-200'
+        }`}>
+          <span className="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-black/40 text-[10px]">Announcement</span>
+          <span>{promptConfig.dashboardAnnouncement.text}</span>
+        </div>
+      )}
+
       {/* Top Navigation Bar (Matches Screenshot 4 & 6) */}
       <header className="sticky top-0 z-40 bg-[#08090b]/90 backdrop-blur-md border-b border-neutral-900 px-3 sm:px-8 py-3 sm:py-3.5 flex items-center justify-between w-full max-w-full">
         {/* Left: Flow Logo */}

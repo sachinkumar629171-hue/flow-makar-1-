@@ -2043,72 +2043,74 @@ app.post('/api/extension/cf-verify', async (req, res) => {
     });
   }
 
-  // Fast RAM auth check (0 Supabase DB queries)
-  let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
+  // Fetch live user data directly from Supabase
+  let supaUser: any = null;
   const supa = getServerSupabase();
   if (supa) {
     try {
-      const { data: supaUser } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
-      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
-        const freshUser = {
-          id: supaUser.id,
-          name: supaUser.name || 'User',
-          email: supaUser.email,
-          password: supaUser.password || '',
-          plan: supaUser.plan || 'ultra',
-          credits: Number(supaUser.credits) ?? 45000,
-          maxCredits: Number(supaUser.max_credits) || 45000,
-          planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-          role: supaUser.role || 'user',
-          status: supaUser.status || 'active',
-          extensionAccess: supaUser.extension_access !== false,
-          sessionToken: supaUser.session_token || sessionToken,
-          isOnline: true,
-          lastActive: new Date().toISOString(),
-          createdAt: supaUser.created_at || new Date().toISOString(),
-        };
-        const existingIdx = db.users.findIndex(u => u.id === supaUser.id || (u.email && cleanEmailString(u.email) === email));
-        if (existingIdx >= 0) db.users[existingIdx] = freshUser;
-        else db.users.push(freshUser);
-        user = freshUser;
-        saveStorage();
+      const { data } = await supa.from('users').select('*').ilike('email', email).maybeSingle();
+      if (data && !data.id?.startsWith('admin_config_')) {
+        supaUser = data;
       }
     } catch {}
   }
 
-  if (!user) {
-    user = {
-      id: `usr-cf-${Date.now()}`,
-      name: 'CF User',
-      email: email,
-      plan: 'ultra',
-      credits: 45000,
-      maxCredits: 45000,
-      planDaysLeft: 30,
-      status: 'active',
-      extensionAccess: true,
-      sessionToken: sessionToken || 'sess-cf-default',
-      role: 'user',
-      isOnline: true,
-      lastActive: new Date().toISOString(),
-      createdAt: new Date().toISOString()
-    };
-    db.users.push(user);
-    saveStorage();
+  if (!supaUser) {
+    supaUser = db.users.find(u => u.email && cleanEmailString(u.email) === email);
   }
 
-  // All checks passed! Mark user as live/online
-  const cfActiveNow = new Date().toISOString();
-  user.isOnline = true;
-  user.lastActive = cfActiveNow;
-  saveStorage();
+  if (!supaUser) {
+    return res.status(404).json({
+      allowed: false,
+      success: false,
+      error: `User not registered with email: ${email}`,
+      requiredVersion: requiredVer,
+    });
+  }
 
-  const supaCf = getServerSupabase();
-  if (supaCf && user.id && !user.id.startsWith('admin_config_')) {
-    supaCf.from('users').update({
+  // Verify Session Token / Session ID
+  const dbToken = supaUser.session_token || supaUser.sessionToken || '';
+  if (dbToken && sessionToken && dbToken !== sessionToken) {
+    return res.status(401).json({
+      allowed: false,
+      success: false,
+      error: 'Invalid or expired session ID / token. Please log in again on FlowMaker portal.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  // Verify Account Status & Plan
+  const plan = supaUser.plan || 'basic';
+  const role = supaUser.role || 'user';
+  const status = supaUser.status || 'active';
+  const planDaysLeft = Number(supaUser.plan_days_left ?? supaUser.planDaysLeft) || 30;
+
+  if (status === 'suspended') {
+    return res.status(403).json({
+      allowed: false,
+      success: false,
+      error: 'Account is suspended. Please contact support.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  const isUltraOrAdmin = (plan === 'ultra' || plan === 'unlimited' || role === 'admin') && plan !== 'basic';
+  if (!isUltraOrAdmin || planDaysLeft <= 0 || plan === 'basic') {
+    return res.status(403).json({
+      allowed: false,
+      success: false,
+      error: 'Ultra VIP Plan required. Basic plan members do not have extension access. Please upgrade via your reseller.',
+      requiredVersion: requiredVer,
+    });
+  }
+
+  // Mark online
+  const cfActiveNow = new Date().toISOString();
+  if (supa && supaUser.id && !supaUser.id.startsWith('admin_config_')) {
+    supa.from('users').update({
       is_online: true,
       last_active: cfActiveNow,
-    }).eq('id', user.id).then(() => {});
+    }).eq('id', supaUser.id).then(() => {});
   }
 
   const { servers, serverMap } = await resolveActiveServers();
@@ -2121,13 +2123,13 @@ app.post('/api/extension/cf-verify', async (req, res) => {
     servers,
     serverMap,
     user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      plan: user.plan,
-      credits: user.credits,
-      maxCredits: user.maxCredits,
-      planDaysLeft: user.planDaysLeft,
+      id: supaUser.id,
+      name: supaUser.name || 'User',
+      email: supaUser.email,
+      plan: supaUser.plan || 'basic',
+      credits: Number(supaUser.credits) ?? 45000,
+      maxCredits: Number(supaUser.max_credits ?? supaUser.maxCredits) ?? 45000,
+      planDaysLeft: Number(supaUser.plan_days_left ?? supaUser.planDaysLeft) ?? 30,
     }
   });
 });

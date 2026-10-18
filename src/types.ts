@@ -190,6 +190,11 @@ export interface PromptConfig {
   cloudflareUrl?: string; // Option 2 URL: e.g. https://flowmaker-prompts.sachinkumar23406.workers.dev
   cloudflareLastStatus?: 'online' | 'offline' | 'error';
   cloudflareLastSyncAt?: string;
+  dashboardAnnouncement?: {
+    enabled: boolean;
+    text: string;
+    type?: 'info' | 'warning' | 'success';
+  };
 }
 
 

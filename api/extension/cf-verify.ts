@@ -11,9 +11,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const query = req.query || {};
   const email = (body.email || query.email || '').toString().trim().toLowerCase();
   const token = (body.token || body.sessionToken || query.token || query.sessionToken || req.headers['authorization'] || '').toString().replace(/^Bearer\s+/i, '').trim();
+  const clientVersion = (body.version || body.extensionVersion || query.version || '').toString().trim();
 
-  if (!email) {
-    return res.status(400).json({ success: false, allowed: false, error: 'Email parameter is required.' });
+  const requiredVersion = '3.2.0';
+
+  if (!email || !token) {
+    return res.status(401).json({
+      success: false,
+      allowed: false,
+      error: 'Missing email or token (session ID).',
+      requiredVersion,
+    });
   }
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
@@ -39,52 +47,83 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       } catch {}
 
-      if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
-        const isUltra = supaUser.plan === 'ultra' || supaUser.plan === 'unlimited' || supaUser.role === 'admin';
-        const planDaysLeft = Number(supaUser.plan_days_left) ?? 30;
+      if (!supaUser || supaUser.id?.startsWith('admin_config_')) {
+        return res.status(404).json({
+          success: false,
+          allowed: false,
+          error: `User not registered with email: ${email}`,
+          requiredVersion,
+        });
+      }
 
-        return res.status(200).json({
-          success: true,
-          allowed: true,
-          verified: true,
-          requiredVersion: '3.2.0',
-          plan: supaUser.plan || 'ultra',
-          isUltra: true,
-          isAllowed: true,
+      // Verify Session Token / Session ID
+      const dbToken = supaUser.session_token || supaUser.sessionToken || '';
+      if (dbToken && token && dbToken !== token) {
+        return res.status(401).json({
+          success: false,
+          allowed: false,
+          error: 'Invalid or expired session ID / token. Please log in again on FlowMaker portal.',
+          requiredVersion,
+        });
+      }
+
+      // Verify Plan: If plan is basic, do NOT grant access!
+      const plan = (supaUser.plan || 'basic').toLowerCase();
+      const role = (supaUser.role || 'user').toLowerCase();
+      const status = (supaUser.status || 'active').toLowerCase();
+      const planDaysLeft = Number(supaUser.plan_days_left) ?? 30;
+
+      if (status === 'suspended') {
+        return res.status(403).json({
+          success: false,
+          allowed: false,
+          error: 'Account is suspended. Please contact support.',
+          requiredVersion,
+        });
+      }
+
+      const isUltraOrAdmin = plan === 'ultra' || plan === 'unlimited' || role === 'admin';
+      if (!isUltraOrAdmin || planDaysLeft <= 0 || plan === 'basic') {
+        return res.status(403).json({
+          success: false,
+          allowed: false,
+          error: 'Ultra VIP Plan required. Basic plan members do not have extension access. Please upgrade via your reseller.',
+          requiredVersion,
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        allowed: true,
+        verified: true,
+        requiredVersion,
+        plan,
+        isUltra: true,
+        isAllowed: true,
+        credits: Number(supaUser.credits) ?? 45000,
+        maxCredits: Number(supaUser.max_credits) ?? 45000,
+        planDaysLeft,
+        servers,
+        costs,
+        user: {
+          id: supaUser.id,
+          name: supaUser.name || 'User',
+          email: supaUser.email,
+          plan,
           credits: Number(supaUser.credits) ?? 45000,
           maxCredits: Number(supaUser.max_credits) ?? 45000,
           planDaysLeft,
-          servers,
-          costs,
-          user: {
-            id: supaUser.id,
-            name: supaUser.name || 'User',
-            email: supaUser.email,
-            plan: supaUser.plan || 'ultra',
-            credits: Number(supaUser.credits) ?? 45000,
-            maxCredits: Number(supaUser.max_credits) ?? 45000,
-            planDaysLeft,
-          }
-        });
-      }
+        }
+      });
     } catch (err: any) {
       console.error('cf-verify Supabase error:', err);
     }
   }
 
-  return res.status(200).json({
-    success: true,
-    allowed: true,
-    verified: true,
-    requiredVersion: '3.2.0',
-    plan: 'ultra',
-    isUltra: true,
-    isAllowed: true,
-    credits: 45000,
-    maxCredits: 45000,
-    planDaysLeft: 30,
-    servers,
-    costs,
-    user: { email, plan: 'ultra', credits: 45000 }
+  return res.status(401).json({
+    success: false,
+    allowed: false,
+    error: 'Database connection error during verification.',
+    requiredVersion,
   });
 }

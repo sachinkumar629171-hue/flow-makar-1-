@@ -32,7 +32,8 @@ import {
   Key,
   Lock,
   Menu,
-  X
+  X,
+  Bell
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { User, PlanType } from '../types';
@@ -51,6 +52,7 @@ import { ResellerPasswordModal } from './reseller/ResellerPasswordModal';
 import { ResellerEmailModal } from './reseller/ResellerEmailModal';
 import { SupabaseSettingsModal } from './modals/SupabaseSettingsModal';
 import { SignupTelegramModal } from './modals/SignupTelegramModal';
+import { DashboardAnnouncementModal } from './modals/DashboardAnnouncementModal';
 import { ADMIN_EMAIL } from '../data/initialData';
 import { apiUrl } from '../config/api';
 
@@ -94,6 +96,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
   const [showEmailOpacityModal, setShowEmailOpacityModal] = useState(false);
   const [showSupabaseModal, setShowSupabaseModal] = useState(false);
   const [showSignupTelegramModal, setShowSignupTelegramModal] = useState(false);
+  const [showAnnouncementModal, setShowAnnouncementModal] = useState(false);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -535,6 +538,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
                 </div>
                 <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/60">
                   {promptConfig?.headerEmailOpacity ?? 100}%
+                </span>
+              </button>
+
+              {/* Dashboard Announcement Notification Banner */}
+              <button
+                onClick={() => {
+                  setShowAnnouncementModal(true);
+                  setMobileSidebarOpen(false);
+                }}
+                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium bg-neutral-900/60 hover:bg-neutral-800/90 border border-neutral-800/80 text-neutral-300 hover:text-white transition-all cursor-pointer"
+                title="Configure Dashboard Notification Banner for Users"
+              >
+                <div className="flex items-center gap-2">
+                  <Bell className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Dashboard Banner</span>
+                </div>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                  promptConfig?.dashboardAnnouncement?.enabled 
+                    ? 'bg-purple-950 text-purple-300 border border-purple-800/60' 
+                    : 'bg-neutral-800 text-neutral-400 border border-neutral-700/60'
+                }`}>
+                  {promptConfig?.dashboardAnnouncement?.enabled ? 'ON' : 'OFF'}
                 </span>
               </button>
 
@@ -1425,6 +1450,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
         isOpen={showSignupTelegramModal}
         onClose={() => setShowSignupTelegramModal(false)}
         onSaved={showToast}
+      />
+
+      {/* Dashboard Announcement Notification Banner Modal */}
+      <DashboardAnnouncementModal
+        isOpen={showAnnouncementModal}
+        onClose={() => setShowAnnouncementModal(false)}
       />
     </div>
   );
