@@ -101,6 +101,7 @@ interface AuthContextType {
   promptConfig: PromptConfig;
   sessionTerminatedNotice: boolean;
   dismissSessionTerminatedNotice: () => void;
+  refreshAdminData: () => Promise<boolean>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -2976,6 +2977,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   };
 
+  const refreshAdminData = async () => {
+    const token = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
+    try {
+      const res = await fetch(apiUrl('/api/admin/data'), {
+        headers: {
+          ...(token ? { 'x-session-token': token, 'Authorization': `Bearer ${token}` } : {}),
+          'x-admin-key': 'admin_master_key'
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success) {
+          if (Array.isArray(data.users)) setUsers(data.users);
+          if (Array.isArray(data.resellers)) setResellers(data.resellers);
+          if (data.promptConfig) setPromptConfig(data.promptConfig);
+          if (data.planExtensions) setPlanExtensions(data.planExtensions);
+          if (data.tutorialConfig) setTutorialConfig(data.tutorialConfig);
+          return true;
+        }
+      }
+    } catch {}
+    return false;
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -3021,6 +3046,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         promptConfig,
         sessionTerminatedNotice,
         dismissSessionTerminatedNotice,
+        refreshAdminData,
       }}
     >
       {children}

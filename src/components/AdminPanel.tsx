@@ -74,7 +74,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
     adminCreateUser,
     loginAsReseller, 
     promptConfig, 
-    updatePromptConfig 
+    updatePromptConfig,
+    refreshAdminData
   } = useAuth();
   
   const [activeAdminSection, setActiveAdminSection] = useState<'users' | 'resellers' | 'extension-admin'>('users');
@@ -107,18 +108,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
     return () => clearInterval(timer);
   }, []);
 
+  // Fetch all Supabase admin data on mount from single unified root /api/admin/data
+  useEffect(() => {
+    if (refreshAdminData) {
+      refreshAdminData();
+    }
+  }, []);
+
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     try {
-      const token = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
-      const res = await fetch(apiUrl('/api/users'), {
-        headers: token ? { 'x-session-token': token } : {}
-      });
-      if (res.ok) {
-        showToast('Live database refreshed! Latest members synced.');
-      } else {
-        showToast('Connected to local storage backup.');
+      if (refreshAdminData) {
+        await refreshAdminData();
       }
+      showToast('Live database refreshed! Latest members synced from Supabase.');
     } catch {
       showToast('Offline mode: reading local data.');
     } finally {
