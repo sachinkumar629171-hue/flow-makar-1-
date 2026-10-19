@@ -1,6 +1,25 @@
 {
   "users": [
     {
+      "id": "usr-admin-1",
+      "name": "Sachin Kumar",
+      "email": "sachinxexplore@gmail.com",
+      "password": "147258",
+      "whatsapp": "+91 9876543210",
+      "telegram": "@sachinkumar_admin",
+      "referralCode": "FLOWADMIN",
+      "plan": "ultra",
+      "credits": 45000,
+      "maxCredits": 45000,
+      "planDaysLeft": 30,
+      "role": "admin",
+      "createdAt": "2025-01-10T10:00:00Z",
+      "avatarColor": "from-purple-600 to-indigo-600",
+      "status": "active",
+      "isOnline": false,
+      "lastActive": "2026-10-19T11:34:06.954Z"
+    },
+    {
       "id": "usr-1791263263265-a5b",
       "name": "test_cf_user",
       "email": "test_cf_user@gmail.com",
@@ -113,7 +132,6 @@
       "lastActive": "2026-10-05T10:53:04.324Z",
       "avatarColor": "from-purple-600 to-indigo-600"
     },
-
     {
       "id": "usr-admin-1",
       "name": "Sachin Kumar",
@@ -144,15 +162,15 @@
       "telegram": "",
       "referralCode": "FLOW2IOZJ",
       "referredBy": "",
-      "plan": "ultra",
-      "credits": 44950,
-      "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "plan": "basic",
+      "credits": 100,
+      "maxCredits": 100,
+      "planDaysLeft": 0,
       "role": "user",
       "resellerId": null,
       "resellerName": null,
       "createdAt": "2026-09-17T08:58:57.721+00:00",
-      "avatarColor": "from-purple-600 to-indigo-600",
+      "avatarColor": "from-blue-600 to-cyan-600",
       "status": "active",
       "isOnline": false,
       "lastActive": "2026-09-20T19:29:13.891Z"

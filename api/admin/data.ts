@@ -88,29 +88,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const userEmail = (u.email || '').toLowerCase().trim();
             const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
             const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
-            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
+            // Strict 2-minute (120,000 ms) heartbeat window
+            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+
+            // Time-based continuous plan validity decrease
+            let planDaysLeft = Number(u.plan_days_left) ?? 30;
+            let planExpiresAt = u.plan_expires_at;
+
+            if (!isSysAdmin) {
+              if (planExpiresAt) {
+                const expMs = new Date(planExpiresAt).getTime();
+                if (!isNaN(expMs)) {
+                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                }
+              } else if (u.created_at && u.plan_days_left !== undefined) {
+                const createdMs = new Date(u.created_at).getTime();
+                if (!isNaN(createdMs)) {
+                  const expMs = createdMs + Number(u.plan_days_left) * 86400000;
+                  planExpiresAt = new Date(expMs).toISOString();
+                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                }
+              }
+            }
+
+            const isExpired = !isSysAdmin && planDaysLeft <= 0;
 
             return {
               id: u.id,
               name: u.name || 'User',
               email: u.email || '',
-              plan: isSysAdmin ? 'ultra' : (u.plan || 'basic'),
-              credits: isSysAdmin ? 45000 : (Number(u.credits) ?? 100),
-              maxCredits: isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100)),
-              planDaysLeft: Number(u.plan_days_left) ?? 30,
-              planExpiresAt: u.plan_expires_at,
+              plan: isSysAdmin ? 'ultra' : (isExpired ? 'basic' : (u.plan || 'basic')),
+              credits: isSysAdmin ? 45000 : (isExpired ? Math.min(Number(u.credits) ?? 100, 100) : (Number(u.credits) ?? 100)),
+              maxCredits: isSysAdmin ? 45000 : (isExpired ? 100 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100))),
+              planDaysLeft: isSysAdmin ? 30 : planDaysLeft,
+              planExpiresAt,
               role: isSysAdmin ? 'admin' : (u.role || 'user'),
               resellerId: u.reseller_id,
               resellerName: u.reseller_name,
               status: u.status || 'active',
               extensionAccess: u.extension_access !== false,
               canEditPrompts: u.can_edit_prompts === true,
-              isOnline: isLive || Boolean(u.is_online),
-              lastActive: u.last_active || new Date().toISOString(),
+              isOnline: isLive, // Strictly from heartbeat within 2 minutes!
+              lastActive: u.last_active || '', // Never fake lastActive
               createdAt: u.created_at || new Date().toISOString(),
               avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
             };
           });
+
+        // Zero-Quota Guard: Only update Supabase if an Ultra/Unlimited user actually expired (no unnecessary writes!)
+        for (const u of allUsers) {
+          if (!u.id || u.id.startsWith('admin_config_')) continue;
+          if (u.plan_expires_at && (u.plan === 'ultra' || u.plan === 'unlimited')) {
+            const expMs = new Date(u.plan_expires_at).getTime();
+            if (!isNaN(expMs) && expMs <= now) {
+              supabase.from('users').update({
+                plan: 'basic',
+                plan_days_left: 0,
+                max_credits: 100,
+                credits: Math.min(Number(u.credits) ?? 100, 100),
+              }).eq('id', u.id).then(() => {});
+            }
+          }
+        }
       }
     } catch (e) {
       console.error('Error fetching users in /api/admin/data:', e);
@@ -138,8 +177,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           status: 'active',
           extensionAccess: true,
           canEditPrompts: true,
-          isOnline: true,
-          lastActive: new Date().toISOString(),
+          isOnline: false,
+          lastActive: '',
           createdAt: '2025-01-10T10:00:00Z',
           avatarColor: 'from-purple-600 to-indigo-600',
         });

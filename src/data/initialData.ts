@@ -22,8 +22,8 @@ export const INITIAL_USERS: User[] = [
     createdAt: '2025-01-10T10:00:00Z',
     avatarColor: 'from-purple-600 to-indigo-600',
     status: 'active',
-    isOnline: true,
-    lastActive: new Date().toISOString(),
+    isOnline: false,
+    lastActive: '',
   },
 ];
 

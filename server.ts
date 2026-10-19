@@ -48,45 +48,8 @@ interface DatabaseSchema {
 let serverSupabaseClient: SupabaseClient | null = null;
 let lastSupabaseConfigStr = '';
 
-function isBlockedSupabaseServerRequest(urlStr: string): boolean {
-  if (!urlStr) return false;
-  try {
-    const parsed = new URL(urlStr, 'https://dummy.co');
-    const path = parsed.pathname.toLowerCase();
-    const query = parsed.search.toLowerCase();
-    
-    // 1. app_config?select=*
-    if (path.includes('/rest/v1/app_config')) {
-      return true;
-    }
-    
-    // 2. resellers?select=*
-    if (path.includes('/rest/v1/resellers')) {
-      return true;
-    }
-    
-    // 3. users?select=* (bulk select of users table)
-    if (path.includes('/rest/v1/users')) {
-      const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
-      const hasSpecificFilter = query.includes('id=eq.') || 
-                                query.includes('id=') ||
-                                query.includes('email=eq.') || 
-                                query.includes('email=ilike.') || 
-                                query.includes('email=') ||
-                                query.includes('session_token=eq.') ||
-                                query.includes('session_token=') ||
-                                query.includes('session_token.') ||
-                                query.includes('or=');
-      if (hasWildcardSelect && !hasSpecificFilter) {
-        return true;
-      }
-    }
-  } catch {
-    const lower = urlStr.toLowerCase();
-    if (lower.includes('/rest/v1/app_config')) return true;
-    if (lower.includes('/rest/v1/resellers')) return true;
-    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=') && !lower.includes('session_token')) return true;
-  }
+function isBlockedSupabaseServerRequest(_urlStr: string): boolean {
+  // Server-side backend calls must be allowed so /api/admin/data can load users from Supabase
   return false;
 }
 
@@ -401,8 +364,8 @@ const DEFAULT_USERS = [
     createdAt: '2025-01-10T10:00:00Z',
     avatarColor: 'from-purple-600 to-indigo-600',
     status: 'active',
-    isOnline: true,
-    lastActive: new Date().toISOString(),
+    isOnline: false,
+    lastActive: '',
   },
   {
     id: 'usr-admin-2',
@@ -420,8 +383,8 @@ const DEFAULT_USERS = [
     createdAt: '2025-01-10T10:00:00Z',
     avatarColor: 'from-purple-600 to-indigo-600',
     status: 'active',
-    isOnline: true,
-    lastActive: new Date().toISOString(),
+    isOnline: false,
+    lastActive: '',
   },
 ];
 
@@ -534,7 +497,15 @@ function initStorage() {
         }
       }
       let changed = false;
+      const now = Date.now();
       for (const u of db.users) {
+        // Reset online status if lastActive > 2 min or missing
+        const lastActiveTime = u.lastActive ? new Date(u.lastActive).getTime() : NaN;
+        const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+        if (u.isOnline !== isLive) {
+          u.isOnline = isLive;
+          changed = true;
+        }
         if (checkAndConvertToBasic(u)) {
           changed = true;
         }
@@ -566,31 +537,37 @@ function checkAndConvertToBasic(u: any): boolean {
   if (!u || u.role === 'admin' || (u.email && u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || (u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com')) {
     return false;
   }
-  if (u.plan === 'ultra' || u.plan === 'unlimited') {
-    let expired = false;
-    const now = Date.now();
-    if (u.planExpiresAt) {
-      const expMs = new Date(u.planExpiresAt).getTime();
-      if (!isNaN(expMs) && expMs <= now) {
-        expired = true;
-      }
+  let changed = false;
+  const now = Date.now();
+
+  // Continuously recalculate remaining days from plan expiration timestamp or created date
+  let expMs: number | null = null;
+  if (u.planExpiresAt) {
+    const t = new Date(u.planExpiresAt).getTime();
+    if (!isNaN(t)) expMs = t;
+  } else if (u.createdAt && u.planDaysLeft !== undefined) {
+    const createdMs = new Date(u.createdAt).getTime();
+    if (!isNaN(createdMs)) {
+      expMs = createdMs + Number(u.planDaysLeft) * 86400000;
+      u.planExpiresAt = new Date(expMs).toISOString();
+      changed = true;
     }
-    if (!expired && u.planDaysLeft !== undefined && Number(u.planDaysLeft) <= 0) {
-      expired = true;
-    }
-    if (!expired && u.createdAt && u.planDaysLeft) {
-      const createdMs = new Date(u.createdAt).getTime();
-      if (!isNaN(createdMs) && (createdMs + Number(u.planDaysLeft) * 86400000) <= now) {
-        expired = true;
-      }
+  }
+
+  if (expMs !== null) {
+    const remainingDays = Math.max(0, Math.ceil((expMs - now) / 86400000));
+    if (u.planDaysLeft !== remainingDays) {
+      u.planDaysLeft = remainingDays;
+      changed = true;
     }
 
-    if (expired) {
+    if (remainingDays <= 0 && (u.plan === 'ultra' || u.plan === 'unlimited')) {
       u.plan = 'basic';
       u.credits = Math.min(Number(u.credits) || 0, 100);
       u.maxCredits = 100;
       u.planDaysLeft = 0;
       u.avatarColor = 'from-blue-600 to-cyan-600';
+      changed = true;
 
       const supa = getServerSupabase();
       if (supa && u.id && !u.id.startsWith('admin_config_')) {
@@ -606,10 +583,55 @@ function checkAndConvertToBasic(u: any): boolean {
       return true;
     }
   }
-  return false;
+
+  return changed;
 }
 
 initStorage();
+
+// Reset all users to offline on start as requested by admin
+for (const u of db.users) {
+  u.isOnline = false;
+}
+saveStorage();
+
+// Turn all users offline in Supabase database on startup
+setTimeout(async () => {
+  const supa = getServerSupabase();
+  if (supa) {
+    try {
+      await supa.from('users').update({ is_online: false }).neq('id', 'admin_config_extensions');
+      console.log('✅ Successfully turned all users offline in Supabase on startup');
+    } catch (e) {
+      console.warn('Startup Supabase offline sync:', e);
+    }
+  }
+}, 2000);
+
+// In-Memory only maintenance: Auto-turn off in local RAM after 2 minutes (0 Supabase DB queries!)
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+
+  for (const u of db.users) {
+    // 1. Online expiration: after 2 minutes without heartbeat ping, automatically turn off in memory
+    const lastActiveTime = u.lastActive ? new Date(u.lastActive).getTime() : NaN;
+    const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+    if (u.isOnline && !isLive) {
+      u.isOnline = false;
+      changed = true;
+    }
+
+    // 2. Real-time plan validity decrease in memory
+    if (checkAndConvertToBasic(u)) {
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    saveStorage();
+  }
+}, 30000);
 
 // GET extension profile data (Name, Plan, Credits, Days Left)
 app.get('/api/extension/profile/:userId', (req, res) => {
@@ -760,8 +782,8 @@ async function getCallingUser(req: any): Promise<any | null> {
           status: supaUser.status || 'active',
           extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
           canEditPrompts: supaUser.can_edit_prompts === true,
-          isOnline: Boolean(supaUser.is_online),
-          lastActive: supaUser.last_active || new Date().toISOString(),
+          isOnline: (!isNaN(new Date(supaUser.last_active || '').getTime()) && (Date.now() - new Date(supaUser.last_active).getTime() <= 120000)),
+          lastActive: supaUser.last_active || '',
           createdAt: supaUser.created_at || new Date().toISOString(),
           avatarColor: supaUser.avatar_color || 'from-purple-600 to-indigo-600',
         };
@@ -857,6 +879,13 @@ app.get('/api/users', async (req, res) => {
 app.get('/api/admin/data', async (req, res) => {
   const supa = getServerSupabase();
   const now = Date.now();
+  // Synchronize local database users state with continuous plan expiration and 2-min heartbeat window
+  for (const u of db.users) {
+    checkAndConvertToBasic(u);
+    const lastActiveTime = u.lastActive ? new Date(u.lastActive).getTime() : NaN;
+    u.isOnline = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+  }
+
   let usersList = db.users.map(u => sanitizeSafeUser(u));
   let resellersList = db.resellers;
   
@@ -870,28 +899,71 @@ app.get('/api/admin/data', async (req, res) => {
             const userEmail = (u.email || '').toLowerCase().trim();
             const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
             const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
-            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
+            // Strict 2-minute (120,000 ms) window from heartbeat ping:
+            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+
+            // Time-based continuous plan validity decrease
+            let planDaysLeft = Number(u.plan_days_left) ?? 30;
+            let planExpiresAt = u.plan_expires_at;
+
+            if (!isSysAdmin) {
+              if (planExpiresAt) {
+                const expMs = new Date(planExpiresAt).getTime();
+                if (!isNaN(expMs)) {
+                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                }
+              } else if (u.created_at && u.plan_days_left !== undefined) {
+                const createdMs = new Date(u.created_at).getTime();
+                if (!isNaN(createdMs)) {
+                  const expMs = createdMs + Number(u.plan_days_left) * 86400000;
+                  planExpiresAt = new Date(expMs).toISOString();
+                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                }
+              } else if (u.plan_days_left !== undefined) {
+                const expMs = now + Number(u.plan_days_left) * 86400000;
+                planExpiresAt = new Date(expMs).toISOString();
+              }
+            }
+
+            const isExpired = !isSysAdmin && planDaysLeft <= 0;
+
             return {
               id: u.id,
               name: u.name || 'User',
               email: u.email || '',
-              plan: isSysAdmin ? 'ultra' : (u.plan || 'basic'),
-              credits: isSysAdmin ? 45000 : (Number(u.credits) ?? 100),
-              maxCredits: isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100)),
-              planDaysLeft: Number(u.plan_days_left) ?? 30,
-              planExpiresAt: u.plan_expires_at,
+              plan: isSysAdmin ? 'ultra' : (isExpired ? 'basic' : (u.plan || 'basic')),
+              credits: isSysAdmin ? 45000 : (isExpired ? Math.min(Number(u.credits) ?? 100, 100) : (Number(u.credits) ?? 100)),
+              maxCredits: isSysAdmin ? 45000 : (isExpired ? 100 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100))),
+              planDaysLeft: isSysAdmin ? 30 : planDaysLeft,
+              planExpiresAt,
               role: isSysAdmin ? 'admin' : (u.role || 'user'),
               resellerId: u.reseller_id,
               resellerName: u.reseller_name,
               status: u.status || 'active',
               extensionAccess: u.extension_access !== false,
               canEditPrompts: u.can_edit_prompts === true,
-              isOnline: isLive || Boolean(u.is_online),
-              lastActive: u.last_active || new Date().toISOString(),
+              isOnline: isLive, // Strictly from heartbeat within 2 minutes!
+              lastActive: u.last_active || '', // Empty if no heartbeat
               createdAt: u.created_at || new Date().toISOString(),
               avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
             };
           });
+
+        // Zero-Quota Guard: Only update Supabase if an Ultra/Unlimited user actually expired (no unnecessary writes!)
+        for (const u of supaUsers) {
+          if (!u.id || u.id.startsWith('admin_config_')) continue;
+          if (u.plan_expires_at && (u.plan === 'ultra' || u.plan === 'unlimited')) {
+            const expMs = new Date(u.plan_expires_at).getTime();
+            if (!isNaN(expMs) && expMs <= now) {
+              supa.from('users').update({
+                plan: 'basic',
+                plan_days_left: 0,
+                max_credits: 100,
+                credits: Math.min(Number(u.credits) ?? 100, 100),
+              }).eq('id', u.id).then(() => {});
+            }
+          }
+        }
       }
     } catch {}
 

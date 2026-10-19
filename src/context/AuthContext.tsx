@@ -976,9 +976,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 if (Array.isArray(adminData.users)) {
                   const now = Date.now();
                   const mergedUsers = adminData.users.map((u: User) => {
-                    if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
-                      return { ...u, isOnline: true, lastActive: new Date().toISOString() };
-                    }
                     const pending = lastUpdatedUsersRef.current.get(u.id);
                     if (pending && now - pending.timestamp < 10000) {
                       return { ...u, ...pending.data };
@@ -1027,9 +1024,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const now = Date.now();
             if (true) {
               const mergedUsers = data.users.map((u: User) => {
-                if (currentUser && (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase()))) {
-                  return { ...u, isOnline: true, lastActive: new Date().toISOString() };
-                }
                 const pending = lastUpdatedUsersRef.current.get(u.id);
                 if (pending && now - pending.timestamp < 10000) {
                   return { ...u, ...pending.data };

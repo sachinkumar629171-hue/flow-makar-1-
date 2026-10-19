@@ -6,27 +6,17 @@ import { User } from '../types';
  */
 export function isUserLive(
   user: User | null | undefined, 
-  currentUserId?: string, 
-  currentUserEmail?: string
+  _currentUserId?: string, 
+  _currentUserEmail?: string
 ): boolean {
-  if (!user) return false;
+  if (!user || !user.lastActive || user.isOnline === false) return false;
 
-  // The active logged-in user viewing the dashboard is live
-  if (currentUserId && user.id === currentUserId) return true;
-  if (currentUserEmail && user.email && user.email.toLowerCase() === currentUserEmail.toLowerCase()) return true;
+  // Real-time verification: User is LIVE strictly within 2 minutes (120,000 ms) from last heartbeat ping
+  const time = new Date(user.lastActive).getTime();
+  if (isNaN(time)) return false;
 
-  // Real-time verification: User is LIVE strictly within 2 minutes (120,000 ms)
-  // Continuous 2-minute cycle: While user remains online, heartbeat refreshes this every 25s
-  if (user.lastActive) {
-    if (typeof user.lastActive === 'string' && user.lastActive.toLowerCase().includes('now')) return true;
-    const time = new Date(user.lastActive).getTime();
-    if (!isNaN(time)) {
-      const diffMs = Date.now() - time;
-      return diffMs <= 120000 && diffMs >= -60000;
-    }
-  }
-
-  return false;
+  const diffMs = Date.now() - time;
+  return diffMs <= 120000 && diffMs >= -5000;
 }
 
 /**
@@ -34,21 +24,18 @@ export function isUserLive(
  */
 export function formatUserLastActive(
   user: User | null | undefined, 
-  currentUserId?: string, 
-  currentUserEmail?: string
+  _currentUserId?: string, 
+  _currentUserEmail?: string
 ): string {
-  if (!user) return 'Offline';
-  if (isUserLive(user, currentUserId, currentUserEmail)) return 'LIVE NOW';
-  if (!user.lastActive) return 'Offline';
-  if (typeof user.lastActive === 'string' && user.lastActive.toLowerCase().includes('now')) return 'Active just now';
-
+  if (!user || !user.lastActive) return 'Offline';
   const time = new Date(user.lastActive).getTime();
-  if (isNaN(time)) return user.lastActive || 'Offline';
+  if (isNaN(time)) return 'Offline';
 
-  const diffMs = Math.max(0, Date.now() - time);
+  const diffMs = Date.now() - time;
+  if (user.isOnline !== false && diffMs <= 120000 && diffMs >= -5000) return 'LIVE NOW';
+  if (diffMs < 0) return 'Offline';
+
   const diffMins = Math.floor(diffMs / 60000);
-
-  if (diffMins < 1) return 'Active just now';
   if (diffMins < 60) return `Active ${diffMins}m ago`;
   const diffHours = Math.floor(diffMins / 60);
   if (diffHours < 24) return `Active ${diffHours}h ago`;
