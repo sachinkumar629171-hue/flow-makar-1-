@@ -91,22 +91,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             // Strict 2-minute (120,000 ms) heartbeat window
             const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
-            // Time-based continuous plan validity decrease
+            // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
+            const planStartedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at || new Date().toISOString();
             let planDaysLeft = Number(u.plan_days_left) ?? 30;
             let planExpiresAt = u.plan_expires_at;
 
-            if (!isSysAdmin) {
-              if (planExpiresAt) {
-                const expMs = new Date(planExpiresAt).getTime();
-                if (!isNaN(expMs)) {
-                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
-                }
-              } else if (u.created_at && u.plan_days_left !== undefined) {
-                const createdMs = new Date(u.created_at).getTime();
-                if (!isNaN(createdMs)) {
-                  const expMs = createdMs + Number(u.plan_days_left) * 86400000;
-                  planExpiresAt = new Date(expMs).toISOString();
-                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+            const startMs = new Date(planStartedAt).getTime();
+            const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
+            const targetExp = new Date(computedExpMs).toISOString();
+
+            if (!planExpiresAt || u.plan_started_at !== planStartedAt) {
+              planExpiresAt = targetExp;
+              // Sync back to Supabase so table shows actual creation timing
+              supabase.from('users').update({
+                plan_started_at: planStartedAt,
+                plan_expires_at: targetExp
+              }).eq('id', u.id).then(() => {}, () => {});
+            } else if (!isSysAdmin) {
+              const expMs = new Date(planExpiresAt).getTime();
+              if (!isNaN(expMs)) {
+                planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                if (Number(u.plan_days_left) !== planDaysLeft) {
+                  supabase.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
                 }
               }
             }
@@ -122,6 +128,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               maxCredits: isSysAdmin ? 45000 : (isExpired ? 100 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100))),
               planDaysLeft: isSysAdmin ? 30 : planDaysLeft,
               planExpiresAt,
+              planStartedAt,
               role: isSysAdmin ? 'admin' : (u.role || 'user'),
               resellerId: u.reseller_id,
               resellerName: u.reseller_name,

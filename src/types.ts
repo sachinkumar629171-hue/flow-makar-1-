@@ -15,6 +15,7 @@ export interface User {
   usedCredits?: number;
   planDaysLeft: number;
   planExpiresAt?: string;
+  planStartedAt?: string;
   role: 'user' | 'admin' | 'reseller';
   createdAt: string;
   avatarColor?: string;

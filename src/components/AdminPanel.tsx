@@ -1037,37 +1037,63 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
                         <td className="py-4 px-4 select-text">
                           {(() => {
                             const validity = getUserValidityTime(user);
+                            const formatShortDate = (isoStr?: string) => {
+                              if (!isoStr) return '';
+                              try {
+                                const d = new Date(isoStr);
+                                if (isNaN(d.getTime())) return '';
+                                return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+                              } catch {
+                                return '';
+                              }
+                            };
+                            const startDisplay = formatShortDate(user.planStartedAt || user.createdAt);
+                            const expiryDisplay = formatShortDate(user.planExpiresAt);
+
                             return (
-                              <div className="flex items-center gap-1.5 select-text">
-                                <button
-                                  onClick={() => handleQuickAdjustDays(user, -5)}
-                                  title="Decrease validity by 5 days"
-                                  className="w-5 h-5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white flex items-center justify-center text-xs font-bold cursor-pointer"
-                                >
-                                  -
-                                </button>
-                                <button
-                                  onClick={() => setSelectedUserForCustomTime(user)}
-                                  title="Click to set exact custom validity time"
-                                  className={`px-2 py-1 rounded-md text-xs font-semibold border transition-transform active:scale-95 cursor-pointer hover:ring-1 hover:ring-purple-500/50 whitespace-nowrap select-text ${
-                                    validity.isExpired
-                                      ? 'bg-red-950/80 text-red-300 border-red-800/80'
-                                      : validity.days <= 5
-                                      ? 'bg-red-950/80 text-red-300 border-red-800/80'
-                                      : validity.days <= 15
-                                      ? 'bg-amber-950/80 text-amber-300 border-amber-800/80'
-                                      : 'bg-neutral-900 text-emerald-300 border-neutral-700'
-                                  }`}
-                                >
-                                  {validity.displayText}
-                                </button>
-                                <button
-                                  onClick={() => handleQuickAdjustDays(user, +5)}
-                                  title="Increase validity by 5 days"
-                                  className="w-5 h-5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white flex items-center justify-center text-xs font-bold cursor-pointer"
-                                >
-                                  +
-                                </button>
+                              <div className="flex flex-col gap-1 select-text">
+                                <div className="flex items-center gap-1.5 select-text">
+                                  <button
+                                    onClick={() => handleQuickAdjustDays(user, -5)}
+                                    title="Decrease validity by 5 days"
+                                    className="w-5 h-5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white flex items-center justify-center text-xs font-bold cursor-pointer"
+                                  >
+                                    -
+                                  </button>
+                                  <button
+                                    onClick={() => setSelectedUserForCustomTime(user)}
+                                    title="Click to set exact custom validity time"
+                                    className={`px-2 py-1 rounded-md text-xs font-semibold border transition-transform active:scale-95 cursor-pointer hover:ring-1 hover:ring-purple-500/50 whitespace-nowrap select-text ${
+                                      validity.isExpired
+                                        ? 'bg-red-950/80 text-red-300 border-red-800/80'
+                                        : validity.days <= 5
+                                        ? 'bg-red-950/80 text-red-300 border-red-800/80'
+                                        : validity.days <= 15
+                                        ? 'bg-amber-950/80 text-amber-300 border-amber-800/80'
+                                        : 'bg-neutral-900 text-emerald-300 border-neutral-700'
+                                    }`}
+                                  >
+                                    {validity.displayText}
+                                  </button>
+                                  <button
+                                    onClick={() => handleQuickAdjustDays(user, +5)}
+                                    title="Increase validity by 5 days"
+                                    className="w-5 h-5 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white flex items-center justify-center text-xs font-bold cursor-pointer"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                                {(startDisplay || expiryDisplay) && (
+                                  <div className="text-[10px] text-neutral-400 font-mono flex items-center gap-1.5 select-text">
+                                    {startDisplay && <span>Start: {startDisplay}</span>}
+                                    {startDisplay && expiryDisplay && <span>•</span>}
+                                    {expiryDisplay && (
+                                      <span className={validity.isExpired ? 'text-red-400 font-semibold' : 'text-neutral-400'}>
+                                        Exp: {expiryDisplay}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             );
                           })()}

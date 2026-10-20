@@ -156,6 +156,8 @@ export const ALLOWED_USER_COLUMNS = new Set([
   'max_credits',
   'credits',
   'plan_days_left',
+  'plan_expires_at',
+  'plan_started_at',
   'session_token',
   'is_online',
   'whatsapp',
@@ -200,8 +202,22 @@ export function formatSupabaseUserPayload(user: Record<string, any>): Record<str
 
   if (user.credits !== undefined) payload.credits = Number(user.credits) ?? 0;
   
-  if (user.planDaysLeft !== undefined) payload.plan_days_left = Number(user.planDaysLeft) ?? 30;
-  else if (user.plan_days_left !== undefined) payload.plan_days_left = Number(user.plan_days_left) ?? 30;
+  const daysLeft = user.planDaysLeft !== undefined ? Number(user.planDaysLeft) : (user.plan_days_left !== undefined ? Number(user.plan_days_left) : 30);
+  payload.plan_days_left = daysLeft;
+
+  const startAt = user.createdAt || user.created_at || user['created_at TIMESTAMPTZ'] || user.planStartedAt || user.plan_started_at || new Date().toISOString();
+  payload.plan_started_at = startAt;
+
+  if (user.planExpiresAt && user.planExpiresAt !== 'null') {
+    payload.plan_expires_at = String(user.planExpiresAt);
+  } else if (user.plan_expires_at && user.plan_expires_at !== 'null') {
+    payload.plan_expires_at = String(user.plan_expires_at);
+  } else {
+    // Automatically calculate from startAt + plan_days_left so plan_expires_at is NEVER NULL!
+    const startMs = new Date(startAt).getTime();
+    const expMs = (isNaN(startMs) ? Date.now() : startMs) + Math.max(1, daysLeft) * 86400000;
+    payload.plan_expires_at = new Date(expMs).toISOString();
+  }
 
   if (user.sessionToken !== undefined) payload.session_token = String(user.sessionToken);
   else if (user.session_token !== undefined) payload.session_token = String(user.session_token);

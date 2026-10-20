@@ -281,9 +281,15 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                             </button>
                           </div>
                         </div>
-                        <div className="text-[10px] text-neutral-500 font-mono mt-0.5 flex items-center gap-1">
-                          <Calendar className="w-3 h-3" />
-                          <span>Exp: {expiryInfo.expiryDate}</span>
+                        <div className="text-[10px] text-neutral-400 font-mono mt-1 flex flex-col gap-0.5">
+                          <div className="flex items-center gap-1">
+                            <span className="text-neutral-500">Start:</span>
+                            <span>{reseller.createdAt ? new Date(reseller.createdAt).toLocaleDateString('en-GB') : 'Today'}</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-neutral-500">Exp:</span>
+                            <span className={isExpired ? 'text-red-400 font-semibold' : 'text-neutral-300'}>{expiryInfo.expiryDate}</span>
+                          </div>
                         </div>
                       </td>
 

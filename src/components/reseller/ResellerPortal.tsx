@@ -540,21 +540,43 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
                         <td className="py-3.5 px-4 select-text">
                           {(() => {
                             const validity = getUserValidityTime(user);
+                            const formatShortDate = (isoStr?: string) => {
+                              if (!isoStr) return '';
+                              try {
+                                const d = new Date(isoStr);
+                                if (isNaN(d.getTime())) return '';
+                                return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+                              } catch {
+                                return '';
+                              }
+                            };
+                            const startDisplay = formatShortDate(user.planStartedAt || user.createdAt);
+                            const expiryDisplay = formatShortDate(user.planExpiresAt);
+
                             return (
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedUserForCustomTime(user);
-                                }}
-                                title="Click to adjust custom validity (Max 30 days)"
-                                className={`text-[11px] font-mono px-2.5 py-1 rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
-                                  validity.isExpired 
-                                    ? 'text-red-400 bg-red-950/40 border-red-800/40' 
-                                    : 'text-emerald-400 font-semibold bg-emerald-950/40 border-emerald-800/40 hover:bg-emerald-950/70'
-                                }`}
-                              >
-                                {validity.displayText} ⏱
-                              </button>
+                              <div className="flex flex-col gap-1 select-text">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedUserForCustomTime(user);
+                                  }}
+                                  title="Click to adjust custom validity (Max 30 days)"
+                                  className={`text-[11px] font-mono px-2.5 py-1 rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                                    validity.isExpired 
+                                      ? 'text-red-400 bg-red-950/40 border-red-800/40' 
+                                      : 'text-emerald-400 font-semibold bg-emerald-950/40 border-emerald-800/40 hover:bg-emerald-950/70'
+                                  }`}
+                                >
+                                  {validity.displayText} ⏱
+                                </button>
+                                {(startDisplay || expiryDisplay) && (
+                                  <div className="text-[10px] text-neutral-400 font-mono flex items-center gap-1 select-text">
+                                    {startDisplay && <span>Start: {startDisplay}</span>}
+                                    {startDisplay && expiryDisplay && <span>•</span>}
+                                    {expiryDisplay && <span className={validity.isExpired ? 'text-red-400 font-semibold' : 'text-neutral-400'}>Exp: {expiryDisplay}</span>}
+                                  </div>
+                                )}
+                              </div>
                             );
                           })()}
                         </td>

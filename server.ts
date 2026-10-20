@@ -902,26 +902,30 @@ app.get('/api/admin/data', async (req, res) => {
             // Strict 2-minute (120,000 ms) window from heartbeat ping:
             const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
-            // Time-based continuous plan validity decrease
+            // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
+            const planStartedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at || new Date().toISOString();
             let planDaysLeft = Number(u.plan_days_left) ?? 30;
             let planExpiresAt = u.plan_expires_at;
 
-            if (!isSysAdmin) {
-              if (planExpiresAt) {
-                const expMs = new Date(planExpiresAt).getTime();
-                if (!isNaN(expMs)) {
-                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+            // Auto-align plan_started_at and plan_expires_at with actual access creation time
+            const startMs = new Date(planStartedAt).getTime();
+            const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
+            const targetExp = new Date(computedExpMs).toISOString();
+
+            if (!planExpiresAt || u.plan_started_at !== planStartedAt) {
+              planExpiresAt = targetExp;
+              // Sync back to Supabase so table shows actual creation timing
+              supa.from('users').update({
+                plan_started_at: planStartedAt,
+                plan_expires_at: targetExp
+              }).eq('id', u.id).then(() => {}, () => {});
+            } else if (!isSysAdmin) {
+              const expMs = new Date(planExpiresAt).getTime();
+              if (!isNaN(expMs)) {
+                planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                if (Number(u.plan_days_left) !== planDaysLeft) {
+                  supa.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
                 }
-              } else if (u.created_at && u.plan_days_left !== undefined) {
-                const createdMs = new Date(u.created_at).getTime();
-                if (!isNaN(createdMs)) {
-                  const expMs = createdMs + Number(u.plan_days_left) * 86400000;
-                  planExpiresAt = new Date(expMs).toISOString();
-                  planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
-                }
-              } else if (u.plan_days_left !== undefined) {
-                const expMs = now + Number(u.plan_days_left) * 86400000;
-                planExpiresAt = new Date(expMs).toISOString();
               }
             }
 
@@ -936,6 +940,7 @@ app.get('/api/admin/data', async (req, res) => {
               maxCredits: isSysAdmin ? 45000 : (isExpired ? 100 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100))),
               planDaysLeft: isSysAdmin ? 30 : planDaysLeft,
               planExpiresAt,
+              planStartedAt,
               role: isSysAdmin ? 'admin' : (u.role || 'user'),
               resellerId: u.reseller_id,
               resellerName: u.reseller_name,
@@ -970,11 +975,54 @@ app.get('/api/admin/data', async (req, res) => {
     try {
       const { data: supaResellers } = await supa.from('resellers').select('*');
       if (supaResellers && Array.isArray(supaResellers) && supaResellers.length > 0) {
-        resellersList = supaResellers.map((sr: any) => ({
-          ...sr,
-          portalName: sr.portal_name || sr.portalName,
-          apiKey: sr.api_key || sr.apiKey,
-        }));
+        resellersList = supaResellers.map((sr: any) => {
+          const createdAt = sr.created_at || new Date().toISOString();
+          let expiresAt = sr.expires_at;
+          let daysLeft = Number(sr.days_left) ?? 30;
+
+          if (expiresAt) {
+            const expMs = new Date(expiresAt).getTime();
+            if (!isNaN(expMs)) {
+              daysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+            }
+          } else if (sr.expiry_date && String(sr.expiry_date).includes('/')) {
+            const parts = String(sr.expiry_date).split('/');
+            if (parts.length === 3) {
+              const d = parseInt(parts[0], 10);
+              const m = parseInt(parts[1], 10) - 1;
+              const y = parseInt(parts[2], 10);
+              const t = new Date(y, m, d, 23, 59, 59).getTime();
+              if (!isNaN(t)) {
+                expiresAt = new Date(t).toISOString();
+                daysLeft = Math.max(0, Math.ceil((t - now) / 86400000));
+              }
+            }
+          } else if (sr.created_at && sr.days_left !== undefined) {
+            const createdMs = new Date(sr.created_at).getTime();
+            if (!isNaN(createdMs)) {
+              const expMs = createdMs + Number(sr.days_left) * 86400000;
+              expiresAt = new Date(expMs).toISOString();
+              daysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+            }
+          }
+
+          if (!expiresAt) {
+            expiresAt = new Date(now + Math.max(1, daysLeft) * 86400000).toISOString();
+          }
+
+          const isExpired = daysLeft <= 0;
+
+          return {
+            ...sr,
+            portalName: sr.portal_name || sr.portalName,
+            apiKey: sr.api_key || sr.apiKey,
+            userLimit: Number(sr.user_limit || sr.userLimit) || 20,
+            daysLeft, // Dynamically computed against present timing!
+            createdAt,
+            expiresAt,
+            status: sr.status === 'suspended' ? 'suspended' : (isExpired ? 'expired' : 'active'),
+          };
+        });
       }
     } catch {}
   }
