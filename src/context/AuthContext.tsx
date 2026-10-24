@@ -173,7 +173,7 @@ export const DEFAULT_PROMPT_CONFIG: PromptConfig = {
     image: 20,
     video: 30
   },
-  headerEmailOpacity: 100,
+  headerEmailOpacity: 0,
   signupEnabled: false,
   signupTelegramEnabled: true,
   signupTelegramUrl: 'https://t.me/google_ultra_veo3_bot',
@@ -399,10 +399,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const saved = localStorage.getItem(PROMPT_CONFIG_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
+        const resolvedOpacity = parsed.headerEmailOpacityCustom ? (parsed.headerEmailOpacity ?? 0) : 0;
         // Merge with defaults to ensure new keys like 'pricing' are present
         return {
           ...DEFAULT_PROMPT_CONFIG,
           ...parsed,
+          headerEmailOpacity: resolvedOpacity,
           pricing: parsed.pricing || DEFAULT_PROMPT_CONFIG.pricing
         };
       }
@@ -1015,7 +1017,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 }
 
                 if (adminData.promptConfig) {
-                  setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(adminData.promptConfig) ? prev : adminData.promptConfig));
+                  const normalizedPromptCfg = {
+                    ...adminData.promptConfig,
+                    headerEmailOpacity: adminData.promptConfig.headerEmailOpacityCustom
+                      ? (adminData.promptConfig.headerEmailOpacity ?? 0)
+                      : 0,
+                  };
+                  setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(normalizedPromptCfg) ? prev : normalizedPromptCfg));
                 }
                 if (adminData.planExtensions) {
                   setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(adminData.planExtensions) ? prev : adminData.planExtensions));
@@ -1179,6 +1187,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 ...DEFAULT_PROMPT_CONFIG,
                 ...prev,
                 ...cfgData.promptConfig,
+                headerEmailOpacity: cfgData.promptConfig.headerEmailOpacityCustom
+                  ? (cfgData.promptConfig.headerEmailOpacity ?? 0)
+                  : (prev?.headerEmailOpacityCustom ? (prev.headerEmailOpacity ?? 0) : 0),
                 servers: mergedServers,
               };
               if (prev && JSON.stringify(prev) === JSON.stringify(merged)) {

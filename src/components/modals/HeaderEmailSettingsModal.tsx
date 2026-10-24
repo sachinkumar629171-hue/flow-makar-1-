@@ -15,13 +15,13 @@ export const HeaderEmailSettingsModal: React.FC<HeaderEmailSettingsModalProps> =
 }) => {
   const { promptConfig, updatePromptConfig, currentUser } = useAuth();
   
-  // Default to promptConfig.headerEmailOpacity or 100
-  const [opacity, setOpacity] = useState<number>(100);
+  // Default to promptConfig.headerEmailOpacity or 0 (stealth/hidden by default)
+  const [opacity, setOpacity] = useState<number>(0);
   const [copiedCode, setCopiedCode] = useState(false);
 
   useEffect(() => {
-    if (promptConfig && promptConfig.headerEmailOpacity !== undefined) {
-      setOpacity(promptConfig.headerEmailOpacity);
+    if (promptConfig) {
+      setOpacity(promptConfig.headerEmailOpacityCustom ? (promptConfig.headerEmailOpacity ?? 0) : 0);
     }
   }, [promptConfig]);
 
@@ -31,6 +31,7 @@ export const HeaderEmailSettingsModal: React.FC<HeaderEmailSettingsModalProps> =
     e.preventDefault();
     updatePromptConfig({
       headerEmailOpacity: Number(opacity),
+      headerEmailOpacityCustom: true,
     });
     if (onSavedToast) {
       onSavedToast(`Header Email Opacity set to ${opacity}%`);

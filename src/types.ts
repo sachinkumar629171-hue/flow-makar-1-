@@ -182,6 +182,7 @@ export interface PromptConfig {
   customPlanContactUrl?: string;
   pricing?: PricingConfig;
   headerEmailOpacity?: number; // Opacity percentage for header email (0 to 100)
+  headerEmailOpacityCustom?: boolean; // True when explicitly set in admin modal
   server1Prompt?: string;
   server2Prompt?: string;
   websiteFaviconUrl?: string; // Custom browser tab favicon/logo URL

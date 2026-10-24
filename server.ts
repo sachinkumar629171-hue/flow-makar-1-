@@ -1087,10 +1087,29 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
   };
 
   const showNotification = Boolean(activeAnnouncement && activeAnnouncement.enabled);
+  const requiredVer = getActiveExtensionVersion(minimalProfile.plan);
+  const clientVersion = extractClientExtensionVersion(req);
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(requiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      clientVersion,
+      error: `Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVer}.`,
+    });
+  }
 
   res.json({
     success: true,
     user: minimalProfile,
+    requiredVersion: requiredVer,
+    version: requiredVer,
+    extensionVersion: requiredVer,
     showNotification,
     ...(showNotification && activeAnnouncement
       ? {
@@ -1470,26 +1489,26 @@ function cleanEmailString(raw: string): string {
   return raw.replace(/[\u200B-\u200D\uFEFF\s]+/g, '').trim().toLowerCase();
 }
 
-// Authoritative version resolver: Reads exact version configured in Admin Panel
+// Authoritative version resolver: Reads exact version configured in Admin Panel & Supabase
 function getActiveExtensionVersion(plan: string = 'ultra'): string {
-  // 1. Admin Panel Ultra extension configuration (Absolute Primary Source of Truth)
+  // 1. Admin Panel Extension Signal configuration (kept in sync with Supabase)
+  if (db.promptConfig?.extensionVersion && String(db.promptConfig.extensionVersion).trim()) {
+    const pv = String(db.promptConfig.extensionVersion).trim();
+    if (pv !== 'v1.0.2' && pv !== 'v2.7.1') return pv;
+  }
+
+  // 2. Admin Panel Ultra extension configuration
   if (db.planExtensions?.ultra?.version && String(db.planExtensions.ultra.version).trim()) {
     const uv = String(db.planExtensions.ultra.version).trim();
     if (uv !== 'v1.0.2') return uv;
   }
 
-  // 2. Basic plan if explicitly requested
+  // 3. Basic plan if explicitly requested
   if (plan === 'basic') {
     if (db.planExtensions?.basic?.version && String(db.planExtensions.basic.version).trim()) {
       const bv = String(db.planExtensions.basic.version).trim();
       if (bv !== 'v1.0.2') return bv;
     }
-  }
-
-  // 3. Admin Panel Extension Signal configuration
-  if (db.promptConfig?.extensionVersion && String(db.promptConfig.extensionVersion).trim()) {
-    const pv = String(db.promptConfig.extensionVersion).trim();
-    if (pv !== 'v1.0.2' && pv !== 'v2.7.1') return pv;
   }
 
   // 4. Basic plan fallback
@@ -1502,7 +1521,27 @@ function getActiveExtensionVersion(plan: string = 'ultra'): string {
 
 function normalizeVersion(v: any): string {
   if (!v) return '';
-  return String(v).trim().toLowerCase().replace(/^v/, '');
+  return String(v).trim().toLowerCase().replace(/^v/i, '');
+}
+
+function extractClientExtensionVersion(req: any): string {
+  const body = req.body || {};
+  const query = req.query || {};
+  const headers = req.headers || {};
+  const raw =
+    body.version ||
+    body.extensionVersion ||
+    body.clientVersion ||
+    body.extVersion ||
+    query.version ||
+    query.extensionVersion ||
+    query.clientVersion ||
+    query.extVersion ||
+    headers['x-extension-version'] ||
+    headers['x-client-version'] ||
+    headers['x-version'] ||
+    '';
+  return String(raw).trim();
 }
 
 // ======================== EXTENSION API ENDPOINTS ========================
@@ -1510,7 +1549,7 @@ function normalizeVersion(v: any): string {
 // In-memory cache to debounce and stop repeated spam requests from extensions
 const extensionUserCache = new Map<string, { time: number; payload: any }>();
 let lastSupabaseConfigFetchTime = 0;
-const SUPABASE_CONFIG_CACHE_TTL = 30000; // 30 seconds TTL cache to prevent Supabase request spikes
+const SUPABASE_CONFIG_CACHE_TTL = 10000; // 10 seconds TTL cache for fast Supabase version & config sync
 
 async function refreshSupabaseConfigIfNeeded() {
   const now = Date.now();
@@ -1520,18 +1559,34 @@ async function refreshSupabaseConfigIfNeeded() {
   const supa = getServerSupabase();
   if (!supa) return;
   try {
-    const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
-    if (extRow?.name) {
-      try {
-        const parsedExt = JSON.parse(extRow.name);
-        if (parsedExt?.ultra?.version && String(parsedExt.ultra.version).trim()) {
-          if (!db.planExtensions) db.planExtensions = {};
-          db.planExtensions.ultra = parsedExt.ultra;
-        }
-      } catch {}
+    let appExtParsed: any = null;
+    let usrExtParsed: any = null;
+    try {
+      const { data: appExtRow } = await supa.from('app_config').select('value').eq('key', 'admin_config_extensions').maybeSingle();
+      if (appExtRow?.value) {
+        appExtParsed = typeof appExtRow.value === 'string' ? JSON.parse(appExtRow.value) : appExtRow.value;
+      }
+    } catch {}
+
+    try {
+      const { data: extRow } = await supa.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+      if (extRow?.name) {
+        usrExtParsed = typeof extRow.name === 'string' ? JSON.parse(extRow.name) : extRow.name;
+      }
+    } catch {}
+
+    const appExtTs = Number(appExtParsed?._updatedAt || (appExtParsed?.ultra?.updatedAt ? new Date(appExtParsed.ultra.updatedAt).getTime() : 0) || 0);
+    const usrExtTs = Number(usrExtParsed?._updatedAt || (usrExtParsed?.ultra?.updatedAt ? new Date(usrExtParsed.ultra.updatedAt).getTime() : 0) || 0);
+    const extParsed = (usrExtParsed && usrExtTs > appExtTs) ? usrExtParsed : (appExtParsed || usrExtParsed);
+    const latestExtTs = Math.max(appExtTs, usrExtTs);
+
+    if (extParsed?.ultra?.version && String(extParsed.ultra.version).trim()) {
+      if (!db.planExtensions) db.planExtensions = {};
+      db.planExtensions.ultra = extParsed.ultra;
+      if (extParsed.basic) db.planExtensions.basic = extParsed.basic;
     }
 
-    // 1. Check both app_config and users table for prompt config and pick the most recently updated
+    // Check both app_config and users table for prompt config and pick the most recently updated
     let appParsed: any = null;
     let usrParsed: any = null;
     try {
@@ -1544,13 +1599,14 @@ async function refreshSupabaseConfigIfNeeded() {
     try {
       const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
       if (promptRow?.name) {
-        usrParsed = JSON.parse(promptRow.name);
+        usrParsed = typeof promptRow.name === 'string' ? JSON.parse(promptRow.name) : promptRow.name;
       }
     } catch {}
 
-    const appTs = Number(appParsed?.dashboardAnnouncement?.updatedAt || appParsed?._updatedAt || 0);
-    const usrTs = Number(usrParsed?.dashboardAnnouncement?.updatedAt || usrParsed?._updatedAt || 0);
+    const appTs = Number(appParsed?._updatedAt || appParsed?.dashboardAnnouncement?.updatedAt || 0);
+    const usrTs = Number(usrParsed?._updatedAt || usrParsed?.dashboardAnnouncement?.updatedAt || 0);
     const promptParsed = (usrParsed && usrTs > appTs) ? usrParsed : (appParsed || usrParsed);
+    const latestPromptTs = Math.max(appTs, usrTs);
 
     if (promptParsed && typeof promptParsed === 'object') {
       const localHasPrompts = db.promptConfig?.servers?.some((s: any) => s.prompt && s.prompt.trim());
@@ -1572,19 +1628,40 @@ async function refreshSupabaseConfigIfNeeded() {
         ...promptParsed,
         servers: mergedServers,
       };
+
+      // Synchronize authoritative requiredVersion between admin_config_prompts and admin_config_extensions
+      const promptVer = promptParsed.extensionVersion ? String(promptParsed.extensionVersion).trim() : '';
+      const extVer = extParsed?.ultra?.version ? String(extParsed.ultra.version).trim() : '';
+      const authoritativeVer =
+        (promptVer && extVer)
+          ? (latestExtTs > latestPromptTs ? extVer : promptVer)
+          : (promptVer || extVer);
+
+      if (authoritativeVer) {
+        db.promptConfig.extensionVersion = authoritativeVer;
+        if (!db.planExtensions) db.planExtensions = {};
+        if (!db.planExtensions.ultra) db.planExtensions.ultra = {};
+        db.planExtensions.ultra.version = authoritativeVer;
+      }
+
       saveStorage();
 
       if (localHasPrompts && !incomingHasPrompts) {
         // Local memory has active prompts, but Supabase has empty ones. Push to Supabase to self-heal!
         safeSaveSupabasePromptConfig(supa, db.promptConfig);
       }
+    } else if (extParsed?.ultra?.version && String(extParsed.ultra.version).trim()) {
+      const extVer = String(extParsed.ultra.version).trim();
+      if (!db.promptConfig) db.promptConfig = {};
+      db.promptConfig.extensionVersion = extVer;
+      saveStorage();
     }
     lastSupabaseConfigFetchTime = Date.now();
   } catch {}
 }
 
 // GET /api/extension/user?email=...&token=...
-// Verifies member Gmail ID, returns profile, plan, credits, validity, and live dynamic Server Prompts (Cloudflare Option 2 or Option 1)
+// Verifies member Gmail ID, sessionToken, plan, and extension version against Supabase requiredVersion
 app.get('/api/extension/user', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
   res.setHeader('Pragma', 'no-cache');
@@ -1594,6 +1671,29 @@ app.get('/api/extension/user', async (req, res) => {
 
   let email = cleanEmailString(req.query.email as string || '');
   const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
+  const clientVersion = extractClientExtensionVersion(req);
+  const initialRequiredVer = getActiveExtensionVersion('ultra');
+
+  // Check extension version against Supabase requiredVersion immediately if provided
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(initialRequiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      clientVersion,
+      downloadUrl: '/api/extensions/download/ultra',
+      error: `Extension Update Required: Your extension version (${clientVersion}) does not match the required version (${initialRequiredVer}). Please update your extension.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) does not match the required version (${initialRequiredVer}). Please update your extension.`,
+      servers: [],
+    });
+  }
 
   // If email was not explicitly passed, try resolving user by session token
   if (!email && reqToken) {
@@ -1616,6 +1716,9 @@ app.get('/api/extension/user', async (req, res) => {
       success: false, 
       serverOnline: true,
       serverStatus: 'online',
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
       error: 'Authentication failed: Both Gmail ID (email) and session token (token number) are required.' 
     });
   }
@@ -1672,7 +1775,25 @@ app.get('/api/extension/user', async (req, res) => {
   }
 
   if (!user) {
-    return res.status(404).json({ success: false, error: `No user found registered with Gmail ID: ${email}` });
+    return res.status(404).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: `No user found registered with Gmail ID: ${email}`
+    });
+  }
+
+  // Verify session token matches user's active session token
+  if (user.sessionToken && reqToken && user.sessionToken !== reqToken) {
+    return res.status(401).json({
+      success: false,
+      allowed: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Invalid or expired session token. Please log in again on the portal.',
+    });
   }
 
   if (checkAndConvertToBasic(user)) {
@@ -1713,6 +1834,26 @@ app.get('/api/extension/user', async (req, res) => {
 
   const activePlanVer = getActiveExtensionVersion(user.plan);
 
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(activePlanVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: activePlanVer,
+      extensionVersion: activePlanVer,
+      requiredVersion: activePlanVer,
+      clientVersion,
+      downloadUrl: `/api/extensions/download/${user.plan || 'ultra'}`,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${activePlanVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${activePlanVer}.`,
+      servers: [],
+    });
+  }
+
   const responsePayload = {
     success: true,
     serverOnline: true,
@@ -1723,6 +1864,9 @@ app.get('/api/extension/user', async (req, res) => {
     version: activePlanVer,
     extensionVersion: activePlanVer,
     requiredVersion: activePlanVer,
+    clientVersion: clientVersion || activePlanVer,
+    updateRequired: false,
+    isOutdated: false,
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
     cloudflareOnline,
@@ -1760,13 +1904,41 @@ app.get('/api/extension/user', async (req, res) => {
 });
 
 // GET /api/extension/session?token=...
-// Direct endpoint for extensions to fetch full user info by portal session token without knowing email
+// Direct endpoint for extensions to fetch full user info by portal session token and verify extension version
 app.get('/api/extension/session', async (req, res) => {
-  res.setHeader('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=120');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  await refreshSupabaseConfigIfNeeded();
+
   const token = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
+  const clientVersion = extractClientExtensionVersion(req);
+  const initialRequiredVer = getActiveExtensionVersion('ultra');
 
   if (!token) {
-    return res.status(400).json({ success: false, error: 'Session token is required.' });
+    return res.status(400).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Session token is required.'
+    });
+  }
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(initialRequiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      clientVersion,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${initialRequiredVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${initialRequiredVer}.`,
+    });
   }
 
   markUserOnline('', token);
@@ -1803,7 +1975,13 @@ app.get('/api/extension/session', async (req, res) => {
   }
 
   if (!user) {
-    return res.status(404).json({ success: false, error: 'Session not found or expired. Please login on the portal.' });
+    return res.status(404).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Session not found or expired. Please login on the portal.'
+    });
   }
 
   const maxCredits = user.maxCredits || (user.plan === 'ultra' ? 45000 : 100);
@@ -1812,6 +1990,24 @@ app.get('/api/extension/session', async (req, res) => {
   const planDaysLeft = user.planDaysLeft ?? 0;
 
   const sessionPlanVer = getActiveExtensionVersion(user.plan);
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(sessionPlanVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      serverOnline: true,
+      serverStatus: 'online',
+      version: sessionPlanVer,
+      extensionVersion: sessionPlanVer,
+      requiredVersion: sessionPlanVer,
+      clientVersion,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${sessionPlanVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${sessionPlanVer}.`,
+    });
+  }
 
   res.json({
     success: true,
@@ -1823,6 +2019,9 @@ app.get('/api/extension/session', async (req, res) => {
     version: sessionPlanVer,
     extensionVersion: sessionPlanVer,
     requiredVersion: sessionPlanVer,
+    clientVersion: clientVersion || sessionPlanVer,
+    updateRequired: false,
+    isOutdated: false,
     user: {
       id: user.id,
       name: user.name,
@@ -1938,9 +2137,11 @@ app.post('/api/extension/prompts', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  await refreshSupabaseConfigIfNeeded();
+
   const email = cleanEmailString(req.body.email || '');
   const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
-  const clientVersion = req.body.version || req.body.extensionVersion || '';
+  const clientVersion = extractClientExtensionVersion(req);
 
   // Dynamically resolve real-time prompts from Cloudflare Worker or local servers
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
@@ -2162,9 +2363,38 @@ app.get('/api/extension/verify', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  await refreshSupabaseConfigIfNeeded();
+
   const email = cleanEmailString(req.query.email as string || req.headers['x-user-email'] as string || '');
+  const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
+  const clientVersion = extractClientExtensionVersion(req);
+  const initialRequiredVer = getActiveExtensionVersion('ultra');
+
   if (!email) {
-    return res.status(400).json({ success: false, error: 'Gmail ID (email) is required in query params.' });
+    return res.status(400).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Gmail ID (email) is required in query params.'
+    });
+  }
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(initialRequiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      clientVersion,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${initialRequiredVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${initialRequiredVer}.`,
+      servers: [],
+    });
   }
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
@@ -2193,6 +2423,7 @@ app.get('/api/extension/verify', async (req, res) => {
           status: supaUser.status || 'active',
           extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
           canEditPrompts: supaUser.can_edit_prompts === true,
+          sessionToken: supaUser.session_token || '',
           isOnline: true,
           lastActive: new Date().toISOString(),
           createdAt: supaUser.created_at || new Date().toISOString(),
@@ -2213,7 +2444,24 @@ app.get('/api/extension/verify', async (req, res) => {
   }
 
   if (!user) {
-    return res.status(404).json({ success: false, error: `No user found registered with Gmail ID: ${email}` });
+    return res.status(404).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: `No user found registered with Gmail ID: ${email}`
+    });
+  }
+
+  if (reqToken && user.sessionToken && user.sessionToken !== reqToken) {
+    return res.status(401).json({
+      success: false,
+      allowed: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Invalid or expired session token. Please log in again on the portal.',
+    });
   }
 
   if (checkAndConvertToBasic(user)) {
@@ -2228,12 +2476,36 @@ app.get('/api/extension/verify', async (req, res) => {
 
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
-  const isUltraUser = user.plan === 'ultra';
+  const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
   const verifyToken = user.sessionToken || '';
   const canAccessPromptsVerify = isUltraUser && user.status === 'active';
+  const requiredVer = getActiveExtensionVersion(user.plan);
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(requiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      clientVersion,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVer}.`,
+      servers: [],
+    });
+  }
 
   res.json({
     success: true,
+    version: requiredVer,
+    extensionVersion: requiredVer,
+    requiredVersion: requiredVer,
+    clientVersion: clientVersion || requiredVer,
+    updateRequired: false,
+    isOutdated: false,
     user: {
       id: user.id,
       name: user.name,
@@ -2268,18 +2540,39 @@ app.get('/api/extension/verify', async (req, res) => {
   });
 });
 
-// POST /api/extension/cf-verify
-// Dedicated Gatekeeper Verification endpoint for Cloudflare Worker
-app.post('/api/extension/cf-verify', async (req, res) => {
+// ALL /api/extension/cf-verify
+// Dedicated Gatekeeper Verification endpoint for Cloudflare Worker & Extension
+app.all('/api/extension/cf-verify', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  const email = cleanEmailString(req.body.email || '');
-  const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
-  const clientVersion = req.body.version || req.body.extensionVersion || '';
+  await refreshSupabaseConfigIfNeeded();
+
+  const body = req.body || {};
+  const query = req.query || {};
+  const email = cleanEmailString(body.email || query.email || '');
+  const sessionToken = String(body.sessionToken || body.token || query.sessionToken || query.token || req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+  const clientVersion = extractClientExtensionVersion(req);
   const requiredVer = getActiveExtensionVersion('ultra');
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
+
+  // 1. Check Extension Version against Supabase requiredVersion
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(requiredVer)) {
+    return res.status(426).json({
+      allowed: false,
+      success: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      error: `Update Required: Please update your extension to version ${requiredVer}. Your version is ${clientVersion}.`,
+      message: `Update Required: Please update your extension to version ${requiredVer}. Your version is ${clientVersion}.`,
+      requiredVersion: requiredVer,
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      clientVersion,
+    });
+  }
 
   if (!email || !sessionToken) {
     return res.status(401).json({
@@ -2287,17 +2580,8 @@ app.post('/api/extension/cf-verify', async (req, res) => {
       success: false,
       error: 'Missing email or sessionToken.',
       requiredVersion: requiredVer,
-    });
-  }
-
-  // Check version first
-  if (clientVersion && clientVersion !== requiredVer) {
-    return res.status(426).json({
-      allowed: false,
-      updateRequired: true,
-      error: `Update Required: Please update your extension to version ${requiredVer}.`,
-      requiredVersion: requiredVer,
-      clientVersion,
+      version: requiredVer,
+      extensionVersion: requiredVer,
     });
   }
 
@@ -2323,6 +2607,8 @@ app.post('/api/extension/cf-verify', async (req, res) => {
       success: false,
       error: `User not registered with email: ${email}`,
       requiredVersion: requiredVer,
+      version: requiredVer,
+      extensionVersion: requiredVer,
     });
   }
 
@@ -2334,6 +2620,8 @@ app.post('/api/extension/cf-verify', async (req, res) => {
       success: false,
       error: 'Invalid or expired session ID / token. Please log in again on FlowMaker portal.',
       requiredVersion: requiredVer,
+      version: requiredVer,
+      extensionVersion: requiredVer,
     });
   }
 
@@ -2349,6 +2637,8 @@ app.post('/api/extension/cf-verify', async (req, res) => {
       success: false,
       error: 'Account is suspended. Please contact support.',
       requiredVersion: requiredVer,
+      version: requiredVer,
+      extensionVersion: requiredVer,
     });
   }
 
@@ -2359,6 +2649,8 @@ app.post('/api/extension/cf-verify', async (req, res) => {
       success: false,
       error: 'Ultra VIP Plan required. Basic plan members do not have extension access. Please upgrade via your reseller.',
       requiredVersion: requiredVer,
+      version: requiredVer,
+      extensionVersion: requiredVer,
     });
   }
 
@@ -2372,12 +2664,18 @@ app.post('/api/extension/cf-verify', async (req, res) => {
   }
 
   const { servers, serverMap } = await resolveActiveServers();
-  const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
+  const targetSrv = await filterAndResolveRequestedServer(supa, { ...query, ...body }, servers, serverMap);
 
   return res.json({
     allowed: true,
     success: true,
+    verified: true,
     requiredVersion: requiredVer,
+    version: requiredVer,
+    extensionVersion: requiredVer,
+    clientVersion: clientVersion || requiredVer,
+    updateRequired: false,
+    isOutdated: false,
     costs,
     servers: targetSrv.filteredServers,
     ...(targetSrv.isSingleServer ? targetSrv.filteredServerFields : { serverMap }),
@@ -2399,9 +2697,38 @@ app.post('/api/extension/verify', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  await refreshSupabaseConfigIfNeeded();
+
   const email = cleanEmailString(req.body.email || '');
+  const reqToken = String(req.body.sessionToken || req.body.token || req.headers['authorization'] || '').replace(/^Bearer\s+/i, '').trim();
+  const clientVersion = extractClientExtensionVersion(req);
+  const initialRequiredVer = getActiveExtensionVersion('ultra');
+
   if (!email) {
-    return res.status(400).json({ success: false, error: 'Gmail ID (email) is required in request body.' });
+    return res.status(400).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Gmail ID (email) is required in request body.'
+    });
+  }
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(initialRequiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      clientVersion,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${initialRequiredVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${initialRequiredVer}.`,
+      servers: [],
+    });
   }
 
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === email);
@@ -2430,6 +2757,7 @@ app.post('/api/extension/verify', async (req, res) => {
           status: supaUser.status || 'active',
           extensionAccess: supaUser.extension_access !== undefined ? supaUser.extension_access : true,
           canEditPrompts: supaUser.can_edit_prompts === true,
+          sessionToken: supaUser.session_token || '',
           isOnline: true,
           lastActive: new Date().toISOString(),
           createdAt: supaUser.created_at || new Date().toISOString(),
@@ -2450,7 +2778,13 @@ app.post('/api/extension/verify', async (req, res) => {
   }
 
   if (!user) {
-    return res.status(404).json({ success: false, error: `No user found registered with Gmail ID: ${email}` });
+    return res.status(404).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: `No user found registered with Gmail ID: ${email}`
+    });
   }
 
   if (checkAndConvertToBasic(user)) {
@@ -2459,7 +2793,24 @@ app.post('/api/extension/verify', async (req, res) => {
 
   const password = req.body.password || '';
   if (user.password && password && user.password !== password) {
-    return res.status(401).json({ success: false, error: 'Incorrect password. Please check your Gmail ID and password.' });
+    return res.status(401).json({
+      success: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Incorrect password. Please check your Gmail ID and password.'
+    });
+  }
+
+  if (reqToken && user.sessionToken && user.sessionToken !== reqToken) {
+    return res.status(401).json({
+      success: false,
+      allowed: false,
+      version: initialRequiredVer,
+      extensionVersion: initialRequiredVer,
+      requiredVersion: initialRequiredVer,
+      error: 'Invalid or expired session token. Please log in again on the portal.',
+    });
   }
 
   // Mark user as actively live/online in server and Supabase
@@ -2474,12 +2825,36 @@ app.post('/api/extension/verify', async (req, res) => {
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
 
-  const isUltraUser = user.plan === 'ultra';
+  const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
   const verifyToken = user.sessionToken || '';
   const canAccessPromptsVerify = isUltraUser && user.status === 'active';
+  const requiredVer = getActiveExtensionVersion(user.plan);
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(requiredVer)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      version: requiredVer,
+      extensionVersion: requiredVer,
+      requiredVersion: requiredVer,
+      clientVersion,
+      error: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVer}.`,
+      message: `Extension Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVer}.`,
+      servers: [],
+    });
+  }
 
   res.json({
     success: true,
+    version: requiredVer,
+    extensionVersion: requiredVer,
+    requiredVersion: requiredVer,
+    clientVersion: clientVersion || requiredVer,
+    updateRequired: false,
+    isOutdated: false,
     user: {
       id: user.id,
       name: user.name,
@@ -2521,10 +2896,29 @@ app.get('/api/extension/servers', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  await refreshSupabaseConfigIfNeeded();
+
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
   const promptReminderMinutes = db.promptConfig?.promptReminderMinutes || 120;
   const ver = getActiveExtensionVersion('ultra');
+  const clientVersion = extractClientExtensionVersion(req);
+
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(ver)) {
+    return res.status(426).json({
+      success: false,
+      allowed: false,
+      updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
+      version: ver,
+      extensionVersion: ver,
+      requiredVersion: ver,
+      clientVersion,
+      error: `Update Required: Please update your extension to version ${ver}.`,
+      servers: [],
+    });
+  }
 
   res.json({
     success: true,
@@ -2554,9 +2948,11 @@ app.post('/api/extension/servers', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
+  await refreshSupabaseConfigIfNeeded();
+
   const email = cleanEmailString(req.body.email || '');
   const sessionToken = (req.body.sessionToken || req.body.token || '').trim();
-  const clientVersion = req.body.version || req.body.extensionVersion || '';
+  const clientVersion = extractClientExtensionVersion(req);
 
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
@@ -2635,14 +3031,18 @@ app.post('/api/extension/servers', async (req, res) => {
     });
   }
 
-  // Version Check
-  if (clientVersion && clientVersion !== requiredVer) {
+  // Normalized Version Check against Supabase requiredVersion
+  if (clientVersion && normalizeVersion(clientVersion) !== normalizeVersion(requiredVer)) {
     return res.status(426).json({
       success: false,
+      allowed: false,
       updateRequired: true,
+      needsUpdate: true,
+      isOutdated: true,
       error: `Update Required: Please update your extension to version ${requiredVer}.`,
       requiredVersion: requiredVer,
       version: requiredVer,
+      extensionVersion: requiredVer,
       clientVersion,
       servers: [],
       server1: '',
@@ -3974,12 +4374,44 @@ app.post('/api/telegram/test', async (req, res) => {
 // POST config
 app.post('/api/config', async (req, res) => {
   const { planExtensions, tutorialConfig, promptConfig, supabaseConfig } = req.body;
+  lastSupabaseConfigFetchTime = 0;
+
   if (planExtensions) {
-    db.planExtensions = planExtensions;
+    db.planExtensions = {
+      ...db.planExtensions,
+      ...planExtensions,
+      _updatedAt: Date.now(),
+    };
     // Keep promptConfig.extensionVersion aligned with ultra extension version
     if (planExtensions.ultra?.version && String(planExtensions.ultra.version).trim()) {
+      const trimmedVer = String(planExtensions.ultra.version).trim();
       if (!db.promptConfig) db.promptConfig = {};
-      db.promptConfig.extensionVersion = String(planExtensions.ultra.version).trim();
+      db.promptConfig.extensionVersion = trimmedVer;
+      db.promptConfig._updatedAt = Date.now();
+    }
+    const supa = getServerSupabase();
+    if (supa) {
+      const stampedExt = { ...db.planExtensions, _updatedAt: Date.now() };
+      supa.from('app_config').upsert({
+        key: 'admin_config_extensions',
+        value: stampedExt,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'key' }).then(() => {});
+      supa.from('users').upsert({
+        id: 'admin_config_extensions',
+        name: JSON.stringify(stampedExt),
+        email: 'admin_config_extensions@system.local',
+        password: 'config_no_login_123',
+        plan: 'basic',
+        credits: 0,
+        max_credits: 0,
+        plan_days_left: 0,
+        session_token: 'sys_config',
+        is_online: false,
+      }, { onConflict: 'id' }).then(() => {});
+      if (db.promptConfig) {
+        safeSaveSupabasePromptConfig(supa, db.promptConfig).catch(() => {});
+      }
     }
   }
   if (tutorialConfig) db.tutorialConfig = tutorialConfig;
@@ -4024,6 +4456,7 @@ app.post('/api/config', async (req, res) => {
       if (!db.planExtensions) db.planExtensions = {};
       if (!db.planExtensions.ultra) db.planExtensions.ultra = {};
       db.planExtensions.ultra.version = trimmedVer;
+      db.planExtensions._updatedAt = Date.now();
     }
 
     // Check for any server that was previously missed and has now been updated -> Send Recovery Telegram Alert!
@@ -4059,6 +4492,26 @@ app.post('/api/config', async (req, res) => {
     const supa = getServerSupabase();
     if (supa) {
       safeSaveSupabasePromptConfig(supa, mergedPromptConfig).catch(() => {});
+      if (promptConfig.extensionVersion && db.planExtensions) {
+        const stampedExt = { ...db.planExtensions, _updatedAt: Date.now() };
+        supa.from('app_config').upsert({
+          key: 'admin_config_extensions',
+          value: stampedExt,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' }).then(() => {});
+        supa.from('users').upsert({
+          id: 'admin_config_extensions',
+          name: JSON.stringify(stampedExt),
+          email: 'admin_config_extensions@system.local',
+          password: 'config_no_login_123',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          session_token: 'sys_config',
+          is_online: false,
+        }, { onConflict: 'id' }).then(() => {});
+      }
     }
   }
   if (supabaseConfig) {

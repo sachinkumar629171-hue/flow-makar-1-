@@ -96,26 +96,16 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
     extensionUrl = 'https://' + extensionUrl;
   }
 
+  const resolvedEmailOpacity = promptConfig?.headerEmailOpacityCustom
+    ? (promptConfig?.headerEmailOpacity ?? 0)
+    : 0;
+
   return (
     <div className="min-h-screen bg-[#08090b] text-[#f1f2f4] flex flex-col select-none w-full max-w-full overflow-x-hidden">
-      {/* Dashboard Announcement Banner */}
-      {promptConfig?.dashboardAnnouncement?.enabled && promptConfig?.dashboardAnnouncement?.text && (
-        <div className={`w-full px-4 py-2.5 text-xs sm:text-sm font-medium flex items-center justify-center gap-2 border-b text-center shrink-0 ${
-          promptConfig.dashboardAnnouncement.type === 'success'
-            ? 'bg-emerald-950/90 border-emerald-800/80 text-emerald-200'
-            : promptConfig.dashboardAnnouncement.type === 'warning'
-            ? 'bg-amber-950/90 border-amber-800/80 text-amber-200'
-            : 'bg-purple-950/90 border-purple-800/80 text-purple-200'
-        }`}>
-          <span className="font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-black/40 text-[10px]">Announcement</span>
-          <span>{promptConfig.dashboardAnnouncement.text}</span>
-        </div>
-      )}
-
       {/* Top Navigation Bar (Matches Screenshot 4 & 6) */}
-      <header className="sticky top-0 z-40 bg-[#08090b]/90 backdrop-blur-md border-b border-neutral-900 px-3 sm:px-8 py-3 sm:py-3.5 flex items-center justify-between w-full max-w-full">
+      <header className="sticky top-0 z-40 relative bg-[#08090b]/90 backdrop-blur-md border-b border-neutral-900 px-3 sm:px-8 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 w-full max-w-full">
         {/* Left: Flow Logo */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-3 shrink-0 z-10">
           <span className="text-xl sm:text-2xl font-black tracking-tight font-display text-white cursor-pointer">
             Flow
           </span>
@@ -130,9 +120,35 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
           )}
         </div>
 
+        {/* Center: Rectangular Notification Box (Centered in header with high-focus background color) */}
+        {promptConfig?.dashboardAnnouncement?.enabled && promptConfig?.dashboardAnnouncement?.text && (
+          <div className="flex-1 md:flex-none md:absolute md:left-1/2 md:-translate-x-1/2 flex items-center justify-center min-w-0 px-1 sm:px-3 z-20 pointer-events-auto">
+            <div
+              className={`inline-flex items-center justify-center gap-2.5 px-4 sm:px-6 py-1.5 sm:py-2 rounded-xl border text-xs sm:text-sm font-bold tracking-wide min-w-[200px] sm:min-w-[320px] md:min-w-[380px] max-w-full sm:max-w-md md:max-w-lg transition-all ${
+                promptConfig.dashboardAnnouncement.type === 'success'
+                  ? 'bg-gradient-to-r from-emerald-600 via-green-600 to-emerald-600 border-emerald-300/70 text-white shadow-[0_0_22px_rgba(16,185,129,0.5)]'
+                  : promptConfig.dashboardAnnouncement.type === 'warning'
+                  ? 'bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500 border-yellow-200/90 text-neutral-950 shadow-[0_0_24px_rgba(250,204,21,0.55)]'
+                  : 'bg-gradient-to-r from-red-600 via-orange-600 to-amber-500 border-yellow-300/80 text-white shadow-[0_0_24px_rgba(239,68,68,0.55)]'
+              }`}
+            >
+              <span
+                className={`w-2.5 h-2.5 rounded-full shrink-0 animate-pulse ${
+                  promptConfig.dashboardAnnouncement.type === 'warning'
+                    ? 'bg-red-600 shadow-[0_0_8px_#dc2626]'
+                    : 'bg-yellow-300 shadow-[0_0_8px_#fde047]'
+                }`}
+              />
+              <span className="truncate sm:whitespace-normal sm:line-clamp-1 leading-snug text-center drop-shadow-sm">
+                {promptConfig.dashboardAnnouncement.text}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Right Action Icons & Profile (Matches Screenshot 4 & 6) */}
-        <div className="relative flex items-center gap-2 sm:gap-4 shrink-0">
-          {/* Header User Gmail ID - Hidden on mobile to avoid overflow */}
+        <div className="relative flex items-center gap-2 sm:gap-4 shrink-0 z-10">
+          {/* Header User Gmail ID - Default 0 opacity (stealth for extension) */}
           {currentUser && (
             <div
               id="header-user-email-container"
@@ -142,12 +158,14 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
               data-user-plan={currentUser.plan}
               data-user-credits={currentUser.credits}
               data-user-days-left={currentUser.planDaysLeft}
-              className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-800/40 bg-black/40 transition-opacity duration-200 select-all"
+              className={`hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-neutral-800/40 bg-black/40 transition-opacity duration-200 select-all ${
+                resolvedEmailOpacity === 0 ? 'md:absolute md:right-full md:mr-2 pointer-events-none' : ''
+              }`}
               style={{
-                opacity: (promptConfig?.headerEmailOpacity !== undefined ? promptConfig.headerEmailOpacity : 100) / 100,
-                pointerEvents: (promptConfig?.headerEmailOpacity ?? 100) === 0 ? 'none' : 'auto',
+                opacity: resolvedEmailOpacity / 100,
+                pointerEvents: resolvedEmailOpacity === 0 ? 'none' : 'auto',
               }}
-              title={currentUser.email}
+              title={resolvedEmailOpacity === 0 ? undefined : currentUser.email}
             >
               <span
                 id="user-header-email"
