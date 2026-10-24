@@ -305,6 +305,28 @@ async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptC
     };
   }
 
+  // Also sync Server 1..5 prompts into public.servers table ('Flow ultra lower priority')
+  if (Array.isArray(promptConfig.servers) && promptConfig.servers.length > 0) {
+    try {
+      const underscoreRow: Record<string, any> = { datatype: 'Flow ultra lower priority' };
+      const spaceRow: Record<string, any> = { datatype: 'Flow ultra lower priority' };
+      promptConfig.servers.slice(0, 5).forEach((s: any, idx: number) => {
+        const num = idx + 1;
+        const raw = (s.prompt || '').trim();
+        let val: any = raw;
+        if (raw) {
+          try { val = JSON.parse(raw); } catch { val = raw; }
+        }
+        underscoreRow[`server_${num}`] = val;
+        spaceRow[`server ${num}`] = val;
+      });
+      const { error: srvErr } = await supa.from('servers').upsert(underscoreRow, { onConflict: 'datatype' });
+      if (srvErr) {
+        await supa.from('servers').upsert(spaceRow, { onConflict: 'datatype' });
+      }
+    } catch {}
+  }
+
   try {
     await supa.from('app_config').upsert({
       key: 'admin_config_prompts',
@@ -891,7 +913,7 @@ app.get('/api/admin/data', async (req, res) => {
   
   if (supa) {
     try {
-      const { data: supaUsers } = await supa.from('users').select('*');
+      const { data: supaUsers } = await supa.from('users').select('*').not('id', 'like', 'admin_config_%');
       if (supaUsers && Array.isArray(supaUsers)) {
         usersList = supaUsers
           .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
@@ -903,21 +925,17 @@ app.get('/api/admin/data', async (req, res) => {
             const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
             // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
-            const planStartedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at || new Date().toISOString();
+            const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
             let planDaysLeft = Number(u.plan_days_left) ?? 30;
             let planExpiresAt = u.plan_expires_at;
 
-            // Auto-align plan_started_at and plan_expires_at with actual access creation time
-            const startMs = new Date(planStartedAt).getTime();
-            const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
-            const targetExp = new Date(computedExpMs).toISOString();
-
-            if (!planExpiresAt || u.plan_started_at !== planStartedAt) {
-              planExpiresAt = targetExp;
-              // Sync back to Supabase so table shows actual creation timing
+            if (!planExpiresAt) {
+              const startMs = new Date(planStartedAt).getTime();
+              const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
+              planExpiresAt = new Date(computedExpMs).toISOString();
               supa.from('users').update({
                 plan_started_at: planStartedAt,
-                plan_expires_at: targetExp
+                plan_expires_at: planExpiresAt
               }).eq('id', u.id).then(() => {}, () => {});
             } else if (!isSysAdmin) {
               const expMs = new Date(planExpiresAt).getTime();
@@ -1791,6 +1809,100 @@ app.get('/api/extension/session', async (req, res) => {
   });
 });
 
+// Helper: Fetch & filter ONLY the requested server prompt (e.g. dropdown: "Server 1", dataType: "Flow ultra lower priority")
+async function filterAndResolveRequestedServer(
+  supa: SupabaseClient | null,
+  reqParams: Record<string, any>,
+  allServers: any[],
+  allServerMap: Record<string, string>
+): Promise<{
+  isSingleServer: boolean;
+  serverNum: number | null;
+  dataType: string;
+  dropdown: string;
+  singlePrompt: any;
+  filteredServers: any[];
+  filteredServerFields: Record<string, any>;
+}> {
+  const dataType = String(reqParams?.dataType || reqParams?.datatype || 'Flow ultra lower priority').trim();
+  const dropdown = String(reqParams?.dropdown || reqParams?.server || reqParams?.serverId || '').trim();
+  const numMatch = dropdown.match(/(\d+)/);
+  const serverNum = numMatch ? parseInt(numMatch[1], 10) : null;
+
+  if (!serverNum || serverNum < 1 || serverNum > 10) {
+    return {
+      isSingleServer: false,
+      serverNum: null,
+      dataType,
+      dropdown,
+      singlePrompt: null,
+      filteredServers: allServers,
+      filteredServerFields: {
+        server1: allServerMap.server1 || '',
+        server2: allServerMap.server2 || '',
+        server3: allServerMap.server3 || '',
+        server4: allServerMap.server4 || '',
+        server5: allServerMap.server5 || '',
+      },
+    };
+  }
+
+  let resolvedPrompt: any = allServerMap[`server${serverNum}`] || '';
+
+  // Query ONLY the requested server column from public.servers for the requested datatype
+  if (supa) {
+    try {
+      const colUnderscore = `server_${serverNum}`;
+      const { data, error } = await supa
+        .from('servers')
+        .select(colUnderscore)
+        .eq('datatype', dataType)
+        .maybeSingle();
+
+      if (!error && data && (data as any)[colUnderscore] !== undefined && (data as any)[colUnderscore] !== null) {
+        resolvedPrompt = (data as any)[colUnderscore];
+      } else {
+        // Fallback if column name in Supabase has a space ("server 1")
+        const colSpace = `server ${serverNum}`;
+        const { data: d2 } = await supa
+          .from('servers')
+          .select(`"${colSpace}"`)
+          .eq('datatype', dataType)
+          .maybeSingle();
+        if (d2 && (d2 as any)[colSpace] !== undefined && (d2 as any)[colSpace] !== null) {
+          resolvedPrompt = (d2 as any)[colSpace];
+        }
+      }
+    } catch {}
+  }
+
+  const promptStr = typeof resolvedPrompt === 'object' ? JSON.stringify(resolvedPrompt) : String(resolvedPrompt ?? '');
+  const singleSrvObj = {
+    id: `server${serverNum}`,
+    label: `Server ${serverNum}`,
+    prompt: resolvedPrompt,
+  };
+
+  return {
+    isSingleServer: true,
+    serverNum,
+    dataType,
+    dropdown: dropdown || `Server ${serverNum}`,
+    singlePrompt: resolvedPrompt,
+    filteredServers: [singleSrvObj],
+    filteredServerFields: {
+      prompt: resolvedPrompt,
+      dataType,
+      dropdown: dropdown || `Server ${serverNum}`,
+      selectedServer: `Server ${serverNum}`,
+      [`server${serverNum}`]: resolvedPrompt,
+      [`server_${serverNum}`]: resolvedPrompt,
+      [`Server ${serverNum}`]: resolvedPrompt,
+      promptText: promptStr,
+    },
+  };
+}
+
 // POST /api/extension/prompts
 // High Security Dedicated Server Prompt Fetch Endpoint: Requires email + sessionToken
 // Returns servers, prompts, server online status, and extension version all together in ONE unified response!
@@ -1981,6 +2093,8 @@ app.post('/api/extension/prompts', async (req, res) => {
     });
   }
 
+  const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
+
   return res.json({ 
     success: true, 
     serverOnline: true, 
@@ -1998,11 +2112,8 @@ app.post('/api/extension/prompts', async (req, res) => {
     cloudflareUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
     directPromptUrl: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? (db.promptConfig?.cloudflareUrl || 'https://flowmaker-prompts.sachinkumar23406.workers.dev').trim() : '',
     relayMode: Boolean(db.promptConfig?.cloudflareEnabled !== false) ? 'direct_cloudflare' : 'portal_local',
-    servers, 
-    server1: serverMap.server1 || '',
-    server2: serverMap.server2 || '',
-    server3: serverMap.server3 || '',
-    server4: serverMap.server4 || '',
+    servers: targetSrv.filteredServers, 
+    ...targetSrv.filteredServerFields,
     costs,
     user: {
       id: user.id,
@@ -2234,14 +2345,15 @@ app.post('/api/extension/cf-verify', async (req, res) => {
   }
 
   const { servers, serverMap } = await resolveActiveServers();
+  const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
 
   return res.json({
     allowed: true,
     success: true,
     requiredVersion: requiredVer,
     costs,
-    servers,
-    serverMap,
+    servers: targetSrv.filteredServers,
+    ...(targetSrv.isSingleServer ? targetSrv.filteredServerFields : { serverMap }),
     user: {
       id: supaUser.id,
       name: supaUser.name || 'User',
@@ -2514,6 +2626,7 @@ app.post('/api/extension/servers', async (req, res) => {
   }
 
   const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
+  const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
 
   res.json({
     success: true,
@@ -2526,11 +2639,8 @@ app.post('/api/extension/servers', async (req, res) => {
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
     cloudflareOnline,
-    servers: isUltraUser ? servers : [],
-    server1: isUltraUser ? (serverMap.server1 || '') : '',
-    server2: isUltraUser ? (serverMap.server2 || '') : '',
-    server3: isUltraUser ? (serverMap.server3 || '') : '',
-    server4: isUltraUser ? (serverMap.server4 || '') : '',
+    servers: isUltraUser ? targetSrv.filteredServers : [],
+    ...(isUltraUser ? targetSrv.filteredServerFields : {}),
     costs,
     user: {
       id: user.id,

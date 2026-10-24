@@ -32,6 +32,7 @@ import { useAuth } from '../context/AuthContext';
 import { ServerPromptConfig, TelegramAlertConfig } from '../types';
 import { calculateServerTimeStatus } from '../lib/promptTimer';
 import { formatISTDateTime, sendTelegramNotification, generateTestAlertMessage, generateRecoveryMessage } from '../lib/telegramNotifier';
+import { getSupabase, syncPromptServersToSupabaseTable } from '../lib/supabase';
 
 interface PromptServerPageProps {
   onBack: () => void;
@@ -58,14 +59,28 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     });
   };
 
+  const ensureFiveServers = (servers: ServerPromptConfig[]): ServerPromptConfig[] => {
+    const normalized = normalizeServerList(servers);
+    const result = [...normalized];
+    for (let i = result.length + 1; i <= 5; i++) {
+      result.push({
+        id: `server${i}`,
+        label: `Server ${i}`,
+        prompt: '',
+        lastUpdatedAt: new Date().toISOString(),
+      });
+    }
+    return result;
+  };
+
   const [localServers, setLocalServers] = useState<ServerPromptConfig[]>(() => {
     if (promptConfig?.servers && promptConfig.servers.length > 0) {
-      return normalizeServerList(promptConfig.servers);
+      return ensureFiveServers(promptConfig.servers);
     }
-    return [
+    return ensureFiveServers([
       { id: 'server1', label: 'Server 1', prompt: promptConfig?.server1Prompt || '', lastUpdatedAt: new Date().toISOString() },
       { id: 'server2', label: 'Server 2', prompt: promptConfig?.server2Prompt || '', lastUpdatedAt: new Date().toISOString() },
-    ];
+    ]);
   });
 
   const [imageCost, setImageCost] = useState<number>(promptConfig?.costs?.image ?? 20);
@@ -107,6 +122,37 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       setTick(t => t + 1);
     }, 10000);
     return () => clearInterval(timer);
+  }, []);
+
+  // Load initial prompts from Supabase public.servers ('Flow ultra lower priority') once on mount
+  useEffect(() => {
+    const supa = getSupabase();
+    if (!supa) return;
+    supa
+      .from('servers')
+      .select('*')
+      .eq('datatype', 'Flow ultra lower priority')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!data) return;
+        setLocalServers(prev => {
+          const base = ensureFiveServers(prev);
+          return base.map((srv, idx) => {
+            if (dirtyServersRef.current.has(srv.id)) return srv;
+            const num = idx + 1;
+            const rawVal = data[`server_${num}`] ?? data[`server ${num}`] ?? data[`server${num}`];
+            if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
+              const strVal = typeof rawVal === 'object'
+                ? (Object.keys(rawVal).length === 0 ? '' : JSON.stringify(rawVal))
+                : String(rawVal);
+              if (strVal) {
+                return { ...srv, prompt: strVal };
+              }
+            }
+            return srv;
+          });
+        });
+      }, () => {});
   }, []);
 
   // Sync state if promptConfig loads or changes from another source, without overwriting active edits!
@@ -284,6 +330,9 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
         }
       }
 
+      // Direct sync of all 5 servers to Supabase public.servers ('Flow ultra lower priority')
+      await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, 'Flow ultra lower priority');
+
       await updatePromptConfig({
         servers: normalizedServers,
         costs: {
@@ -379,6 +428,11 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
           console.warn('Direct push to Cloudflare worker failed:', e);
         }
       }
+
+      // Sync ONLY the updated server column to Supabase public.servers ('Flow ultra lower priority')
+      const singleIdxMatch = serverId.match(/(\d+)/);
+      const singleServerNum = singleIdxMatch ? parseInt(singleIdxMatch[1], 10) : undefined;
+      await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, 'Flow ultra lower priority', singleServerNum);
 
       await updatePromptConfig({
         servers: normalizedServers,

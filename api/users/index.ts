@@ -56,8 +56,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'GET') {
-      // Fetch all users from Supabase
-      const { data: allUsers, error: usersErr } = await supabase.from('users').select('*');
+      // Fetch all users from Supabase (excluding heavy admin_config_% backup rows to save Egress)
+      const { data: allUsers, error: usersErr } = await supabase.from('users').select('*').not('id', 'like', 'admin_config_%');
 
       if (usersErr) {
         return res.status(500).json({ success: false, error: usersErr.message });

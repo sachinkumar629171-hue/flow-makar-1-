@@ -74,10 +74,11 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Auto-poll every 3 seconds while on Reseller Portal to catch API key requests and live user validity immediately
+  // Auto-poll every 120 seconds (only when tab is visible) to save Supabase Egress
   React.useEffect(() => {
     if (!currentReseller) return;
     const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
       fetch('/api/users', {
         headers: {
           'x-reseller-id': currentReseller.id,
@@ -92,7 +93,7 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
           }
         })
         .catch(() => {});
-    }, 3000);
+    }, 120000);
     return () => clearInterval(interval);
   }, [currentReseller, syncServerUsers]);
 

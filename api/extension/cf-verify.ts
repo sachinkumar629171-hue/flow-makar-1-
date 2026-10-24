@@ -1,6 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
+let cachedExtConfig: { requiredVersion: string; servers: any[]; costs: { image: number; video: number }; fetchedAt: number } | null = null;
+const CONFIG_CACHE_TTL_MS = 60000; // 60 seconds cache to save Supabase Egress
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -26,25 +29,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (supaUrl && supaKey) {
     try {
       const supabase = createClient(supaUrl, supaKey);
+      const now = Date.now();
 
-      // 1. Fetch required version and config from Supabase database
-      try {
-        const { data: extRow } = await supabase.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
-        if (extRow?.name) {
-          const parsedExt = JSON.parse(extRow.name);
-          if (parsedExt?.ultra?.version) requiredVersion = String(parsedExt.ultra.version).trim();
-        }
-      } catch {}
+      // 1. Fetch required version and config from 60s cache or Supabase database
+      if (cachedExtConfig && (now - cachedExtConfig.fetchedAt < CONFIG_CACHE_TTL_MS)) {
+        requiredVersion = cachedExtConfig.requiredVersion;
+        servers = cachedExtConfig.servers;
+        costs = cachedExtConfig.costs;
+      } else {
+        try {
+          const { data: extRow } = await supabase.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
+          if (extRow?.name) {
+            const parsedExt = JSON.parse(extRow.name);
+            if (parsedExt?.ultra?.version) requiredVersion = String(parsedExt.ultra.version).trim();
+          }
+        } catch {}
 
-      try {
-        const { data: configRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-        if (configRow?.name) {
-          const parsed = JSON.parse(configRow.name);
-          if (parsed?.extensionVersion) requiredVersion = String(parsed.extensionVersion).trim();
-          if (parsed?.servers) servers = parsed.servers;
-          if (parsed?.costs) costs = parsed.costs;
-        }
-      } catch {}
+        try {
+          const { data: configRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+          if (configRow?.name) {
+            const parsed = JSON.parse(configRow.name);
+            if (parsed?.extensionVersion) requiredVersion = String(parsed.extensionVersion).trim();
+            if (parsed?.servers) servers = parsed.servers;
+            if (parsed?.costs) costs = parsed.costs;
+          }
+        } catch {}
+
+        cachedExtConfig = { requiredVersion, servers, costs, fetchedAt: now };
+      }
 
       // 2. Strict Version Check against Supabase required version
       if (clientVersion && clientVersion !== requiredVersion) {
@@ -93,7 +105,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const plan = (supaUser.plan || 'basic').toLowerCase();
       const role = (supaUser.role || 'user').toLowerCase();
       const status = (supaUser.status || 'active').toLowerCase();
-      const planDaysLeft = Number(supaUser.plan_days_left) ?? 30;
+      const rawDaysLeft = supaUser.plan_expires_at
+        ? Math.max(0, Math.ceil((new Date(supaUser.plan_expires_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+        : (Number(supaUser.plan_days_left) ?? 30);
+      const planDaysLeft = rawDaysLeft;
 
       if (status === 'suspended') {
         return res.status(403).json({
@@ -114,6 +129,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
+      // 3. Resolve ONLY the requested server prompt if dropdown / server is specified (saves Egress!)
+      const dataType = String(body.dataType || body.datatype || query.dataType || query.datatype || 'Flow ultra lower priority').trim();
+      const dropdown = String(body.dropdown || body.server || body.serverId || query.dropdown || query.server || '').trim();
+
+      let responseServers = servers;
+      let selectedPrompt: string | null = null;
+      let selectedServerKey: string | null = null;
+
+      if (dropdown) {
+        const numMatch = dropdown.match(/(\d+)/);
+        const serverNum = numMatch ? Math.max(1, Math.min(5, parseInt(numMatch[1], 10))) : 1;
+        const colUnderscore = `server_${serverNum}`;
+        const colSpace = `server ${serverNum}`;
+        selectedServerKey = `server${serverNum}`;
+        const label = `Server ${serverNum}`;
+
+        try {
+          const { data, error } = await supabase
+            .from('servers')
+            .select(colUnderscore)
+            .ilike('datatype', dataType)
+            .maybeSingle();
+
+          if (!error && data && (data as any)[colUnderscore] !== undefined) {
+            selectedPrompt = String((data as any)[colUnderscore] || '');
+          } else {
+            const { data: spaceData } = await supabase
+              .from('servers')
+              .select(`"${colSpace}"`)
+              .ilike('datatype', dataType)
+              .maybeSingle();
+            if (spaceData && (spaceData as any)[colSpace] !== undefined) {
+              selectedPrompt = String((spaceData as any)[colSpace] || '');
+            }
+          }
+        } catch {}
+
+        if (selectedPrompt === null) {
+          const fallbackSrv = servers.find((s: any, idx: number) =>
+            s.id === selectedServerKey ||
+            String(s.label || '').toLowerCase() === dropdown.toLowerCase() ||
+            idx + 1 === serverNum
+          );
+          selectedPrompt = fallbackSrv?.prompt || '';
+        }
+
+        responseServers = [{ id: selectedServerKey, label, prompt: selectedPrompt || '' }];
+      }
+
+      const serverMap: Record<string, string> = {};
+      responseServers.forEach((s: any, idx: number) => {
+        const key = s.id || `server${idx + 1}`;
+        serverMap[key] = s.prompt || '';
+      });
+
       return res.status(200).json({
         success: true,
         allowed: true,
@@ -125,7 +195,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         credits: Number(supaUser.credits) ?? 45000,
         maxCredits: Number(supaUser.max_credits) ?? 45000,
         planDaysLeft,
-        servers,
+        dataType,
+        dropdown: dropdown || undefined,
+        selectedServer: selectedServerKey || undefined,
+        prompt: selectedPrompt !== null ? selectedPrompt : (responseServers[0]?.prompt || ''),
+        servers: responseServers,
+        serverMap,
+        ...serverMap,
         costs,
         user: {
           id: supaUser.id,

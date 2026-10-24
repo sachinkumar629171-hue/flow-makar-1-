@@ -77,10 +77,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const now = Date.now();
 
-    // 1. Fetch Users
+    // 1. Fetch Users (excluding heavy admin_config_% backup rows to save Egress)
     let usersList: any[] = [];
     try {
-      const { data: allUsers } = await supabase.from('users').select('*');
+      const { data: allUsers } = await supabase.from('users').select('*').not('id', 'like', 'admin_config_%');
       if (allUsers && Array.isArray(allUsers)) {
         usersList = allUsers
           .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
@@ -92,20 +92,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
             // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
-            const planStartedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at || new Date().toISOString();
+            const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
             let planDaysLeft = Number(u.plan_days_left) ?? 30;
             let planExpiresAt = u.plan_expires_at;
 
-            const startMs = new Date(planStartedAt).getTime();
-            const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
-            const targetExp = new Date(computedExpMs).toISOString();
-
-            if (!planExpiresAt || u.plan_started_at !== planStartedAt) {
-              planExpiresAt = targetExp;
-              // Sync back to Supabase so table shows actual creation timing
+            if (!planExpiresAt) {
+              const startMs = new Date(planStartedAt).getTime();
+              const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
+              planExpiresAt = new Date(computedExpMs).toISOString();
               supabase.from('users').update({
                 plan_started_at: planStartedAt,
-                plan_expires_at: targetExp
+                plan_expires_at: planExpiresAt
               }).eq('id', u.id).then(() => {}, () => {});
             } else if (!isSysAdmin) {
               const expMs = new Date(planExpiresAt).getTime();

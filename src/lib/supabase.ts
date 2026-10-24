@@ -400,3 +400,49 @@ export async function safeSupabaseUserUpdate(
 
   return false;
 }
+
+function parsePromptForJsonColumn(rawPrompt: string): any {
+  const trimmed = (rawPrompt || '').trim();
+  if (!trimmed) return '';
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return rawPrompt;
+  }
+}
+
+/**
+ * Syncs Server 1..5 prompts directly to Supabase public.servers table
+ * under the specified datatype (default: 'Flow ultra lower priority').
+ * Supports both underscore ('server_1') and space ('server 1') column names.
+ */
+export async function syncPromptServersToSupabaseTable(
+  supabase: SupabaseClient | null,
+  servers: Array<{ id: string; label: string; prompt: string }>,
+  dataType: string = 'Flow ultra lower priority',
+  singleServerIndex?: number
+): Promise<boolean> {
+  if (!supabase || !Array.isArray(servers)) return false;
+
+  const underscorePayload: Record<string, any> = { datatype: dataType };
+  const spacePayload: Record<string, any> = { datatype: dataType };
+
+  servers.slice(0, 5).forEach((s, idx) => {
+    const num = idx + 1;
+    if (singleServerIndex !== undefined && singleServerIndex !== num) return;
+    const val = parsePromptForJsonColumn(s.prompt || '');
+    underscorePayload[`server_${num}`] = val;
+    spacePayload[`server ${num}`] = val;
+  });
+
+  try {
+    const { error } = await supabase.from('servers').upsert(underscorePayload, { onConflict: 'datatype' });
+    if (!error) return true;
+
+    const { error: err2 } = await supabase.from('servers').upsert(spacePayload, { onConflict: 'datatype' });
+    return !err2;
+  } catch {
+    return false;
+  }
+}
+
