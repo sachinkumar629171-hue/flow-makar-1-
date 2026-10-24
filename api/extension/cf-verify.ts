@@ -178,30 +178,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         responseServers = [{ id: selectedServerKey, label, prompt: selectedPrompt || '' }];
       }
 
-      const serverMap: Record<string, string> = {};
-      responseServers.forEach((s: any, idx: number) => {
-        const key = s.id || `server${idx + 1}`;
-        serverMap[key] = s.prompt || '';
-      });
-
       return res.status(200).json({
         success: true,
         allowed: true,
         verified: true,
         requiredVersion,
+        dataType,
+        dropdown: dropdown || undefined,
+        selectedServer: selectedServerKey || undefined,
+        servers: responseServers,
         plan,
         isUltra: true,
         isAllowed: true,
         credits: Number(supaUser.credits) ?? 45000,
         maxCredits: Number(supaUser.max_credits) ?? 45000,
         planDaysLeft,
-        dataType,
-        dropdown: dropdown || undefined,
-        selectedServer: selectedServerKey || undefined,
-        prompt: selectedPrompt !== null ? selectedPrompt : (responseServers[0]?.prompt || ''),
-        servers: responseServers,
-        serverMap,
-        ...serverMap,
         costs,
         user: {
           id: supaUser.id,

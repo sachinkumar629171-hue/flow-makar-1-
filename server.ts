@@ -1891,14 +1891,9 @@ async function filterAndResolveRequestedServer(
     singlePrompt: resolvedPrompt,
     filteredServers: [singleSrvObj],
     filteredServerFields: {
-      prompt: resolvedPrompt,
       dataType,
       dropdown: dropdown || `Server ${serverNum}`,
-      selectedServer: `Server ${serverNum}`,
-      [`server${serverNum}`]: resolvedPrompt,
-      [`server_${serverNum}`]: resolvedPrompt,
-      [`Server ${serverNum}`]: resolvedPrompt,
-      promptText: promptStr,
+      selectedServer: `server${serverNum}`,
     },
   };
 }
