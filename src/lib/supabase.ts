@@ -47,8 +47,9 @@ export function isBlockedSupabaseRequest(urlStr: string): boolean {
 
 const safeSupabaseFetch: typeof fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const urlStr = typeof input === 'string' ? input : (input instanceof Request ? input.url : String(input));
-  if (isBlockedSupabaseRequest(urlStr)) {
-    // Intercept and block: strictly do not send request over the network
+  const method = (init?.method || (input instanceof Request ? input.method : 'GET') || 'GET').toUpperCase();
+  if (method === 'GET' && isBlockedSupabaseRequest(urlStr)) {
+    // Intercept and block GET polling: strictly do not send request over the network
     return Promise.resolve(new Response(JSON.stringify([]), {
       status: 200,
       statusText: 'OK',

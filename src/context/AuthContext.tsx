@@ -446,6 +446,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               } catch {}
               return fresh;
             });
+
+            // Sync website notification banner directly from /api/users/me response
+            const notifMsg = typeof data.notification === 'string'
+              ? data.notification
+              : (data.notification?.message || '');
+            const notifEnabled = data.showNotification === true && Boolean(notifMsg.trim());
+            const notifType = (data.notification?.type || 'info') as 'info' | 'warning' | 'success';
+
+            setPromptConfig(prev => {
+              const nextAnnouncement = notifEnabled
+                ? { enabled: true, text: notifMsg.trim(), type: notifType }
+                : {
+                    enabled: false,
+                    text: prev?.dashboardAnnouncement?.text || '',
+                    type: (prev?.dashboardAnnouncement?.type || 'info') as 'info' | 'warning' | 'success',
+                  };
+              const updated = {
+                ...prev,
+                dashboardAnnouncement: nextAnnouncement,
+              };
+              try {
+                localStorage.setItem(PROMPT_CONFIG_STORAGE_KEY, JSON.stringify(updated));
+              } catch {}
+              return updated;
+            });
           }
         } else if (res.status === 401 || res.status === 403) {
           console.warn('[Auth] Session token invalid or user removed from database. Logging out.');
@@ -453,7 +478,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       })
       .catch(() => {});
-  }, []);
+  }, [currentUser?.id]);
 
   // Current user's plan extension (fallback to basic)
   const activePlan = currentUser?.plan || 'basic';
@@ -2953,11 +2978,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updatePromptConfig = (newConfig: Partial<PromptConfig>) => {
     lastConfigUpdateRef.current = Date.now() + 30000;
+    const nowTs = Date.now();
     setPromptConfig(prev => {
-      const updated = {
+      const updated: any = {
         ...prev,
         ...newConfig,
+        _updatedAt: nowTs,
+        ...(newConfig.dashboardAnnouncement
+          ? {
+              dashboardAnnouncement: {
+                ...newConfig.dashboardAnnouncement,
+                enabled: Boolean(newConfig.dashboardAnnouncement.enabled),
+                updatedAt: nowTs,
+              },
+            }
+          : {}),
       };
+
+      try {
+        localStorage.setItem(PROMPT_CONFIG_STORAGE_KEY, JSON.stringify(updated));
+      } catch {}
 
       syncConfigToSupabase('admin_config_prompts', updated);
 

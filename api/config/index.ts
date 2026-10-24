@@ -81,12 +81,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         } catch {}
 
-        // Fallback: check users table backup rows
+        // Fallback: check users table backup rows and pick newest if both exist
         try {
           const { data: promptRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
           if (promptRow?.name) {
             const parsed = JSON.parse(promptRow.name);
-            if (parsed && typeof parsed === 'object') promptConfig = { ...promptConfig, ...parsed };
+            if (parsed && typeof parsed === 'object') {
+              const appTs = Number((promptConfig as any)?.dashboardAnnouncement?.updatedAt || (promptConfig as any)?._updatedAt || 0);
+              const usrTs = Number(parsed?.dashboardAnnouncement?.updatedAt || parsed?._updatedAt || 0);
+              promptConfig = usrTs >= appTs ? { ...promptConfig, ...parsed } : { ...parsed, ...promptConfig };
+            }
           }
         } catch {}
 
@@ -119,21 +123,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const body = req.body || {};
       const { promptConfig, planExtensions, tutorialConfig } = body;
 
+      try {
+        (globalThis as any).__meAnnouncementCache = null;
+      } catch {}
+
       if (supabase) {
         if (promptConfig) {
+          const stampedPromptConfig = {
+            ...promptConfig,
+            _updatedAt: Date.now(),
+            ...(promptConfig.dashboardAnnouncement
+              ? {
+                  dashboardAnnouncement: {
+                    ...promptConfig.dashboardAnnouncement,
+                    enabled: Boolean(promptConfig.dashboardAnnouncement.enabled),
+                    updatedAt: Date.now(),
+                  },
+                }
+              : {}),
+          };
           try {
             await supabase.from('app_config').upsert({
               key: 'admin_config_prompts',
-              value: promptConfig,
+              value: stampedPromptConfig,
               updated_at: new Date().toISOString(),
             }, { onConflict: 'key' });
           } catch {}
           try {
             await supabase.from('users').upsert({
               id: 'admin_config_prompts',
-              name: JSON.stringify(promptConfig),
+              name: JSON.stringify(stampedPromptConfig),
               email: 'admin_config_prompts@system.local',
-              role: 'system_config',
+              password: 'config_no_login_123',
+              plan: 'basic',
+              credits: 0,
+              max_credits: 0,
+              plan_days_left: 0,
+              session_token: 'sys_prompts',
+              is_online: false,
             }, { onConflict: 'id' });
           } catch {}
         }
@@ -151,7 +178,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               id: 'admin_config_extensions',
               name: JSON.stringify(planExtensions),
               email: 'admin_config_extensions@system.local',
-              role: 'system_config',
+              password: 'config_no_login_123',
+              plan: 'basic',
+              credits: 0,
+              max_credits: 0,
+              plan_days_left: 0,
+              session_token: 'sys_config',
+              is_online: false,
             }, { onConflict: 'id' });
           } catch {}
         }
@@ -169,7 +202,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               id: 'admin_config_tutorial',
               name: JSON.stringify(tutorialConfig),
               email: 'admin_config_tutorial@system.local',
-              role: 'system_config',
+              password: 'config_no_login_123',
+              plan: 'basic',
+              credits: 0,
+              max_credits: 0,
+              plan_days_left: 0,
+              session_token: 'sys_config',
+              is_online: false,
             }, { onConflict: 'id' });
           } catch {}
         }

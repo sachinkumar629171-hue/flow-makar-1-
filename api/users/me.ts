@@ -67,8 +67,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
     }
 
+    // Check active dashboard notification/announcement configured by Admin (cached 10s for zero extra egress)
+    let activeAnnouncement: { enabled: boolean; text: string; type: 'info' | 'warning' | 'success' } | null = null;
+    try {
+      const g = globalThis as any;
+      const nowMs = Date.now();
+      if (g.__meAnnouncementCache && (nowMs - g.__meAnnouncementCache.ts < 10000)) {
+        activeAnnouncement = g.__meAnnouncementCache.data;
+      } else {
+        let appCfg: any = null;
+        let usrCfg: any = null;
+        try {
+          const { data: appRow } = await supabase.from('app_config').select('value').eq('key', 'admin_config_prompts').maybeSingle();
+          if (appRow?.value) {
+            appCfg = typeof appRow.value === 'string' ? JSON.parse(appRow.value) : appRow.value;
+          }
+        } catch {}
+        try {
+          const { data: usrRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+          if (usrRow?.name) {
+            usrCfg = typeof usrRow.name === 'string' ? JSON.parse(usrRow.name) : usrRow.name;
+          }
+        } catch {}
+
+        const appTs = Number(appCfg?.dashboardAnnouncement?.updatedAt || appCfg?._updatedAt || 0);
+        const usrTs = Number(usrCfg?.dashboardAnnouncement?.updatedAt || usrCfg?._updatedAt || 0);
+        const parsedCfg = (usrCfg && usrTs > appTs) ? usrCfg : (appCfg || usrCfg);
+
+        const ann = parsedCfg?.dashboardAnnouncement;
+        if (ann && ann.enabled === true && typeof ann.text === 'string' && ann.text.trim().length > 0) {
+          activeAnnouncement = {
+            enabled: true,
+            text: ann.text.trim(),
+            type: ann.type || 'info',
+          };
+        } else {
+          activeAnnouncement = null;
+        }
+        g.__meAnnouncementCache = { ts: nowMs, data: activeAnnouncement };
+      }
+    } catch {}
+
     // Return ONLY essential fields requested by user (No internal IDs, session tokens, reseller or online status)
-    const safeUser = {
+    const safeUser: Record<string, any> = {
       name: supaUser.name || 'User',
       email: supaUser.email || '',
       plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
@@ -78,9 +119,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
     };
 
+    const showNotification = Boolean(activeAnnouncement && activeAnnouncement.enabled);
+
     return res.status(200).json({
       success: true,
       user: safeUser,
+      showNotification,
+      ...(showNotification && activeAnnouncement
+        ? {
+            notification: {
+              message: activeAnnouncement.text,
+              type: activeAnnouncement.type,
+            },
+          }
+        : {}),
     });
   } catch (err: any) {
     return res.status(500).json({

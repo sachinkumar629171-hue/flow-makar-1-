@@ -409,16 +409,19 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     }
 
     try {
+      const singleIdxMatch = serverId.match(/(\d+)/);
+      const singleServerNum = singleIdxMatch ? parseInt(singleIdxMatch[1], 10) : 1;
+      const targetSrvObj = normalizedServers.find(s => s.id === serverId) || normalizedServers[singleServerNum - 1];
+
       if (cloudflareUrl.trim()) {
         try {
-          const cfPayload: Record<string, any> = {
-            servers: normalizedServers,
-            updatedAt: nowIso
+          const cfPayload = {
+            action: 'update_prompt',
+            secret: 'flow_admin_2026',
+            dataType: 'Flow ultra lower priority',
+            dropdown: `Server ${singleServerNum}`,
+            prompt: targetSrvObj?.prompt || '',
           };
-          normalizedServers.forEach((s, idx) => {
-            const key = `server${idx + 1}`;
-            cfPayload[key] = s.prompt || '';
-          });
           await fetch(cloudflareUrl.trim(), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -430,8 +433,6 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       }
 
       // Sync ONLY the updated server column to Supabase public.servers ('Flow ultra lower priority')
-      const singleIdxMatch = serverId.match(/(\d+)/);
-      const singleServerNum = singleIdxMatch ? parseInt(singleIdxMatch[1], 10) : undefined;
       await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, 'Flow ultra lower priority', singleServerNum);
 
       await updatePromptConfig({

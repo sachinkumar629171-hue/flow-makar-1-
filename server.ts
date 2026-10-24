@@ -1058,13 +1058,25 @@ app.get('/api/admin/data', async (req, res) => {
 
 // GET currently logged-in user profile ONLY (Standard Bearer Auth)
 app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
+  await refreshSupabaseConfigIfNeeded();
   const callingUser = await getCallingUser(req);
   if (!callingUser) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Session token required or invalid' });
   }
   const callingEmail = (callingUser.email || '').toLowerCase().trim();
   const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(callingEmail);
-  const minimalProfile = {
+
+  const rawAnn = db.promptConfig?.dashboardAnnouncement;
+  const activeAnnouncement =
+    rawAnn && rawAnn.enabled === true && typeof rawAnn.text === 'string' && rawAnn.text.trim().length > 0
+      ? {
+          enabled: true,
+          text: rawAnn.text.trim(),
+          type: rawAnn.type || 'info',
+        }
+      : null;
+
+  const minimalProfile: Record<string, any> = {
     name: callingUser.name || 'User',
     email: callingUser.email || '',
     plan: isSysAdmin ? 'ultra' : (callingUser.plan || 'basic'),
@@ -1073,7 +1085,22 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
     planDaysLeft: Number(callingUser.planDaysLeft) ?? 30,
     role: isSysAdmin ? 'admin' : (callingUser.role || 'user'),
   };
-  res.json({ success: true, user: minimalProfile });
+
+  const showNotification = Boolean(activeAnnouncement && activeAnnouncement.enabled);
+
+  res.json({
+    success: true,
+    user: minimalProfile,
+    showNotification,
+    ...(showNotification && activeAnnouncement
+      ? {
+          notification: {
+            message: activeAnnouncement.text,
+            type: activeAnnouncement.type,
+          },
+        }
+      : {}),
+  });
 });
 
 // POST signup
@@ -1504,45 +1531,50 @@ async function refreshSupabaseConfigIfNeeded() {
       } catch {}
     }
 
-    // 1. First check app_config table for prompt config
-    let promptParsed: any = null;
+    // 1. Check both app_config and users table for prompt config and pick the most recently updated
+    let appParsed: any = null;
+    let usrParsed: any = null;
     try {
       const { data: appConfigRow } = await supa.from('app_config').select('value').eq('key', 'admin_config_prompts').maybeSingle();
       if (appConfigRow?.value) {
-        promptParsed = typeof appConfigRow.value === 'string' ? JSON.parse(appConfigRow.value) : appConfigRow.value;
+        appParsed = typeof appConfigRow.value === 'string' ? JSON.parse(appConfigRow.value) : appConfigRow.value;
       }
     } catch {}
 
-    // 2. Fallback check users table
-    if (!promptParsed) {
-      try {
-        const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-        if (promptRow?.name) {
-          promptParsed = JSON.parse(promptRow.name);
-        }
-      } catch {}
-    }
+    try {
+      const { data: promptRow } = await supa.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
+      if (promptRow?.name) {
+        usrParsed = JSON.parse(promptRow.name);
+      }
+    } catch {}
 
-    if (promptParsed && Array.isArray(promptParsed.servers)) {
+    const appTs = Number(appParsed?.dashboardAnnouncement?.updatedAt || appParsed?._updatedAt || 0);
+    const usrTs = Number(usrParsed?.dashboardAnnouncement?.updatedAt || usrParsed?._updatedAt || 0);
+    const promptParsed = (usrParsed && usrTs > appTs) ? usrParsed : (appParsed || usrParsed);
+
+    if (promptParsed && typeof promptParsed === 'object') {
       const localHasPrompts = db.promptConfig?.servers?.some((s: any) => s.prompt && s.prompt.trim());
-      const incomingHasPrompts = promptParsed.servers.some((s: any) => s.prompt && s.prompt.trim());
+      const incomingHasPrompts = Array.isArray(promptParsed.servers) && promptParsed.servers.some((s: any) => s.prompt && s.prompt.trim());
 
-      if (incomingHasPrompts || !localHasPrompts) {
-        // Merge without losing non-empty prompts
-        const mergedServers = promptParsed.servers.map((inSrv: any) => {
-          const localSrv = db.promptConfig?.servers?.find((ls: any) => ls.id === inSrv.id);
-          if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
-            return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
-          }
-          return inSrv;
-        });
-        db.promptConfig = {
-          ...db.promptConfig,
-          ...promptParsed,
-          servers: mergedServers,
-        };
-        saveStorage();
-      } else if (localHasPrompts && !incomingHasPrompts) {
+      // Always keep non-server fields (like dashboardAnnouncement, costs, extensionVersion) fresh from Supabase
+      const mergedServers = Array.isArray(promptParsed.servers)
+        ? promptParsed.servers.map((inSrv: any) => {
+            const localSrv = db.promptConfig?.servers?.find((ls: any) => ls.id === inSrv.id);
+            if (!inSrv.prompt?.trim() && localSrv?.prompt?.trim()) {
+              return { ...inSrv, prompt: localSrv.prompt, lastUpdatedAt: localSrv.lastUpdatedAt };
+            }
+            return inSrv;
+          })
+        : (db.promptConfig?.servers || []);
+
+      db.promptConfig = {
+        ...db.promptConfig,
+        ...promptParsed,
+        servers: mergedServers,
+      };
+      saveStorage();
+
+      if (localHasPrompts && !incomingHasPrompts) {
         // Local memory has active prompts, but Supabase has empty ones. Push to Supabase to self-heal!
         safeSaveSupabasePromptConfig(supa, db.promptConfig);
       }
@@ -3953,8 +3985,24 @@ app.post('/api/config', async (req, res) => {
   if (tutorialConfig) db.tutorialConfig = tutorialConfig;
   
   if (promptConfig) {
+    try {
+      (globalThis as any).__meAnnouncementCache = null;
+    } catch {}
     const oldPromptConfig = db.promptConfig;
-    let mergedPromptConfig = { ...oldPromptConfig, ...promptConfig };
+    let mergedPromptConfig: any = {
+      ...oldPromptConfig,
+      ...promptConfig,
+      _updatedAt: Date.now(),
+      ...(promptConfig.dashboardAnnouncement
+        ? {
+            dashboardAnnouncement: {
+              ...promptConfig.dashboardAnnouncement,
+              enabled: Boolean(promptConfig.dashboardAnnouncement.enabled),
+              updatedAt: Date.now(),
+            },
+          }
+        : {}),
+    };
 
     // Merge servers without wiping active prompts with empty values
     if (Array.isArray(promptConfig.servers)) {

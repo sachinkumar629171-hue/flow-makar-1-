@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Bell, Sparkles, Check } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -11,10 +11,19 @@ export const DashboardAnnouncementModal: React.FC<DashboardAnnouncementModalProp
   const { promptConfig, updatePromptConfig } = useAuth();
   const currentAnnouncement = promptConfig?.dashboardAnnouncement || { enabled: false, text: '', type: 'info' };
 
-  const [enabled, setEnabled] = useState(currentAnnouncement.enabled);
+  const [enabled, setEnabled] = useState(Boolean(currentAnnouncement.enabled));
   const [text, setText] = useState(currentAnnouncement.text || '');
   const [type, setType] = useState<'info' | 'warning' | 'success'>(currentAnnouncement.type || 'info');
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      const ann = promptConfig?.dashboardAnnouncement || { enabled: false, text: '', type: 'info' };
+      setEnabled(Boolean(ann.enabled));
+      setText(ann.text || '');
+      setType(ann.type || 'info');
+    }
+  }, [isOpen, promptConfig?.dashboardAnnouncement?.enabled, promptConfig?.dashboardAnnouncement?.text, promptConfig?.dashboardAnnouncement?.type]);
 
   if (!isOpen) return null;
 
@@ -57,7 +66,15 @@ export const DashboardAnnouncementModal: React.FC<DashboardAnnouncementModalProp
 
         <form onSubmit={handleSave} className="space-y-4">
           <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-900/60 border border-neutral-800/80">
-            <span className="text-sm font-medium">Enable Banner on Dashboard</span>
+            <div>
+              <span className="text-sm font-medium block">Enable Banner on Dashboard</span>
+              <span className="text-[11px] font-mono text-neutral-400">
+                showNotification:{' '}
+                <strong className={enabled ? 'text-emerald-400' : 'text-rose-400'}>
+                  {enabled ? 'true (ON)' : 'false (OFF)'}
+                </strong>
+              </span>
+            </div>
             <label className="relative inline-flex items-center cursor-pointer">
               <input
                 type="checkbox"
