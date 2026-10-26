@@ -67,32 +67,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
     }
 
-    // Check active dashboard notification/announcement configured by Admin (cached 10s for zero extra egress)
+    // Check active dashboard notification/announcement & requiredVersion configured by Admin in Supabase (cached 10s for zero extra egress)
     let activeAnnouncement: { enabled: boolean; text: string; type: 'info' | 'warning' | 'success' } | null = null;
+    let requiredVersion = '3.2.0';
     try {
       const g = globalThis as any;
       const nowMs = Date.now();
       if (g.__meAnnouncementCache && (nowMs - g.__meAnnouncementCache.ts < 10000)) {
         activeAnnouncement = g.__meAnnouncementCache.data;
+        requiredVersion = g.__meAnnouncementCache.requiredVersion || '3.2.0';
       } else {
         let appCfg: any = null;
         let usrCfg: any = null;
+        let appExt: any = null;
+        let usrExt: any = null;
         try {
-          const { data: appRow } = await supabase.from('app_config').select('value').eq('key', 'admin_config_prompts').maybeSingle();
-          if (appRow?.value) {
-            appCfg = typeof appRow.value === 'string' ? JSON.parse(appRow.value) : appRow.value;
+          const { data: appRows } = await supabase
+            .from('app_config')
+            .select('key, value')
+            .in('key', ['admin_config_prompts', 'admin_config_extensions']);
+          if (Array.isArray(appRows)) {
+            for (const r of appRows) {
+              const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+              if (r.key === 'admin_config_prompts') appCfg = v;
+              if (r.key === 'admin_config_extensions') appExt = v;
+            }
           }
         } catch {}
         try {
-          const { data: usrRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-          if (usrRow?.name) {
-            usrCfg = typeof usrRow.name === 'string' ? JSON.parse(usrRow.name) : usrRow.name;
+          const { data: usrRows } = await supabase
+            .from('users')
+            .select('id, name')
+            .in('id', ['admin_config_prompts', 'admin_config_extensions']);
+          if (Array.isArray(usrRows)) {
+            for (const r of usrRows) {
+              if (!r.name) continue;
+              const v = typeof r.name === 'string' ? JSON.parse(r.name) : r.name;
+              if (r.id === 'admin_config_prompts') usrCfg = v;
+              if (r.id === 'admin_config_extensions') usrExt = v;
+            }
           }
         } catch {}
 
         const appTs = Number(appCfg?.dashboardAnnouncement?.updatedAt || appCfg?._updatedAt || 0);
         const usrTs = Number(usrCfg?.dashboardAnnouncement?.updatedAt || usrCfg?._updatedAt || 0);
         const parsedCfg = (usrCfg && usrTs > appTs) ? usrCfg : (appCfg || usrCfg);
+        const latestPromptTs = Math.max(appTs, usrTs);
+
+        const appExtTs = Number(appExt?._updatedAt || (appExt?.ultra?.updatedAt ? new Date(appExt.ultra.updatedAt).getTime() : 0) || 0);
+        const usrExtTs = Number(usrExt?._updatedAt || (usrExt?.ultra?.updatedAt ? new Date(usrExt.ultra.updatedAt).getTime() : 0) || 0);
+        const parsedExt = (usrExt && usrExtTs > appExtTs) ? usrExt : (appExt || usrExt);
+        const latestExtTs = Math.max(appExtTs, usrExtTs);
+
+        const promptVer = parsedCfg?.extensionVersion ? String(parsedCfg.extensionVersion).trim() : '';
+        const extVer = parsedExt?.ultra?.version ? String(parsedExt.ultra.version).trim() : '';
+        if (promptVer && extVer) {
+          requiredVersion = latestExtTs > latestPromptTs ? extVer : promptVer;
+        } else if (promptVer || extVer) {
+          requiredVersion = promptVer || extVer;
+        }
 
         const ann = parsedCfg?.dashboardAnnouncement;
         if (ann && ann.enabled === true && typeof ann.text === 'string' && ann.text.trim().length > 0) {
@@ -104,9 +137,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         } else {
           activeAnnouncement = null;
         }
-        g.__meAnnouncementCache = { ts: nowMs, data: activeAnnouncement };
+        g.__meAnnouncementCache = { ts: nowMs, data: activeAnnouncement, requiredVersion };
       }
     } catch {}
+
+    const clientVersion = (
+      req.query.version ||
+      req.query.extensionVersion ||
+      req.query.clientVersion ||
+      req.headers['x-extension-version'] ||
+      req.headers['x-client-version'] ||
+      ''
+    ).toString().trim();
+
+    const norm = (v: string) => v.trim().toLowerCase().replace(/^v/i, '');
+    if (clientVersion && norm(clientVersion) !== norm(requiredVersion)) {
+      return res.status(426).json({
+        success: false,
+        allowed: false,
+        updateRequired: true,
+        needsUpdate: true,
+        isOutdated: true,
+        requiredVersion,
+        version: requiredVersion,
+        extensionVersion: requiredVersion,
+        clientVersion,
+        error: `Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVersion}.`,
+      });
+    }
 
     // Return ONLY essential fields requested by user (No internal IDs, session tokens, reseller or online status)
     const safeUser: Record<string, any> = {
@@ -124,6 +182,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       user: safeUser,
+      requiredVersion,
+      version: requiredVersion,
+      extensionVersion: requiredVersion,
       showNotification,
       ...(showNotification && activeAnnouncement
         ? {

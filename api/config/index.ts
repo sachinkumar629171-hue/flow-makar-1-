@@ -166,17 +166,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         if (planExtensions) {
+          const stampedPlanExtensions = {
+            ...planExtensions,
+            _updatedAt: Date.now(),
+          };
           try {
             await supabase.from('app_config').upsert({
               key: 'admin_config_extensions',
-              value: planExtensions,
+              value: stampedPlanExtensions,
               updated_at: new Date().toISOString(),
             }, { onConflict: 'key' });
           } catch {}
           try {
             await supabase.from('users').upsert({
               id: 'admin_config_extensions',
-              name: JSON.stringify(planExtensions),
+              name: JSON.stringify(stampedPlanExtensions),
               email: 'admin_config_extensions@system.local',
               password: 'config_no_login_123',
               plan: 'basic',

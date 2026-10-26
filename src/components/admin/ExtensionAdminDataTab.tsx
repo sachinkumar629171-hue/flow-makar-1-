@@ -297,6 +297,7 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
     };
 
     try {
+      const trimmedVer = extensionVersion.trim();
       await updatePromptConfig({
         servers: updatedServers,
         costs: {
@@ -309,7 +310,15 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
         telegramAlerts: tgAlertConfig,
         server1Prompt: updatedServers[0]?.prompt || '',
         server2Prompt: updatedServers[1]?.prompt || '',
+        ...(trimmedVer ? { extensionVersion: trimmedVer } : {}),
       });
+
+      if (trimmedVer && planExtensions?.ultra) {
+        updatePlanExtensionConfig('ultra', {
+          ...planExtensions.ultra,
+          version: trimmedVer,
+        });
+      }
 
       showToast(`All ${localServers.length} prompt servers & Option 2 Cloudflare settings saved live!`);
     } catch (err: any) {
