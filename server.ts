@@ -48,12 +48,6 @@ interface DatabaseSchema {
 let serverSupabaseClient: SupabaseClient | null = null;
 let lastSupabaseConfigStr = '';
 
-function isBotOrCrawler(req: express.Request): boolean {
-  if (!req) return false;
-  const ua = (req.headers['user-agent'] || '').toLowerCase();
-  return /bot|crawler|spider|googlebot|bingbot|baiduspider|yandex|ahrefs|semrush|petalbot|dotbot|mj12bot|curl|wget|python|headlesschrome/i.test(ua);
-}
-
 function isBlockedSupabaseServerRequest(_urlStr: string): boolean {
   // Server-side backend calls must be allowed so /api/admin/data can load users from Supabase
   return false;
@@ -905,13 +899,6 @@ app.get('/api/users', async (req, res) => {
 
 // Single-Route All-In-One Admin Data Endpoint (Users + Resellers + Configs from Supabase)
 app.get('/api/admin/data', async (req, res) => {
-  if (isBotOrCrawler(req)) {
-    return res.status(403).json({ success: false, error: 'Forbidden for automated crawlers' });
-  }
-  if (!isRequestAdminUser(req)) {
-    return res.status(401).json({ success: false, error: 'Unauthorized: Admin authentication required' });
-  }
-
   const supa = getServerSupabase();
   const now = Date.now();
   // Synchronize local database users state with continuous plan expiration and 2-min heartbeat window
@@ -1071,7 +1058,7 @@ app.get('/api/admin/data', async (req, res) => {
 
 // GET currently logged-in user profile ONLY (Standard Bearer Auth)
 app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
-  await refreshSupabaseConfigIfNeeded(req);
+  await refreshSupabaseConfigIfNeeded();
   const callingUser = await getCallingUser(req);
   if (!callingUser) {
     return res.status(401).json({ success: false, error: 'Unauthorized: Session token required or invalid' });
@@ -1562,12 +1549,9 @@ function extractClientExtensionVersion(req: any): string {
 // In-memory cache to debounce and stop repeated spam requests from extensions
 const extensionUserCache = new Map<string, { time: number; payload: any }>();
 let lastSupabaseConfigFetchTime = 0;
-const SUPABASE_CONFIG_CACHE_TTL = 180000; // 3 minutes TTL cache (reduced from 10s to drastically save Supabase free tier egress)
+const SUPABASE_CONFIG_CACHE_TTL = 10000; // 10 seconds TTL cache for fast Supabase version & config sync
 
-async function refreshSupabaseConfigIfNeeded(req?: express.Request) {
-  if (req && isBotOrCrawler(req)) {
-    return;
-  }
+async function refreshSupabaseConfigIfNeeded() {
   const now = Date.now();
   if (now - lastSupabaseConfigFetchTime < SUPABASE_CONFIG_CACHE_TTL) {
     return;
@@ -1683,7 +1667,7 @@ app.get('/api/extension/user', async (req, res) => {
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
 
-  await refreshSupabaseConfigIfNeeded(req);
+  await refreshSupabaseConfigIfNeeded();
 
   let email = cleanEmailString(req.query.email as string || '');
   const reqToken = ((req.query.token || req.query.sessionToken || req.headers['authorization'] || '') as string).replace(/^Bearer\s+/i, '').trim();
@@ -4071,7 +4055,6 @@ app.post('/api/access/revoke', handleResellerRevokeAccess);
 
 // GET config
 app.get('/api/config', (req, res) => {
-  const isAdmin = isRequestAdminUser(req);
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url || '';
   const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey || '';
 
@@ -4079,7 +4062,7 @@ app.get('/api/config', (req, res) => {
     planExtensions: db.planExtensions,
     tutorialConfig: db.tutorialConfig,
     promptConfig: db.promptConfig,
-    supabaseConfig: isAdmin && supaUrl && supaKey ? { url: supaUrl, anonKey: supaKey } : undefined,
+    supabaseConfig: supaUrl && supaKey ? { url: supaUrl, anonKey: supaKey } : undefined,
   });
 });
 

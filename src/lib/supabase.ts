@@ -72,9 +72,6 @@ export function getSupabaseConfig(): SupabaseConfig {
   if (typeof window === 'undefined') {
     return { url: '', anonKey: '', isConnected: false };
   }
-  if (typeof navigator !== 'undefined' && /bot|crawler|spider|googlebot|bingbot|baiduspider|yandex|headlesschrome/i.test(navigator.userAgent)) {
-    return { url: '', anonKey: '', isConnected: false };
-  }
   const url = localStorage.getItem(SUPABASE_URL_KEY) || (import.meta as any).env?.VITE_SUPABASE_URL || '';
   const anonKey = localStorage.getItem(SUPABASE_ANON_KEY) || (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
   return {
