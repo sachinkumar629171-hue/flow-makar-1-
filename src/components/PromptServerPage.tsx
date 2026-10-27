@@ -1065,24 +1065,6 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
                         )}
                       </div>
                     </div>
-
-                    {/* Required Version & User Details footer below prompt as requested */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-3 mt-1 border-t border-neutral-800/80 text-[11px] text-neutral-400 font-mono">
-                      <div className="flex items-center gap-3 flex-wrap">
-                        <span className="text-cyan-300 font-bold bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-800/50">
-                          Required Version: {promptConfig?.extensionVersion || '3.2.0'}
-                        </span>
-                        <span className="text-purple-300 font-bold bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/50">
-                          User Plan: {currentUser?.plan ? currentUser.plan.toUpperCase() : 'ULTRA'}
-                        </span>
-                        <span className="text-neutral-300 bg-neutral-900 px-2 py-0.5 rounded border border-neutral-800">
-                          Email: {currentUser?.email || 'sachinxexplore@gmail.com'}
-                        </span>
-                      </div>
-                      <div className="text-neutral-500">
-                        <span>Updated: {server.lastUpdatedAt ? new Date(server.lastUpdatedAt).toLocaleTimeString() : 'Just now'}</span>
-                      </div>
-                    </div>
                   </div>
                 );
               })}
