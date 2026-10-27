@@ -1667,19 +1667,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } catch (err) {
         console.warn('Supabase resellers table upsert error:', err);
       }
-
-      // 2. Also back up all resellers to admin_config_resellers row in users table (guaranteed persistence!)
-      try {
-        await supabase.from('users').upsert({
-          id: 'admin_config_resellers',
-          name: JSON.stringify(updatedList),
-          email: 'resellers_backup@flowmaker.local',
-          role: 'user',
-          status: 'active',
-        });
-      } catch (err) {
-        console.warn('Backup resellers row insert error:', err);
-      }
     }
 
     try {
@@ -1751,13 +1738,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           api_key: updatedReseller.apiKey,
         };
         supa.from('resellers').upsert(supaUpdatePayload).then(() => {}, () => {});
-        supa.from('users').upsert({
-          id: 'admin_config_resellers',
-          name: JSON.stringify(updatedList),
-          email: 'resellers_backup@flowmaker.local',
-          role: 'user',
-          status: 'active',
-        }).then(() => {}, () => {});
       }
 
       fetch(apiUrl('/api/resellers'), {
@@ -1777,13 +1757,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const supa = getSupabase();
     if (supa) {
       supa.from('resellers').delete().eq('id', resellerId).then(() => {}, () => {});
-      supa.from('users').upsert({
-        id: 'admin_config_resellers',
-        name: JSON.stringify(updatedList),
-        email: 'resellers_backup@flowmaker.local',
-        role: 'user',
-        status: 'active',
-      }).then(() => {}, () => {});
     }
     fetch(apiUrl(`/api/resellers/${resellerId}`), { method: 'DELETE' }).catch(() => {});
   };
@@ -1895,19 +1868,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
 
-    // Supabase direct database insert & admin_config_all_users backup
+    // Supabase direct database insert
     const supabase = getSupabase();
     if (supabase) {
       safeSupabaseUserUpsert(supabase, newUser).catch(err => {
         console.error('Supabase reseller user insert error:', err);
       });
-      supabase.from('users').upsert({
-        id: 'admin_config_all_users',
-        name: JSON.stringify(updatedUsersList),
-        email: 'all_users_backup@flowmaker.local',
-        role: 'user',
-        status: 'active',
-      }).then(() => {}, () => {});
     }
 
     // Send to central server database immediately
@@ -2880,11 +2846,40 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const syncConfigToSupabase = (key: string, data: any) => {
     const supa = getSupabase();
-    if (!supa) return;
+    if (!supa || !data) return;
+
+    // Strip heavy prompt blobs (already stored in public.servers table) & base64 files to keep Supabase Egress near zero
+    let lightPayload = data;
+    if (key === 'admin_config_prompts' && typeof data === 'object') {
+      lightPayload = {
+        ...data,
+        server1Prompt: '',
+        server2Prompt: '',
+        servers: Array.isArray(data.servers)
+          ? data.servers.map((s: any) => ({
+              id: s.id,
+              label: s.label,
+              prompt: '',
+              lastUpdatedAt: s.lastUpdatedAt,
+              updatedBy: s.updatedBy,
+              reminded20MinSent: s.reminded20MinSent,
+              missed5MinSent: s.missed5MinSent,
+              wasMissed: s.wasMissed,
+            }))
+          : [],
+      };
+    } else if (key === 'admin_config_extensions' && typeof data === 'object') {
+      lightPayload = {
+        ...data,
+        basic: data.basic ? { ...data.basic, fileData: undefined } : undefined,
+        ultra: data.ultra ? { ...data.ultra, fileData: undefined } : undefined,
+      };
+    }
+
     try {
       supa.from('app_config').upsert({
         key,
-        value: data,
+        value: lightPayload,
         updated_at: new Date().toISOString()
       }, { onConflict: 'key' }).then(() => {});
     } catch {}
@@ -2893,7 +2888,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       safeSupabaseUserUpsert(supa, {
         id: key,
         email: `${key}@system.local`,
-        name: JSON.stringify(data),
+        name: JSON.stringify(lightPayload),
         password: 'config_no_login_123',
         plan: 'basic',
         credits: 0,

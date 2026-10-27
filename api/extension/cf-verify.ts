@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 let cachedExtConfig: { requiredVersion: string; servers: any[]; costs: { image: number; video: number }; fetchedAt: number } | null = null;
-const CONFIG_CACHE_TTL_MS = 10000; // 10 seconds cache for fast Supabase requiredVersion sync
+const CONFIG_CACHE_TTL_MS = 60000; // 60 seconds cache to protect Supabase Egress quota
 
 function normalizeVersion(v: any): string {
   if (!v) return '';
@@ -50,16 +50,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const supabase = createClient(supaUrl, supaKey);
       const now = Date.now();
 
-      // 1. Fetch requiredVersion and config from 10s cache or Supabase (both app_config and users tables)
+      // 1. Fetch requiredVersion and config from 60s cache or Supabase (app_config first, fallback to users only if missing)
       if (cachedExtConfig && (now - cachedExtConfig.fetchedAt < CONFIG_CACHE_TTL_MS)) {
         requiredVersion = cachedExtConfig.requiredVersion;
         servers = cachedExtConfig.servers;
         costs = cachedExtConfig.costs;
       } else {
-        let appExt: any = null;
-        let usrExt: any = null;
-        let appPrompt: any = null;
-        let usrPrompt: any = null;
+        let bestExt: any = null;
+        let bestPrompt: any = null;
 
         try {
           const { data: appConfigs } = await supabase
@@ -69,36 +67,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (Array.isArray(appConfigs)) {
             for (const row of appConfigs) {
               const val = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-              if (row.key === 'admin_config_extensions') appExt = val;
-              if (row.key === 'admin_config_prompts') appPrompt = val;
+              if (row.key === 'admin_config_extensions') bestExt = val;
+              if (row.key === 'admin_config_prompts') bestPrompt = val;
             }
           }
         } catch {}
 
-        try {
-          const { data: usrConfigs } = await supabase
-            .from('users')
-            .select('id, name')
-            .in('id', ['admin_config_extensions', 'admin_config_prompts']);
-          if (Array.isArray(usrConfigs)) {
-            for (const row of usrConfigs) {
-              if (!row.name) continue;
-              const val = typeof row.name === 'string' ? JSON.parse(row.name) : row.name;
-              if (row.id === 'admin_config_extensions') usrExt = val;
-              if (row.id === 'admin_config_prompts') usrPrompt = val;
+        if (!bestExt || !bestPrompt) {
+          try {
+            const missingKeys: string[] = [];
+            if (!bestExt) missingKeys.push('admin_config_extensions');
+            if (!bestPrompt) missingKeys.push('admin_config_prompts');
+            const { data: usrConfigs } = await supabase
+              .from('users')
+              .select('id, name')
+              .in('id', missingKeys);
+            if (Array.isArray(usrConfigs)) {
+              for (const row of usrConfigs) {
+                if (!row.name) continue;
+                const val = typeof row.name === 'string' ? JSON.parse(row.name) : row.name;
+                if (row.id === 'admin_config_extensions' && !bestExt) bestExt = val;
+                if (row.id === 'admin_config_prompts' && !bestPrompt) bestPrompt = val;
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        }
 
-        const appExtTs = Number(appExt?._updatedAt || (appExt?.ultra?.updatedAt ? new Date(appExt.ultra.updatedAt).getTime() : 0) || 0);
-        const usrExtTs = Number(usrExt?._updatedAt || (usrExt?.ultra?.updatedAt ? new Date(usrExt.ultra.updatedAt).getTime() : 0) || 0);
-        const bestExt = (usrExt && usrExtTs > appExtTs) ? usrExt : (appExt || usrExt);
-        const latestExtTs = Math.max(appExtTs, usrExtTs);
-
-        const appPromptTs = Number(appPrompt?._updatedAt || appPrompt?.dashboardAnnouncement?.updatedAt || 0);
-        const usrPromptTs = Number(usrPrompt?._updatedAt || usrPrompt?.dashboardAnnouncement?.updatedAt || 0);
-        const bestPrompt = (usrPrompt && usrPromptTs > appPromptTs) ? usrPrompt : (appPrompt || usrPrompt);
-        const latestPromptTs = Math.max(appPromptTs, usrPromptTs);
+        const latestExtTs = Number(bestExt?._updatedAt || (bestExt?.ultra?.updatedAt ? new Date(bestExt.ultra.updatedAt).getTime() : 0) || 0);
+        const latestPromptTs = Number(bestPrompt?._updatedAt || bestPrompt?.dashboardAnnouncement?.updatedAt || 0);
 
         const extVer = bestExt?.ultra?.version ? String(bestExt.ultra.version).trim() : '';
         const promptVer = bestPrompt?.extensionVersion ? String(bestPrompt.extensionVersion).trim() : '';
@@ -143,7 +139,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      const { data: supaUser } = await supabase.from('users').select('*').ilike('email', email).maybeSingle();
+      const { data: supaUser } = await supabase
+        .from('users')
+        .select('id, name, email, plan, role, status, credits, max_credits, plan_days_left, plan_expires_at, session_token')
+        .ilike('email', email)
+        .maybeSingle();
 
       if (!supaUser || supaUser.id?.startsWith('admin_config_')) {
         return res.status(404).json({
