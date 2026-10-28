@@ -98,8 +98,6 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     serversFound?: string[];
     updatedAt?: string;
   } | null>(null);
-  const [showCloudflareCode, setShowCloudflareCode] = useState<boolean>(false);
-  const [copiedWorkerCode, setCopiedWorkerCode] = useState<boolean>(false);
 
   // Telegram Bot State
   const [telegramEnabled, setTelegramEnabled] = useState<boolean>(promptConfig?.telegramAlerts?.enabled ?? false);
@@ -894,12 +892,12 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-end gap-2 pt-5 sm:pt-0">
+                <div className="flex items-end pt-5 sm:pt-0">
                   <button
                     type="button"
                     onClick={handleTestCloudflare}
                     disabled={isTestingCloudflare || !cloudflareUrl.trim()}
-                    className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-950/40 cursor-pointer active:scale-95"
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-950/40 cursor-pointer active:scale-95"
                   >
                     {isTestingCloudflare ? (
                       <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -908,113 +906,8 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
                     )}
                     <span>Test & Sync Live Prompts</span>
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowCloudflareCode(!showCloudflareCode)}
-                    className="flex items-center justify-center gap-1.5 px-3.5 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 border border-neutral-700 rounded-xl text-xs font-medium transition-all cursor-pointer active:scale-95"
-                  >
-                    <Terminal className="w-4 h-4 text-emerald-400" />
-                    <span>{showCloudflareCode ? 'Hide Worker Code' : 'Worker Code (with requiredVersion)'}</span>
-                  </button>
                 </div>
               </div>
-
-              {/* Collapsible Cloudflare Worker Code with Supabase requiredVersion sync */}
-              {showCloudflareCode && (
-                <div className="mt-3 p-4 bg-[#060910] border border-emerald-500/40 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-emerald-400" />
-                      <span className="text-xs font-bold text-white font-mono">Cloudflare Worker Script (Includes requiredVersion + servers Sync)</span>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const code = `// Cloudflare Worker: Multi-Server Prompt Handler with requiredVersion Sync
-export default {
-  async fetch(request, env, ctx) {
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    };
-    if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
-    if (request.method === 'GET') {
-      return new Response(JSON.stringify({ success: true, status: "Cloudflare Prompt Gatekeeper Worker is Online!", requiredVersion: "3.2.0" }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
-    }
-    const body = await request.json().catch(() => ({}));
-    const dataType = (body.dataType || body.datatype || 'Flow ultra lower priority').trim();
-    const dropdown = (body.dropdown || body.server || body.serverId || 'Server 1').trim();
-    const supaUrl = env?.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-    const supaKey = env?.SUPABASE_ANON_KEY || 'YOUR_SUPABASE_KEY';
-
-    let requiredVersion = '3.2.0';
-    try {
-      const vResp = await fetch(\`\${supaUrl}/rest/v1/users?id=eq.admin_config_extensions&select=name\`, {
-        headers: { 'apikey': supaKey, 'Authorization': \`Bearer \${supaKey}\` }
-      });
-      if (vResp.ok) {
-        const vData = await vResp.json();
-        if (vData?.[0]?.name) {
-          const parsed = JSON.parse(vData[0].name);
-          if (parsed?.ultra?.version) requiredVersion = String(parsed.ultra.version).trim();
-        }
-      }
-    } catch {}
-
-    const numMatch = dropdown.match(/(\\d+)/);
-    const serverNum = numMatch ? parseInt(numMatch[1], 10) : 1;
-    const colName = \`server_\${serverNum}\`;
-    let promptValue = '';
-    try {
-      const sResp = await fetch(\`\${supaUrl}/rest/v1/servers?datatype=ilike.\${encodeURIComponent(dataType)}&select=\${colName}\`, {
-        headers: { 'apikey': supaKey, 'Authorization': \`Bearer \${supaKey}\` }
-      });
-      if (sResp.ok) {
-        const sData = await sResp.json();
-        if (sData?.[0]?.[colName]) promptValue = sData[0][colName];
-      }
-    } catch {}
-
-    const responseServers = [{ id: \`server\${serverNum}\`, label: \`Server \${serverNum}\`, prompt: promptValue }];
-    return new Response(JSON.stringify({
-      success: true,
-      allowed: true,
-      verified: true,
-      requiredVersion: requiredVersion,
-      required_version: requiredVersion,
-      extensionVersion: requiredVersion,
-      version: requiredVersion,
-      dataType: dataType,
-      dropdown: dropdown,
-      selectedServer: \`server\${serverNum}\`,
-      servers: responseServers,
-      extensionServers: responseServers,
-      plan: 'ultra',
-      planDaysLeft: 30
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
-  }
-};`;
-                        navigator.clipboard.writeText(code);
-                        setCopiedWorkerCode(true);
-                        setTimeout(() => setCopiedWorkerCode(false), 2000);
-                      }}
-                      className="px-3 py-1 bg-emerald-700 hover:bg-emerald-600 text-white text-[11px] font-bold rounded-lg transition-all flex items-center gap-1.5 cursor-pointer"
-                    >
-                      {copiedWorkerCode ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copiedWorkerCode ? 'Copied!' : 'Copy Worker Code'}</span>
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-neutral-400 leading-relaxed">
-                    Aapke Cloudflare Worker me yeh code hona chahiye taaki jab Chrome Extension prompts le, tab response me <code>servers</code> ke sath sath <code>requiredVersion</code> (jo Supabase me set hai) bhi return ho.
-                  </p>
-                </div>
-              )}
 
               {/* Cloudflare Test Result Banner */}
               {cloudflareTestResult && (
