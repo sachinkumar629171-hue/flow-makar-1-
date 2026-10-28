@@ -69,46 +69,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let tutorialConfig = DEFAULT_TUTORIAL_CONFIG;
 
       if (supabase) {
-        // Try app_config table
+        let hasAppPrompt = false;
+        let hasAppExt = false;
+        let hasAppTut = false;
+
+        // Try app_config table first
         try {
-          const { data: configs } = await supabase.from('app_config').select('*');
+          const { data: configs } = await supabase
+            .from('app_config')
+            .select('key, value')
+            .in('key', ['admin_config_prompts', 'admin_config_extensions', 'admin_config_tutorial']);
           if (configs && Array.isArray(configs)) {
             for (const cfg of configs) {
-              if (cfg.key === 'admin_config_prompts' && cfg.value) promptConfig = cfg.value;
-              else if (cfg.key === 'admin_config_extensions' && cfg.value) planExtensions = cfg.value;
-              else if (cfg.key === 'admin_config_tutorial' && cfg.value) tutorialConfig = cfg.value;
+              if (cfg.key === 'admin_config_prompts' && cfg.value) {
+                promptConfig = cfg.value;
+                hasAppPrompt = true;
+              } else if (cfg.key === 'admin_config_extensions' && cfg.value) {
+                planExtensions = cfg.value;
+                hasAppExt = true;
+              } else if (cfg.key === 'admin_config_tutorial' && cfg.value) {
+                tutorialConfig = cfg.value;
+                hasAppTut = true;
+              }
             }
           }
         } catch {}
 
-        // Fallback: check users table backup rows and pick newest if both exist
-        try {
-          const { data: promptRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-          if (promptRow?.name) {
-            const parsed = JSON.parse(promptRow.name);
-            if (parsed && typeof parsed === 'object') {
-              const appTs = Number((promptConfig as any)?.dashboardAnnouncement?.updatedAt || (promptConfig as any)?._updatedAt || 0);
-              const usrTs = Number(parsed?.dashboardAnnouncement?.updatedAt || parsed?._updatedAt || 0);
-              promptConfig = usrTs >= appTs ? { ...promptConfig, ...parsed } : { ...parsed, ...promptConfig };
+        // Only query users table backup rows for missing keys (saves 50%+ Egress!)
+        const missingKeys: string[] = [];
+        if (!hasAppPrompt) missingKeys.push('admin_config_prompts');
+        if (!hasAppExt) missingKeys.push('admin_config_extensions');
+        if (!hasAppTut) missingKeys.push('admin_config_tutorial');
+
+        if (missingKeys.length > 0) {
+          try {
+            const { data: usrRows } = await supabase
+              .from('users')
+              .select('id, name')
+              .in('id', missingKeys);
+            if (Array.isArray(usrRows)) {
+              for (const row of usrRows) {
+                if (!row.name) continue;
+                const parsed = typeof row.name === 'string' ? JSON.parse(row.name) : row.name;
+                if (row.id === 'admin_config_prompts' && parsed) promptConfig = { ...promptConfig, ...parsed };
+                if (row.id === 'admin_config_extensions' && parsed) planExtensions = { ...planExtensions, ...parsed };
+                if (row.id === 'admin_config_tutorial' && parsed) tutorialConfig = { ...tutorialConfig, ...parsed };
+              }
             }
-          }
-        } catch {}
-
-        try {
-          const { data: extRow } = await supabase.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
-          if (extRow?.name) {
-            const parsed = JSON.parse(extRow.name);
-            if (parsed && typeof parsed === 'object') planExtensions = { ...planExtensions, ...parsed };
-          }
-        } catch {}
-
-        try {
-          const { data: tutRow } = await supabase.from('users').select('name').eq('id', 'admin_config_tutorial').maybeSingle();
-          if (tutRow?.name) {
-            const parsed = JSON.parse(tutRow.name);
-            if (parsed && typeof parsed === 'object') tutorialConfig = { ...tutorialConfig, ...parsed };
-          }
-        } catch {}
+          } catch {}
+        }
       }
 
       return res.status(200).json({
@@ -129,8 +138,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (supabase) {
         if (promptConfig) {
+          // Strip heavy prompt blobs (stored in public.servers) so admin_config_prompts stays < 1KB
           const stampedPromptConfig = {
             ...promptConfig,
+            server1Prompt: '',
+            server2Prompt: '',
+            servers: Array.isArray(promptConfig.servers)
+              ? promptConfig.servers.map((s: any) => ({
+                  id: s.id,
+                  label: s.label,
+                  prompt: '',
+                  lastUpdatedAt: s.lastUpdatedAt,
+                  updatedBy: s.updatedBy,
+                  reminded20MinSent: s.reminded20MinSent,
+                  missed5MinSent: s.missed5MinSent,
+                  wasMissed: s.wasMissed,
+                }))
+              : undefined,
             _updatedAt: Date.now(),
             ...(promptConfig.dashboardAnnouncement
               ? {
@@ -166,17 +190,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         if (planExtensions) {
+          const stampedPlanExtensions = {
+            ...planExtensions,
+            basic: planExtensions.basic ? { ...planExtensions.basic, fileData: undefined } : undefined,
+            ultra: planExtensions.ultra ? { ...planExtensions.ultra, fileData: undefined } : undefined,
+            _updatedAt: Date.now(),
+          };
           try {
             await supabase.from('app_config').upsert({
               key: 'admin_config_extensions',
-              value: planExtensions,
+              value: stampedPlanExtensions,
               updated_at: new Date().toISOString(),
             }, { onConflict: 'key' });
           } catch {}
           try {
             await supabase.from('users').upsert({
               id: 'admin_config_extensions',
-              name: JSON.stringify(planExtensions),
+              name: JSON.stringify(stampedPlanExtensions),
               email: 'admin_config_extensions@system.local',
               password: 'config_no_login_123',
               plan: 'basic',

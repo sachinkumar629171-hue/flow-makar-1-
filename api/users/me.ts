@@ -34,8 +34,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const supabase = createClient(supaUrl, supaKey);
 
-    // Look up this exact single user by session_token or user id
-    let query = supabase.from('users').select('*');
+    // Look up this exact single user by session_token or user id (select only needed columns to save Egress)
+    let query = supabase
+      .from('users')
+      .select('id, name, email, plan, credits, max_credits, plan_days_left, role, status');
     if (token.startsWith('sess-')) {
       query = query.eq('session_token', token);
     } else {
@@ -67,32 +69,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
     }
 
-    // Check active dashboard notification/announcement configured by Admin (cached 10s for zero extra egress)
+    // Check active dashboard notification/announcement & requiredVersion configured by Admin in Supabase (cached 60s for minimal egress)
     let activeAnnouncement: { enabled: boolean; text: string; type: 'info' | 'warning' | 'success' } | null = null;
+    let requiredVersion = '3.2.0';
     try {
       const g = globalThis as any;
       const nowMs = Date.now();
-      if (g.__meAnnouncementCache && (nowMs - g.__meAnnouncementCache.ts < 10000)) {
+      if (g.__meAnnouncementCache && (nowMs - g.__meAnnouncementCache.ts < 60000)) {
         activeAnnouncement = g.__meAnnouncementCache.data;
+        requiredVersion = g.__meAnnouncementCache.requiredVersion || '3.2.0';
       } else {
-        let appCfg: any = null;
-        let usrCfg: any = null;
+        let parsedCfg: any = null;
+        let parsedExt: any = null;
         try {
-          const { data: appRow } = await supabase.from('app_config').select('value').eq('key', 'admin_config_prompts').maybeSingle();
-          if (appRow?.value) {
-            appCfg = typeof appRow.value === 'string' ? JSON.parse(appRow.value) : appRow.value;
-          }
-        } catch {}
-        try {
-          const { data: usrRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-          if (usrRow?.name) {
-            usrCfg = typeof usrRow.name === 'string' ? JSON.parse(usrRow.name) : usrRow.name;
+          const { data: appRows } = await supabase
+            .from('app_config')
+            .select('key, value')
+            .in('key', ['admin_config_prompts', 'admin_config_extensions']);
+          if (Array.isArray(appRows)) {
+            for (const r of appRows) {
+              const v = typeof r.value === 'string' ? JSON.parse(r.value) : r.value;
+              if (r.key === 'admin_config_prompts') parsedCfg = v;
+              if (r.key === 'admin_config_extensions') parsedExt = v;
+            }
           }
         } catch {}
 
-        const appTs = Number(appCfg?.dashboardAnnouncement?.updatedAt || appCfg?._updatedAt || 0);
-        const usrTs = Number(usrCfg?.dashboardAnnouncement?.updatedAt || usrCfg?._updatedAt || 0);
-        const parsedCfg = (usrCfg && usrTs > appTs) ? usrCfg : (appCfg || usrCfg);
+        // Only query users table backup rows if app_config did not have them (cuts Egress in half!)
+        if (!parsedCfg || !parsedExt) {
+          try {
+            const missingKeys: string[] = [];
+            if (!parsedCfg) missingKeys.push('admin_config_prompts');
+            if (!parsedExt) missingKeys.push('admin_config_extensions');
+            const { data: usrRows } = await supabase
+              .from('users')
+              .select('id, name')
+              .in('id', missingKeys);
+            if (Array.isArray(usrRows)) {
+              for (const r of usrRows) {
+                if (!r.name) continue;
+                const v = typeof r.name === 'string' ? JSON.parse(r.name) : r.name;
+                if (r.id === 'admin_config_prompts' && !parsedCfg) parsedCfg = v;
+                if (r.id === 'admin_config_extensions' && !parsedExt) parsedExt = v;
+              }
+            }
+          } catch {}
+        }
+
+        const latestPromptTs = Number(parsedCfg?.dashboardAnnouncement?.updatedAt || parsedCfg?._updatedAt || 0);
+        const latestExtTs = Number(parsedExt?._updatedAt || (parsedExt?.ultra?.updatedAt ? new Date(parsedExt.ultra.updatedAt).getTime() : 0) || 0);
+
+        const promptVer = parsedCfg?.extensionVersion ? String(parsedCfg.extensionVersion).trim() : '';
+        const extVer = parsedExt?.ultra?.version ? String(parsedExt.ultra.version).trim() : '';
+        if (promptVer && extVer) {
+          requiredVersion = latestExtTs > latestPromptTs ? extVer : promptVer;
+        } else if (promptVer || extVer) {
+          requiredVersion = promptVer || extVer;
+        }
 
         const ann = parsedCfg?.dashboardAnnouncement;
         if (ann && ann.enabled === true && typeof ann.text === 'string' && ann.text.trim().length > 0) {
@@ -104,9 +137,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         } else {
           activeAnnouncement = null;
         }
-        g.__meAnnouncementCache = { ts: nowMs, data: activeAnnouncement };
+        g.__meAnnouncementCache = { ts: nowMs, data: activeAnnouncement, requiredVersion };
       }
     } catch {}
+
+    const clientVersion = (
+      req.query.version ||
+      req.query.extensionVersion ||
+      req.query.clientVersion ||
+      req.headers['x-extension-version'] ||
+      req.headers['x-client-version'] ||
+      ''
+    ).toString().trim();
+
+    const norm = (v: string) => v.trim().toLowerCase().replace(/^v/i, '');
+    if (clientVersion && norm(clientVersion) !== norm(requiredVersion)) {
+      return res.status(426).json({
+        success: false,
+        allowed: false,
+        updateRequired: true,
+        needsUpdate: true,
+        isOutdated: true,
+        requiredVersion,
+        version: requiredVersion,
+        extensionVersion: requiredVersion,
+        clientVersion,
+        error: `Update Required: Your extension version (${clientVersion}) is outdated. Required version is ${requiredVersion}.`,
+      });
+    }
 
     // Return ONLY essential fields requested by user (No internal IDs, session tokens, reseller or online status)
     const safeUser: Record<string, any> = {
@@ -124,6 +182,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       user: safeUser,
+      requiredVersion,
+      version: requiredVersion,
+      extensionVersion: requiredVersion,
       showNotification,
       ...(showNotification && activeAnnouncement
         ? {
