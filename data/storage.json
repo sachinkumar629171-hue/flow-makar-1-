@@ -16,8 +16,8 @@
       "createdAt": "2025-01-10T10:00:00Z",
       "avatarColor": "from-purple-600 to-indigo-600",
       "status": "active",
-      "isOnline": false,
-      "lastActive": "2026-10-19T11:34:06.954Z"
+      "isOnline": true,
+      "lastActive": "2026-10-31T03:08:46.251Z"
     },
     {
       "id": "usr-1791263263265-a5b",
@@ -29,7 +29,7 @@
       "plan": "ultra",
       "credits": 45000,
       "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "planDaysLeft": 6,
       "planExpiresAt": "2026-11-05T05:07:43.265Z",
       "status": "active",
       "extensionAccess": true,
@@ -52,7 +52,7 @@
       "plan": "ultra",
       "credits": 45000,
       "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "planDaysLeft": 6,
       "planExpiresAt": "2026-11-05T03:12:50.415Z",
       "status": "active",
       "extensionAccess": true,
@@ -75,7 +75,7 @@
       "plan": "ultra",
       "credits": 45000,
       "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "planDaysLeft": 5,
       "planExpiresAt": "2026-11-04T18:22:39.209Z",
       "status": "active",
       "extensionAccess": true,
@@ -119,7 +119,7 @@
       "plan": "ultra",
       "credits": 45000,
       "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "planDaysLeft": 5,
       "planExpiresAt": "2026-11-04T10:53:04.324Z",
       "status": "active",
       "extensionAccess": true,
@@ -173,7 +173,8 @@
       "avatarColor": "from-blue-600 to-cyan-600",
       "status": "active",
       "isOnline": false,
-      "lastActive": "2026-09-20T19:29:13.891Z"
+      "lastActive": "2026-09-20T19:29:13.891Z",
+      "planExpiresAt": "2026-09-17T08:58:57.721Z"
     },
     {
       "id": "usr-res-mu5b4183-uvfk",
@@ -187,7 +188,7 @@
       "plan": "basic",
       "credits": 100,
       "maxCredits": 100,
-      "planDaysLeft": 950,
+      "planDaysLeft": 907,
       "role": "user",
       "resellerId": "reseller-mu5aw5rn-0wyh",
       "resellerName": "PREEN",
@@ -195,7 +196,8 @@
       "avatarColor": "from-blue-600 to-cyan-600",
       "status": "active",
       "isOnline": false,
-      "lastActive": "2026-09-17T09:14:42.216+00:00"
+      "lastActive": "2026-09-17T09:14:42.216+00:00",
+      "planExpiresAt": "2029-04-24T09:07:55.059Z"
     },
     {
       "id": "usr-1791198234821-4x9",
@@ -206,7 +208,7 @@
       "plan": "ultra",
       "credits": 45000,
       "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "planDaysLeft": 5,
       "planExpiresAt": "2026-11-04T11:03:54.820Z",
       "status": "active",
       "extensionAccess": true,
@@ -252,7 +254,7 @@
       "plan": "ultra",
       "credits": 45000,
       "maxCredits": 45000,
-      "planDaysLeft": 30,
+      "planDaysLeft": 5,
       "planExpiresAt": "2026-11-04T12:18:19.146Z",
       "status": "active",
       "extensionAccess": true,
