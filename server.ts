@@ -2124,6 +2124,9 @@ app.post('/api/extension/prompts', async (req, res) => {
 
   return res.json({ 
     success: true, 
+    allowed: true,
+    verified: true,
+    updateRequired: false,
     serverOnline: true, 
     serverStatus: 'online',
     email: user.email,
@@ -2131,7 +2134,7 @@ app.post('/api/extension/prompts', async (req, res) => {
     token: sessionToken,
     version: finalRequiredVer,
     extensionVersion: finalRequiredVer,
-    requiredVersion: finalRequiredVer,
+    requiredVersion: finalRequiredVer || '3.2.0',
     clientVersion,
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
@@ -2234,6 +2237,8 @@ app.get('/api/extension/verify', async (req, res) => {
 
   res.json({
     success: true,
+    updateRequired: false,
+    requiredVersion: getActiveExtensionVersion('ultra') || '3.2.0',
     user: {
       id: user.id,
       name: user.name,
@@ -2377,7 +2382,11 @@ app.post('/api/extension/cf-verify', async (req, res) => {
   return res.json({
     allowed: true,
     success: true,
-    requiredVersion: requiredVer,
+    verified: true,
+    updateRequired: false,
+    requiredVersion: requiredVer || '3.2.0',
+    plan: supaUser.plan || 'ultra',
+    planDaysLeft: Number(supaUser.plan_days_left ?? supaUser.planDaysLeft) ?? 30,
     costs,
     servers: targetSrv.filteredServers,
     ...(targetSrv.isSingleServer ? targetSrv.filteredServerFields : { serverMap }),
@@ -2480,6 +2489,8 @@ app.post('/api/extension/verify', async (req, res) => {
 
   res.json({
     success: true,
+    updateRequired: false,
+    requiredVersion: getActiveExtensionVersion('ultra') || '3.2.0',
     user: {
       id: user.id,
       name: user.name,
@@ -2530,9 +2541,10 @@ app.get('/api/extension/servers', async (req, res) => {
     success: true,
     serverOnline: true,
     serverStatus: 'online',
+    updateRequired: false,
     version: ver,
     extensionVersion: ver,
-    requiredVersion: ver,
+    requiredVersion: ver || '3.2.0',
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
     cloudflareOnline,
@@ -2657,12 +2669,15 @@ app.post('/api/extension/servers', async (req, res) => {
 
   res.json({
     success: true,
+    allowed: true,
+    verified: true,
+    updateRequired: false,
     authenticated: true,
     serverOnline: true,
     serverStatus: 'online',
     version: requiredVer,
     extensionVersion: requiredVer,
-    requiredVersion: requiredVer,
+    requiredVersion: requiredVer || '3.2.0',
     source,
     cloudflareEnabled: Boolean(db.promptConfig?.cloudflareEnabled !== false),
     cloudflareOnline,

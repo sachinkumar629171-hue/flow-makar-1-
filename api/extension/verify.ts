@@ -38,10 +38,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ];
         let costs = { image: 20, video: 30 };
 
+        let requiredVersion = '3.2.0';
         const { data: configRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
         if (configRow?.name) {
           try {
             const parsed = JSON.parse(configRow.name);
+            if (parsed?.extensionVersion) requiredVersion = String(parsed.extensionVersion).trim();
             if (parsed?.servers) servers = parsed.servers;
             if (parsed?.costs) costs = parsed.costs;
           } catch {}
@@ -53,6 +55,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         return res.status(200).json({
           success: true,
+          updateRequired: false,
+          requiredVersion,
           user: {
             id: supaUser.id,
             name: supaUser.name,

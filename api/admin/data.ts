@@ -80,10 +80,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 1. Fetch Users (excluding heavy admin_config_% backup rows to save Egress)
     let usersList: any[] = [];
     try {
-      const { data: allUsers } = await supabase.from('users').select('*').not('id', 'like', 'admin_config_%');
+      const { data: allUsers } = await supabase
+        .from('users')
+        .select('id, name, email, plan, credits, max_credits, plan_days_left, plan_started_at, plan_expires_at, role, reseller_id, reseller_name, status, extension_access, can_edit_prompts, last_active, created_at, avatar_color')
+        .not('id', 'like', 'admin_config_%')
+        .not('id', 'like', 'sys_config_%');
       if (allUsers && Array.isArray(allUsers)) {
         usersList = allUsers
-          .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
+          .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local') && !u.email?.includes('@flowmaker.local'))
           .map((u: any) => {
             const userEmail = (u.email || '').toLowerCase().trim();
             const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
@@ -91,8 +95,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             // Strict 2-minute (120,000 ms) heartbeat window
             const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
-            // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
-            const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
+            // Time-based continuous plan validity decrease - computed dynamically without writing on every GET poll
+            const planStartedAt = u.plan_started_at || u.created_at || new Date().toISOString();
             let planDaysLeft = Number(u.plan_days_left) ?? 30;
             let planExpiresAt = u.plan_expires_at;
 
@@ -100,17 +104,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               const startMs = new Date(planStartedAt).getTime();
               const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
               planExpiresAt = new Date(computedExpMs).toISOString();
-              supabase.from('users').update({
-                plan_started_at: planStartedAt,
-                plan_expires_at: planExpiresAt
-              }).eq('id', u.id).then(() => {}, () => {});
             } else if (!isSysAdmin) {
               const expMs = new Date(planExpiresAt).getTime();
               if (!isNaN(expMs)) {
                 planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
-                if (Number(u.plan_days_left) !== planDaysLeft) {
-                  supabase.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
-                }
               }
             }
 
@@ -193,16 +190,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let resellersList: any[] = [];
     try {
       const { data: supaResellers } = await supabase.from('resellers').select('*');
-      let rawResellers = supaResellers || [];
-      if (!rawResellers.length) {
-        const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
-        if (resRow?.name) {
-          try {
-            const parsed = JSON.parse(resRow.name);
-            if (Array.isArray(parsed)) rawResellers = parsed;
-          } catch {}
-        }
-      }
+      const rawResellers = supaResellers || [];
 
       resellersList = rawResellers.map((sr: any) => {
         let daysLeft = sr.days_left !== undefined ? Number(sr.days_left) : (sr.daysLeft !== undefined ? Number(sr.daysLeft) : 30);
@@ -232,45 +220,59 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Error fetching resellers in /api/admin/data:', e);
     }
 
-    // 3. Fetch Configs
+    // 3. Fetch Configs (Single query to app_config; fallback to users only for missing keys)
     let promptConfig: any = DEFAULT_PROMPT_CONFIG;
     let planExtensions: any = DEFAULT_PLAN_EXTENSIONS;
     let tutorialConfig: any = DEFAULT_TUTORIAL_CONFIG;
+    let hasPrompts = false;
+    let hasExtensions = false;
+    let hasTutorial = false;
 
     try {
-      const { data: configs } = await supabase.from('app_config').select('*');
+      const { data: configs } = await supabase
+        .from('app_config')
+        .select('key, value')
+        .in('key', ['admin_config_prompts', 'admin_config_extensions', 'admin_config_tutorial']);
       if (configs && Array.isArray(configs)) {
         for (const cfg of configs) {
-          if (cfg.key === 'admin_config_prompts' && cfg.value) promptConfig = cfg.value;
-          else if (cfg.key === 'admin_config_extensions' && cfg.value) planExtensions = cfg.value;
-          else if (cfg.key === 'admin_config_tutorial' && cfg.value) tutorialConfig = cfg.value;
+          if (cfg.key === 'admin_config_prompts' && cfg.value) {
+            promptConfig = typeof cfg.value === 'string' ? JSON.parse(cfg.value) : cfg.value;
+            hasPrompts = true;
+          } else if (cfg.key === 'admin_config_extensions' && cfg.value) {
+            planExtensions = typeof cfg.value === 'string' ? JSON.parse(cfg.value) : cfg.value;
+            hasExtensions = true;
+          } else if (cfg.key === 'admin_config_tutorial' && cfg.value) {
+            tutorialConfig = typeof cfg.value === 'string' ? JSON.parse(cfg.value) : cfg.value;
+            hasTutorial = true;
+          }
         }
       }
     } catch {}
 
-    try {
-      const { data: promptRow } = await supabase.from('users').select('name').eq('id', 'admin_config_prompts').maybeSingle();
-      if (promptRow?.name) {
-        const parsed = JSON.parse(promptRow.name);
-        if (parsed && typeof parsed === 'object') promptConfig = { ...promptConfig, ...parsed };
-      }
-    } catch {}
+    const missingKeys: string[] = [];
+    if (!hasPrompts) missingKeys.push('admin_config_prompts');
+    if (!hasExtensions) missingKeys.push('admin_config_extensions');
+    if (!hasTutorial) missingKeys.push('admin_config_tutorial');
 
-    try {
-      const { data: extRow } = await supabase.from('users').select('name').eq('id', 'admin_config_extensions').maybeSingle();
-      if (extRow?.name) {
-        const parsed = JSON.parse(extRow.name);
-        if (parsed && typeof parsed === 'object') planExtensions = { ...planExtensions, ...parsed };
-      }
-    } catch {}
-
-    try {
-      const { data: tutRow } = await supabase.from('users').select('name').eq('id', 'admin_config_tutorial').maybeSingle();
-      if (tutRow?.name) {
-        const parsed = JSON.parse(tutRow.name);
-        if (parsed && typeof parsed === 'object') tutorialConfig = { ...tutorialConfig, ...parsed };
-      }
-    } catch {}
+    if (missingKeys.length > 0) {
+      try {
+        const { data: fallbackRows } = await supabase
+          .from('users')
+          .select('id, name')
+          .in('id', missingKeys);
+        if (fallbackRows && Array.isArray(fallbackRows)) {
+          for (const row of fallbackRows) {
+            if (!row.name) continue;
+            try {
+              const parsed = JSON.parse(row.name);
+              if (row.id === 'admin_config_prompts' && parsed) promptConfig = { ...promptConfig, ...parsed };
+              else if (row.id === 'admin_config_extensions' && parsed) planExtensions = { ...planExtensions, ...parsed };
+              else if (row.id === 'admin_config_tutorial' && parsed) tutorialConfig = { ...tutorialConfig, ...parsed };
+            } catch {}
+          }
+        }
+      } catch {}
+    }
 
     // Return ALL Supabase data in ONE single response!
     return res.status(200).json({
