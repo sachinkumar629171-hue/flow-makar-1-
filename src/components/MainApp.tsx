@@ -16,7 +16,8 @@ import {
   Smartphone,
   ExternalLink,
   Settings,
-  Chrome
+  Chrome,
+  Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
@@ -29,6 +30,15 @@ import { HistoryModal } from './modals/HistoryModal';
 import { DevicesModal } from './modals/DevicesModal';
 import { HeroSettingsModal } from './modals/HeroSettingsModal';
 import { TutorialSettingsModal } from './modals/TutorialSettingsModal';
+import {
+  AppSidebar,
+  SidebarTab,
+  ChatGPTLogo,
+  SuperGrokLogo,
+  MuseAILogo,
+  MetaAILogo
+} from './sidebar/AppSidebar';
+import { LockedFeatureView } from './suites/LockedFeatureView';
 import { getYouTubeEmbedUrl, getYouTubeVideoId } from '../utils/youtube';
 import { triggerExtensionDownload } from '../utils/download';
 
@@ -41,7 +51,10 @@ interface MainAppProps {
 export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettings, onOpenPromptServer }) => {
   const { currentUser, isAdmin, planExtensions, tutorialConfig, heroConfig, promptConfig } = useAuth();
 
-  // Navigation & Dropdown states
+  // Sidebar & Navigation states
+  const [activeTab, setActiveTab] = useState<SidebarTab>('flow');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [studioOpen, setStudioOpen] = useState(false);
   const [activePromptForStudio, setActivePromptForStudio] = useState('');
@@ -84,7 +97,10 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
   const isUltra = currentUser.plan === 'ultra';
 
   const desktopEmbedUrl = getYouTubeEmbedUrl(tutorialConfig.desktopVideoUrl);
-  const mobileEmbedUrl = getYouTubeEmbedUrl(tutorialConfig.mobileVideoUrl);
+  const mobileVideoUrl = (!tutorialConfig.mobileVideoUrl || tutorialConfig.mobileVideoUrl.includes('ScMzIvxBSi4'))
+    ? 'https://youtu.be/bNZXy0cAv_o?si=QUSTYBNbn1ZXpKue'
+    : tutorialConfig.mobileVideoUrl;
+  const mobileEmbedUrl = getYouTubeEmbedUrl(mobileVideoUrl);
 
   const userPlan = currentUser?.plan || 'basic';
   const config = userPlan === 'ultra' ? planExtensions.ultra : planExtensions.basic;
@@ -106,7 +122,18 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
       <header className="sticky top-0 z-40 relative bg-[#08090b]/90 backdrop-blur-md border-b border-neutral-900 px-3 sm:px-8 py-2.5 sm:py-3 flex items-center justify-between gap-2 sm:gap-4 w-full max-w-full">
         {/* Left: Flow Logo */}
         <div className="flex items-center gap-3 shrink-0 z-10">
-          <span className="text-xl sm:text-2xl font-black tracking-tight font-display text-white cursor-pointer">
+          <button
+            onClick={() => setMobileSidebarOpen(true)}
+            aria-label="Open AI Platforms Menu"
+            title="AI Platforms"
+            className="md:hidden p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800/80 transition-colors cursor-pointer"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <span
+            onClick={() => setActiveTab('flow')}
+            className="text-xl sm:text-2xl font-black tracking-tight font-display text-white cursor-pointer"
+          >
             Flow
           </span>
           {isAdmin && (
@@ -281,10 +308,80 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
         </div>
       </header>
 
-      {/* Main App Content Area */}
-      <main className="flex-1 w-full px-3 sm:px-6 md:px-8 py-4 sm:py-6 space-y-10">
-        {/* Main Hero Banner: Rotating Items */}
-        <section className="relative w-full">
+      {/* Main Body Layout: Left Sidebar (225px) + Right Content & Footer */}
+      <div className="flex-1 flex w-full relative">
+        {/* Desktop Sticky Left Sidebar */}
+        <div className="hidden md:block sticky top-[57px] h-[calc(100vh-57px)] shrink-0 z-30">
+          <AppSidebar
+            activeTab={activeTab}
+            onSelectTab={(tab) => setActiveTab(tab)}
+            collapsed={sidebarCollapsed}
+            onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+            onOpenSettings={() => {
+              if (onOpenSettings) {
+                onOpenSettings();
+              } else {
+                setSettingsOpen(true);
+              }
+            }}
+            onOpenPricing={() => setPricingOpen(true)}
+          />
+        </div>
+
+        {/* Mobile Sidebar Drawer */}
+        <AnimatePresence>
+          {mobileSidebarOpen && (
+            <div className="fixed inset-0 z-50 md:hidden flex">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setMobileSidebarOpen(false)}
+                className="fixed inset-0 bg-black/70 backdrop-blur-sm"
+              />
+              <motion.div
+                initial={{ x: '-100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-100%' }}
+                transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+                className="relative z-10 w-[225px] max-w-[80vw] h-full"
+              >
+                <AppSidebar
+                  activeTab={activeTab}
+                  onSelectTab={(tab) => {
+                    setActiveTab(tab);
+                    setMobileSidebarOpen(false);
+                  }}
+                  collapsed={false}
+                  onToggleCollapse={() => setMobileSidebarOpen(false)}
+                  isMobileDrawer={true}
+                  onCloseMobileDrawer={() => setMobileSidebarOpen(false)}
+                  onOpenSettings={() => {
+                    setMobileSidebarOpen(false);
+                    if (onOpenSettings) {
+                      onOpenSettings();
+                    } else {
+                      setSettingsOpen(true);
+                    }
+                  }}
+                  onOpenPricing={() => {
+                    setMobileSidebarOpen(false);
+                    setPricingOpen(true);
+                  }}
+                />
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Right Column: Main Content + Footer */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Main App Content Area */}
+          <main className="flex-1 w-full px-3 sm:px-6 md:px-8 py-4 sm:py-6 space-y-10">
+            {activeTab === 'flow' ? (
+              <>
+                {/* Main Hero Banner: Rotating Items */}
+                <section className="relative w-full">
           <div
             key={activeHero.id || currentHeroIndex}
             className="relative w-full rounded-2xl sm:rounded-3xl overflow-hidden bg-[#0c101d] border border-blue-900/30 shadow-2xl min-h-[290px] sm:min-h-[420px] md:min-h-[480px] lg:min-h-[520px] flex items-center"
@@ -498,32 +595,56 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
             </div>
           </div>
         </section>
-      </main>
+              </>
+            ) : activeTab === 'chatgpt' ? (
+              <LockedFeatureView
+                platformName="ChatGPT Plus"
+                logo={<ChatGPTLogo className="w-full h-full" />}
+              />
+            ) : activeTab === 'super-grok' ? (
+              <LockedFeatureView
+                platformName="Super Grok"
+                logo={<SuperGrokLogo className="w-full h-full" />}
+              />
+            ) : activeTab === 'muse-ai' ? (
+              <LockedFeatureView
+                platformName="Muse AI"
+                logo={<MuseAILogo className="w-full h-full" />}
+              />
+            ) : (
+              <LockedFeatureView
+                platformName="Meta AI"
+                logo={<MetaAILogo className="w-full h-full" />}
+              />
+            )}
+          </main>
 
-      {/* Footer */}
-      <footer className="border-t border-neutral-900 bg-[#08090b] py-6 px-4 sm:px-8 text-center text-xs text-neutral-500">
-        <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p>© {new Date().getFullYear()} Flow AI Video Studio. Where the next wave of storytelling happens.</p>
-          <div className="flex items-center gap-4 text-neutral-400">
-            <button onClick={() => setPricingOpen(true)} className="hover:text-white cursor-pointer">Pricing</button>
-            <a 
-              href={extensionUrl || '#'}
-              target={extensionUrl ? "_blank" : "_self"}
-              rel="noopener noreferrer"
-              onClick={(e) => {
-                if (!extensionUrl) {
-                  e.preventDefault();
-                  alert("No extension link configured by admin.");
-                }
-              }}
-              className="hover:text-white cursor-pointer"
-            >
-              Extension
-            </a>
-            <button onClick={() => setSettingsOpen(true)} className="hover:text-white cursor-pointer">Settings</button>
-          </div>
+          {/* Footer */}
+          <footer className="border-t border-neutral-900 bg-[#08090b] py-6 px-4 sm:px-8 text-center text-xs text-neutral-500">
+            <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3">
+              <p>© {new Date().getFullYear()} Flow AI Video Studio. Where the next wave of storytelling happens.</p>
+              <div className="flex items-center gap-4 text-neutral-400">
+                <button onClick={() => setPricingOpen(true)} className="hover:text-white cursor-pointer">Pricing</button>
+                <a 
+                  href={extensionUrl || '#'}
+                  target={extensionUrl ? "_blank" : "_self"}
+                  rel="noopener noreferrer"
+                  onClick={(e) => {
+                    if (!extensionUrl) {
+                      e.preventDefault();
+                      alert("No extension link configured by admin.");
+                    }
+                  }}
+                  className="hover:text-white cursor-pointer"
+                >
+                  Extension
+                </a>
+                <button onClick={() => setSettingsOpen(true)} className="hover:text-white cursor-pointer">Settings</button>
+              </div>
+            </div>
+          </footer>
         </div>
-      </footer>
+      </div>
 
       {/* Interactive Video Studio Modal */}
       <VideoStudio

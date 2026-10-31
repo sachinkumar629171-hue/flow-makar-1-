@@ -1,0 +1,5 @@
+{
+  "summary":  "Complete backup of the current sidebar implementation (225px width, all 5 platform logos, locked non-scrolling desktop layout, mobile sticky logo pills, and account popup with days left) for instant restoration upon user request.",
+  "updatedAt":  "2026-10-31T01:53:51.710590493Z",
+  "userFacing":  true
+}
