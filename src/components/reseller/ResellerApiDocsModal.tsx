@@ -535,10 +535,6 @@ export default {
     // Dynamic Server Prompts Gathering (From Portal authData, Supabase app_config, KV, or STORED_PROMPTS)
     const responsePayload = {
       success: true,
-      allowed: true,
-      verified: true,
-      updateRequired: false,
-      requiredVersion: authData.requiredVersion || '3.2.0',
       authenticated: true,
       updatedAt: STORED_PROMPTS.lastUpdatedAt || new Date().toISOString(),
       servers: [],
