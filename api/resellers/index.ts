@@ -29,7 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const supabase = createClient(supaUrl, supaKey);
 
   try {
-    if (req.method === 'GET') {
+    const loadAllResellersFromSupabase = async () => {
       const mergedMap = new Map<string, any>();
 
       // 1. Load backup row from users table first
@@ -79,7 +79,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const now = Date.now();
-      const mapped = rawResellers.map((sr: any) => {
+      return rawResellers.map((sr: any) => {
         let daysLeft = sr.days_left !== undefined ? Number(sr.days_left) : (sr.daysLeft !== undefined ? Number(sr.daysLeft) : 30);
         const expiresAt = sr.expires_at || sr.expiresAt;
         if (expiresAt) {
@@ -101,27 +101,83 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           status,
           createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
           notes: sr.notes || '',
-          apiKey: getResellerApiKey(sr),
         };
       });
+    };
 
-      const queryEmail = (req.query.email || '').toString().trim().toLowerCase();
-      if (queryEmail) {
-        const matched = mapped.filter(
-          (r: any) =>
-            (r.email && r.email.trim().toLowerCase() === queryEmail) ||
-            (r.id && String(r.id).trim().toLowerCase() === queryEmail)
-        );
-        return res.status(200).json({ resellers: matched });
+    const toSafeReseller = (r: any) => ({
+      id: r.id,
+      portalName: r.portalName || r.portal_name || 'Reseller Portal',
+      email: r.email || '',
+      userLimit: r.userLimit ?? r.user_limit ?? 50,
+      daysLeft: r.daysLeft ?? r.days_left ?? 30,
+      expiryDate: r.expiryDate || r.expiry_date || '30/10/2026',
+      expiresAt: r.expiresAt || r.expires_at,
+      status: r.status || 'active',
+      createdAt: r.createdAt || r.created_at || new Date().toISOString(),
+    });
+
+    if (req.method === 'GET') {
+      const adminKey = (req.headers['x-admin-key'] || '').toString().trim();
+      if (adminKey !== 'admin_master_key' && !ADMIN_EMAILS.has(adminKey.toLowerCase())) {
+        return res.status(200).json({ resellers: [] });
       }
-
-      return res.status(200).json({ resellers: mapped });
+      const mapped = await loadAllResellersFromSupabase();
+      return res.status(200).json({ resellers: mapped.map(toSafeReseller) });
     }
 
     if (req.method === 'POST') {
       const body = req.body || {};
+
+      // 1. Reseller Login Request: payload is { email, password } (no id / portalName)
+      if (!body.id && !body.portalName && !body.portal_name) {
+        const cleanEmail = (body.email || '').toString().trim().toLowerCase();
+        const cleanPass = (body.password || '').toString().trim();
+
+        if (!cleanEmail || !cleanPass) {
+          return res.status(400).json({
+            success: false,
+            error: 'Email and password are required.',
+          });
+        }
+
+        const allResellers = await loadAllResellersFromSupabase();
+        const matched = allResellers.find(
+          (r: any) =>
+            (r.email && String(r.email).trim().toLowerCase() === cleanEmail) ||
+            (r.id && String(r.id).trim().toLowerCase() === cleanEmail)
+        );
+
+        if (!matched) {
+          return res.status(404).json({
+            success: false,
+            error: 'No reseller portal found with this email. Contact main administrator.',
+          });
+        }
+
+        if (String(matched.password || '').trim() !== cleanPass) {
+          return res.status(401).json({
+            success: false,
+            error: 'Incorrect portal password.',
+          });
+        }
+
+        if (matched.status === 'suspended') {
+          return res.status(403).json({
+            success: false,
+            error: 'This reseller portal has been suspended by administration.',
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          reseller: toSafeReseller(matched),
+        });
+      }
+
+      // 2. Admin Create/Update Reseller Request
       const reseller = body;
-      if (!reseller.apiKey) reseller.apiKey = getResellerApiKey(reseller);
+      const internalApiKey = reseller.apiKey || reseller.api_key || getResellerApiKey(reseller);
       if (!reseller.expiresAt && reseller.daysLeft) {
         reseller.expiresAt = new Date(Date.now() + Number(reseller.daysLeft) * 86400000).toISOString();
       }
@@ -138,7 +194,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         status: reseller.status || 'active',
         created_at: reseller.createdAt || reseller.created_at || new Date().toISOString(),
         notes: reseller.notes || '',
-        api_key: reseller.apiKey || reseller.api_key,
+        api_key: internalApiKey,
       };
 
       for (let attempt = 0; attempt < 8; attempt++) {
@@ -159,7 +215,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
-      return res.status(200).json({ success: true, reseller });
+      return res.status(200).json({ success: true, reseller: toSafeReseller(reseller) });
     }
 
     if (req.method === 'DELETE') {

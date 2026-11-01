@@ -1661,7 +1661,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         {
           headers: {
             'x-reseller-id': targetResId,
-            'x-reseller-api-key': reseller.apiKey || '',
           },
         }
       );
@@ -1686,59 +1685,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
-    let reseller: Reseller | undefined = undefined;
-
-    // 1. Single call to backend /api/resellers?email=...
     try {
-      const res = await fetch(apiUrl(`/api/resellers?email=${encodeURIComponent(cleanEmail)}`));
-      if (res.ok) {
-        const data = await res.json();
-        if (data.resellers && Array.isArray(data.resellers)) {
-          const mappedList = data.resellers.map(mapRawResellerRecord);
-          setResellers(prev => {
-            const map = new Map<string, Reseller>(prev.map(r => [r.id, r]));
-            for (const mr of mappedList) {
-              const old = map.get(mr.id);
-              map.set(mr.id, { ...old, ...mr, password: mr.password || old?.password || '' });
-            }
-            return Array.from(map.values());
-          });
-          reseller = mappedList.find(
-            (r: Reseller) => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
-          );
-        }
+      const res = await fetch(apiUrl('/api/resellers'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPass }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.success || !data.reseller) {
+        return {
+          success: false,
+          error:
+            data.error ||
+            (res.status === 404
+              ? 'No reseller portal found with this email. Contact main administrator.'
+              : res.status === 401
+              ? 'Incorrect portal password.'
+              : 'Invalid reseller credentials.'),
+        };
       }
+
+      const sr = data.reseller;
+      const baseReseller: Reseller = {
+        id: sr.id,
+        portalName: sr.portalName || sr.portal_name || 'Reseller Portal',
+        email: (sr.email || cleanEmail).trim(),
+        password: '',
+        userLimit: Number(sr.userLimit ?? sr.user_limit) || 20,
+        daysLeft: sr.daysLeft !== undefined ? Number(sr.daysLeft) : 30,
+        expiryDate: sr.expiryDate || '30/10/2026',
+        expiresAt: sr.expiresAt,
+        status: sr.status || 'active',
+        createdAt: sr.createdAt || new Date().toISOString(),
+        notes: '',
+      };
+      const expiryInfo = calculateResellerExpiry(baseReseller);
+      const safeReseller: Reseller = {
+        ...baseReseller,
+        daysLeft: expiryInfo.daysLeft,
+        expiryDate: expiryInfo.expiryDate,
+        expiresAt: expiryInfo.expiresAt,
+        status: expiryInfo.status,
+      };
+
+      setResellers(prev => {
+        const exists = prev.some(x => x.id === safeReseller.id);
+        return exists ? prev.map(x => (x.id === safeReseller.id ? safeReseller : x)) : [safeReseller, ...prev];
+      });
+      // Setting currentReseller triggers the useEffect above to call fetchResellerUsers ONCE
+      setCurrentReseller(safeReseller);
+
+      return { success: true };
     } catch (err) {
-      console.error('Error fetching reseller on login:', err);
+      console.error('Error connecting to reseller login service:', err);
+      return { success: false, error: 'Failed to connect to reseller authentication service.' };
     }
-
-    // 2. Fallback to local state if offline
-    if (!reseller) {
-      reseller = resellers.find(
-        r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
-      );
-    }
-
-    if (!reseller) {
-      return { success: false, error: 'No reseller portal found with this email. Contact main administrator.' };
-    }
-
-    if (String(reseller.password || '').trim() !== cleanPass) {
-      return { success: false, error: 'Incorrect portal password.' };
-    }
-
-    if (reseller.status === 'suspended') {
-      return { success: false, error: 'This reseller portal has been suspended by administration.' };
-    }
-
-    setResellers(prev => {
-      const exists = prev.some(x => x.id === reseller!.id);
-      return exists ? prev.map(x => (x.id === reseller!.id ? reseller! : x)) : [reseller!, ...prev];
-    });
-    // Setting currentReseller triggers the useEffect above to call fetchResellerUsers ONCE
-    setCurrentReseller(reseller);
-
-    return { success: true };
   };
 
   const loginAsReseller = (reseller: Reseller) => {

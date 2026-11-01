@@ -81,7 +81,6 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
       const res = await fetch(`/api/users?resellerId=${encodeURIComponent(currentReseller.id)}`, {
         headers: {
           'x-reseller-id': currentReseller.id,
-          'x-reseller-api-key': currentReseller.apiKey || '',
         }
       });
       if (res.ok) {

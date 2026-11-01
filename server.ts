@@ -3245,8 +3245,7 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   return null;
 }
 
-// GET resellers (Synced from Supabase resellers table & admin_config_resellers backup row)
-app.get('/api/resellers', async (req, res) => {
+async function syncResellersFromSupabase() {
   const now = Date.now();
   const supa = getServerSupabase();
 
@@ -3317,23 +3316,86 @@ app.get('/api/resellers', async (req, res) => {
       apiKey: r.apiKey || getResellerApiKey(r),
     };
   });
+}
 
-  const queryEmail = (req.query.email || '').toString().trim().toLowerCase();
-  if (queryEmail) {
-    const matched = db.resellers.filter(r =>
-      (r.email && r.email.trim().toLowerCase() === queryEmail) ||
-      (r.id && r.id.trim().toLowerCase() === queryEmail)
-    );
-    return res.json({ resellers: matched });
+function sanitizeSafeReseller(r: any) {
+  return {
+    id: r.id,
+    portalName: r.portalName || r.portal_name || 'Reseller Portal',
+    email: r.email || '',
+    userLimit: r.userLimit ?? r.user_limit ?? 20,
+    daysLeft: r.daysLeft ?? r.days_left ?? 30,
+    expiryDate: r.expiryDate || r.expiry_date || '30/10/2026',
+    expiresAt: r.expiresAt || r.expires_at,
+    status: r.status || 'active',
+    createdAt: r.createdAt || r.created_at || new Date().toISOString(),
+  };
+}
+
+// GET resellers (Admin only, never exposes password or apiKey)
+app.get('/api/resellers', async (req, res) => {
+  if (!isRequestAdminUser(req)) {
+    return res.json({ resellers: [] });
   }
-
-  return res.json({ resellers: db.resellers });
+  await syncResellersFromSupabase();
+  return res.json({ resellers: db.resellers.map(sanitizeSafeReseller) });
 });
 
-// POST save reseller
+// POST reseller login ({ email, password }) OR Admin save reseller
 app.post('/api/resellers', async (req, res) => {
-  const reseller = req.body;
-  if (!reseller.apiKey) reseller.apiKey = getResellerApiKey(reseller);
+  const body = req.body || {};
+
+  // 1. Reseller Login Request: payload is { email, password } (no id / portalName)
+  if (!body.id && !body.portalName && !body.portal_name) {
+    const cleanEmail = (body.email || '').toString().trim().toLowerCase();
+    const cleanPass = (body.password || '').toString().trim();
+
+    if (!cleanEmail || !cleanPass) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required.',
+      });
+    }
+
+    await syncResellersFromSupabase();
+
+    const matched = db.resellers.find(
+      r =>
+        (r.email && String(r.email).trim().toLowerCase() === cleanEmail) ||
+        (r.id && String(r.id).trim().toLowerCase() === cleanEmail)
+    );
+
+    if (!matched) {
+      return res.status(404).json({
+        success: false,
+        error: 'No reseller portal found with this email. Contact main administrator.',
+      });
+    }
+
+    if (String(matched.password || '').trim() !== cleanPass) {
+      return res.status(401).json({
+        success: false,
+        error: 'Incorrect portal password.',
+      });
+    }
+
+    if (matched.status === 'suspended') {
+      return res.status(403).json({
+        success: false,
+        error: 'This reseller portal has been suspended by administration.',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      reseller: sanitizeSafeReseller(matched),
+    });
+  }
+
+  // 2. Admin Save Reseller Request
+  const reseller = body;
+  const internalApiKey = reseller.apiKey || getResellerApiKey(reseller);
+  reseller.apiKey = internalApiKey;
   if (!reseller.expiresAt && reseller.daysLeft) {
     reseller.expiresAt = new Date(Date.now() + Number(reseller.daysLeft) * 86400000).toISOString();
   }
@@ -3361,7 +3423,7 @@ app.post('/api/resellers', async (req, res) => {
       status: reseller.status || 'active',
       created_at: reseller.createdAt || new Date().toISOString(),
       notes: reseller.notes || '',
-      api_key: reseller.apiKey,
+      api_key: internalApiKey,
     };
 
     (async () => {
@@ -3392,7 +3454,7 @@ app.post('/api/resellers', async (req, res) => {
     })();
   }
 
-  res.json({ success: true, reseller });
+  res.json({ success: true, reseller: sanitizeSafeReseller(reseller) });
 });
 
 // DELETE reseller
