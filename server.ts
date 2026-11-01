@@ -873,12 +873,7 @@ app.get('/api/users', async (req, res) => {
   const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
   const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
 
-  // 1. Admin: full user list
-  if (isAdmin) {
-    return res.json({ users: db.users.map(u => sanitizeSafeUser(u)) });
-  }
-
-  // 2. Reseller: only their portal's users (synced live from Supabase + memory)
+  // 1. Reseller: only their portal's users and ONLY the 10 allowed fields
   if (resellerId || resellerKey || resellerNameParam) {
     const supa = getServerSupabase();
     if (supa) {
@@ -937,8 +932,25 @@ app.get('/api/users', async (req, res) => {
         if (cleanTargetId && cleanUserResId && cleanTargetId === cleanUserResId) return true;
         if (targetPortalName && u.resellerName && String(u.resellerName).trim().toLowerCase() === targetPortalName) return true;
         return false;
-      });
+      })
+      .map(u => ({
+        name: u.name || 'User',
+        email: u.email || '',
+        plan: u.plan || 'basic',
+        credits: u.credits ?? 100,
+        maxCredits: u.maxCredits ?? (u.plan === 'ultra' ? 45000 : 100),
+        planDaysLeft: u.planDaysLeft ?? 30,
+        planExpiresAt: u.planExpiresAt || null,
+        planStartedAt: u.planStartedAt || u.createdAt || new Date().toISOString(),
+        isOnline: Boolean(u.isOnline),
+        lastActive: u.lastActive || '',
+      }));
     return res.json({ users: resellerUsers });
+  }
+
+  // 2. Admin: full user list
+  if (isAdmin) {
+    return res.json({ users: db.users.map(u => sanitizeSafeUser(u)) });
   }
 
   // 3. Logged-in user: ONLY their own user profile!
@@ -1463,12 +1475,16 @@ app.post('/api/users/heartbeat', async (req, res) => {
 
 // POST update user (plan, credits, days, details, etc.)
 app.post('/api/users/update', async (req, res) => {
-  const { userId, data } = req.body;
-  const userIndex = db.users.findIndex(u => u.id === userId);
+  const { userId, email, data } = req.body;
+  const fallbackEmail = (email || (typeof userId === 'string' && userId.startsWith('usr-') && userId.includes('@') ? userId.slice(4) : '') || data?.email || '').toString().trim().toLowerCase();
+  const userIndex = db.users.findIndex(
+    u => u.id === userId || (fallbackEmail && u.email && u.email.trim().toLowerCase() === fallbackEmail)
+  );
   if (userIndex === -1) {
     return res.status(404).json({ success: false, error: 'User not found' });
   }
 
+  const prevEmail = db.users[userIndex].email;
   db.users[userIndex] = {
     ...db.users[userIndex],
     ...data,
@@ -1497,7 +1513,7 @@ app.post('/api/users/update', async (req, res) => {
     if (data.resellerName !== undefined) supaData.reseller_name = data.resellerName;
     if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
 
-    safeServerSupabaseUserUpdate(supa, currentUser.id, currentUser.email, supaData).catch(err => {
+    safeServerSupabaseUserUpdate(supa, currentUser.id, prevEmail || currentUser.email, supaData).catch(err => {
       console.error('Server Supabase user update error:', err);
     });
   }
@@ -1506,10 +1522,22 @@ app.post('/api/users/update', async (req, res) => {
 });
 
 // DELETE user
-app.delete('/api/users/:id', (req, res) => {
-  const { id } = req.params;
-  db.users = db.users.filter(u => u.id !== id);
+app.delete(['/api/users/:id', '/api/users'], (req, res) => {
+  const id = (req.params.id || req.query.id || req.body?.id || '').toString().trim();
+  const email = (req.query.email || req.body?.email || (id.startsWith('usr-') && id.includes('@') ? id.slice(4) : '')).toString().trim().toLowerCase();
+  db.users = db.users.filter(
+    u => u.id !== id && (!email || (u.email || '').trim().toLowerCase() !== email)
+  );
   saveStorage();
+  const supa = getServerSupabase();
+  if (supa) {
+    if (id && !(id.startsWith('usr-') && id.includes('@'))) {
+      supa.from('users').delete().eq('id', id).then(() => {}, () => {});
+    }
+    if (email) {
+      supa.from('users').delete().ilike('email', email).then(() => {}, () => {});
+    }
+  }
   res.json({ success: true });
 });
 

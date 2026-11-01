@@ -74,45 +74,14 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
 
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Immediately load reseller's users on login / page refresh and poll every 120s
-  React.useEffect(() => {
-    if (!currentReseller?.id) return;
-
-    const loadResellerUsers = () => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      fetch(`/api/users?resellerId=${encodeURIComponent(currentReseller.id)}&resellerName=${encodeURIComponent(currentReseller.portalName || '')}`, {
-        headers: {
-          'x-reseller-id': currentReseller.id,
-          'x-reseller-api-key': currentReseller.apiKey || '',
-          'x-reseller-name': currentReseller.portalName || '',
-        }
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (data?.users && Array.isArray(data.users)) {
-            syncServerUsers(data.users, currentReseller.id);
-            setTimeTick(t => t + 1);
-          }
-        })
-        .catch(() => {});
-    };
-
-    // Fetch immediately on login or page refresh
-    loadResellerUsers();
-
-    const interval = setInterval(loadResellerUsers, 120000);
-    return () => clearInterval(interval);
-  }, [currentReseller?.id, currentReseller?.apiKey, currentReseller?.portalName, syncServerUsers]);
-
   const handleManualRefresh = async () => {
     if (!currentReseller) return;
     setIsRefreshing(true);
     try {
-      const res = await fetch(`/api/users?resellerId=${encodeURIComponent(currentReseller.id)}&resellerName=${encodeURIComponent(currentReseller.portalName || '')}`, {
+      const res = await fetch(`/api/users?resellerId=${encodeURIComponent(currentReseller.id)}`, {
         headers: {
           'x-reseller-id': currentReseller.id,
           'x-reseller-api-key': currentReseller.apiKey || '',
-          'x-reseller-name': currentReseller.portalName || '',
         }
       });
       if (res.ok) {

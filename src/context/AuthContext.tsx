@@ -422,6 +422,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Industry-Standard Authenticated Profile Sync: On load/refresh, fetch authoritative plan, credits, validity with Bearer token
   useEffect(() => {
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reseller')) return;
     const token = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken;
     if (!token) return;
 
@@ -701,6 +702,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isMounted = true;
 
     const pollCentralServer = async () => {
+      if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reseller')) return;
       // Strictly disabled for non-admin users: normal users do not create any background polling requests
       const isUserAdmin = currentUser?.role === 'admin' || 
         (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
@@ -1339,6 +1341,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Heartbeat to keep currentUser active/online & enforce single-session exclusivity
   useEffect(() => {
     if (!currentUser) return;
+    if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reseller')) return;
 
     let bc: BroadcastChannel | null = null;
     try {
@@ -1560,17 +1563,67 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!Array.isArray(serverUsers)) return;
     const now = Date.now();
     setUsers(prev => {
+      const prevByEmail = new Map<string, User>();
+      const prevById = new Map<string, User>();
+      for (const pu of prev) {
+        if (pu?.id) prevById.set(pu.id, pu);
+        if (pu?.email) prevByEmail.set(pu.email.trim().toLowerCase(), pu);
+      }
+
       const incomingById = new Map<string, User>();
       const incomingByEmail = new Map<string, User>();
 
       for (const su of serverUsers) {
-        if (!su || !su.id || su.id.startsWith('admin_config_') || su.id.startsWith('sys_config_')) continue;
-        const pending = lastUpdatedUsersRef.current.get(su.id) || (su.email ? lastUpdatedUsersRef.current.get(su.email.toLowerCase()) : undefined);
+        if (!su || (!su.id && !su.email)) continue;
+        if (su.id && (su.id.startsWith('admin_config_') || su.id.startsWith('sys_config_'))) continue;
+
+        const cleanEmail = (su.email || '').trim().toLowerCase();
+        const existingLocal = (su.id ? prevById.get(su.id) : undefined) || (cleanEmail ? prevByEmail.get(cleanEmail) : undefined);
+        const resolvedId = su.id || existingLocal?.id || `usr-${cleanEmail}`;
+
+        const pending = lastUpdatedUsersRef.current.get(resolvedId) || (cleanEmail ? lastUpdatedUsersRef.current.get(cleanEmail) : undefined);
+        const normalizedUser: User = {
+          ...(existingLocal || {}),
+          ...su,
+          id: resolvedId,
+          name: su.name || existingLocal?.name || 'User',
+          email: su.email || existingLocal?.email || '',
+          plan: (su.plan as PlanType) || existingLocal?.plan || 'basic',
+          credits: su.credits !== undefined ? Number(su.credits) : (existingLocal?.credits ?? 100),
+          maxCredits: su.maxCredits !== undefined ? Number(su.maxCredits) : (existingLocal?.maxCredits ?? (su.plan === 'ultra' ? 45000 : 100)),
+          planDaysLeft: su.planDaysLeft !== undefined ? Number(su.planDaysLeft) : (existingLocal?.planDaysLeft ?? 30),
+          planExpiresAt: su.planExpiresAt !== undefined ? (su.planExpiresAt || undefined) : existingLocal?.planExpiresAt,
+          planStartedAt: su.planStartedAt || existingLocal?.planStartedAt || su.createdAt || existingLocal?.createdAt || new Date().toISOString(),
+          createdAt: su.createdAt || su.planStartedAt || existingLocal?.createdAt || new Date().toISOString(),
+          role: su.role || existingLocal?.role || 'user',
+          status: su.status || existingLocal?.status || 'active',
+          resellerId: su.resellerId || forResellerId || existingLocal?.resellerId,
+          isOnline: Boolean(su.isOnline),
+          lastActive: su.lastActive !== undefined ? su.lastActive : (existingLocal?.lastActive || ''),
+        };
+
         const mergedItem: User = (pending && now - pending.timestamp < 10000)
-          ? { ...su, ...pending.data }
-          : su;
+          ? { ...normalizedUser, ...pending.data }
+          : normalizedUser;
+
         incomingById.set(mergedItem.id, mergedItem);
-        if (mergedItem.email) incomingByEmail.set(mergedItem.email.toLowerCase(), mergedItem);
+        if (cleanEmail) incomingByEmail.set(cleanEmail, mergedItem);
+      }
+
+      if (forResellerId) {
+        const cleanTargetResId = forResellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        const otherUsers = prev.filter(u => {
+          if (!u) return false;
+          const uEmail = (u.email || '').trim().toLowerCase();
+          if (incomingById.has(u.id) || (uEmail && incomingByEmail.has(uEmail))) return false;
+          const uResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          if (uResId && uResId === cleanTargetResId) {
+            const pending = lastUpdatedUsersRef.current.get(u.id) || (uEmail ? lastUpdatedUsersRef.current.get(uEmail) : undefined);
+            return Boolean(pending && now - pending.timestamp < 10000);
+          }
+          return true;
+        });
+        return [...Array.from(incomingById.values()), ...otherUsers];
       }
 
       const updatedExisting = prev.map(u => {
@@ -1600,87 +1653,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const fetchResellerUsers = React.useCallback(async (reseller: Reseller | null) => {
     if (!reseller || !reseller.id) return;
     const targetResId = reseller.id.trim();
-    const targetPortalName = (reseller.portalName || '').trim();
 
-    // 1. Direct Supabase query for this reseller's users
-    try {
-      const supabase = await ensureSupabaseClientReady();
-      if (supabase) {
-        const { data: supaById } = await supabase
-          .from('users')
-          .select('*')
-          .eq('reseller_id', targetResId);
-
-        let combinedSupaRows: any[] = Array.isArray(supaById) ? [...supaById] : [];
-
-        if (targetPortalName) {
-          const { data: supaByName } = await supabase
-            .from('users')
-            .select('*')
-            .ilike('reseller_name', targetPortalName);
-          if (Array.isArray(supaByName)) {
-            const seen = new Set(combinedSupaRows.map(r => r.id));
-            for (const row of supaByName) {
-              if (row && row.id && !seen.has(row.id)) {
-                seen.add(row.id);
-                combinedSupaRows.push(row);
-              }
-            }
-          }
-        }
-
-        if (combinedSupaRows.length > 0) {
-          const mappedSupaUsers: User[] = combinedSupaRows
-            .filter((su: any) => su.id && !su.id.startsWith('admin_config_') && !su.id.startsWith('sys_config_'))
-            .map((su: any) => {
-              const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
-              const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime <= 120000 && Date.now() - lastActiveTime >= -60000);
-              const baseUser: User = {
-                id: su.id,
-                name: su.name || 'User',
-                email: su.email || '',
-                password: su.password || '',
-                sessionToken: su.session_token || su.sessionToken || '',
-                whatsapp: su.whatsapp || '',
-                telegram: su.telegram || '',
-                referralCode: su.referral_code || '',
-                referredBy: su.referred_by || '',
-                plan: (su.plan as PlanType) || 'basic',
-                credits: Number(su.credits) !== undefined && !isNaN(Number(su.credits)) ? Number(su.credits) : (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
-                maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
-                planDaysLeft: Number(su.plan_days_left) ?? 30,
-                planExpiresAt: su.plan_expires_at || (su.created_at ? new Date(new Date(su.created_at).getTime() + (Number(su.plan_days_left) || 30) * 86400000).toISOString() : undefined),
-                planStartedAt: su.plan_started_at || su.created_at || new Date().toISOString(),
-                role: (su.role as any) || 'user',
-                resellerId: su.reseller_id || targetResId,
-                resellerName: su.reseller_name || targetPortalName,
-                createdAt: su.created_at || new Date().toISOString(),
-                avatarColor: su.plan === 'unlimited' ? 'from-amber-500 to-yellow-500' : su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
-                status: (su.status as any) || 'active',
-                extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
-                canEditPrompts: su.can_edit_prompts === true,
-                isOnline: isRecent,
-                lastActive: su.last_active || '',
-              };
-              return checkAndDowngradeExpiredUser(baseUser).user;
-            });
-
-          syncServerUsers(mappedSupaUsers, targetResId);
-        }
-      }
-    } catch (err) {
-      console.warn('Supabase reseller users fetch error:', err);
-    }
-
-    // 2. Also fetch from backend /api/users with reseller headers
+    // Single authoritative API call for this reseller's users
     try {
       const res = await fetch(
-        apiUrl(`/api/users?resellerId=${encodeURIComponent(targetResId)}&resellerName=${encodeURIComponent(targetPortalName)}`),
+        apiUrl(`/api/users?resellerId=${encodeURIComponent(targetResId)}`),
         {
           headers: {
             'x-reseller-id': targetResId,
             'x-reseller-api-key': reseller.apiKey || '',
-            'x-reseller-name': targetPortalName,
           },
         }
       );
@@ -1695,7 +1676,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [syncServerUsers]);
 
-  // Automatically load reseller's users on reseller login and on /reseller page refresh
+  // Load reseller's users ONLY once on login or page refresh
   useEffect(() => {
     if (!currentReseller?.id) return;
     fetchResellerUsers(currentReseller);
@@ -1707,87 +1688,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     let reseller: Reseller | undefined = undefined;
 
-    // 1. Direct Supabase check (resellers table + admin_config_resellers backup row)
-    const supabase = await ensureSupabaseClientReady();
-    if (supabase) {
-      try {
-        const { data: supaR } = await supabase
-          .from('resellers')
-          .select('*')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-
-        if (supaR) {
-          reseller = mapRawResellerRecord(supaR);
-        } else {
-          const { data: allSupaR } = await supabase.from('resellers').select('*');
-          if (Array.isArray(allSupaR) && allSupaR.length > 0) {
-            const mappedAll = allSupaR.map(mapRawResellerRecord);
-            setResellers(mappedAll);
-            reseller = mappedAll.find(
-              r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
-            );
-          }
-        }
-
-        if (!reseller) {
-          const { data: resRow } = await supabase
-            .from('users')
-            .select('name')
-            .eq('id', 'admin_config_resellers')
-            .maybeSingle();
-          if (resRow?.name) {
-            try {
-              const parsed = JSON.parse(resRow.name);
-              if (Array.isArray(parsed)) {
-                const mappedBackup = parsed.map(mapRawResellerRecord);
-                const foundInBackup = mappedBackup.find(
-                  r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
-                );
-                if (foundInBackup) {
-                  reseller = foundInBackup;
-                }
-              }
-            } catch {}
-          }
-        }
-      } catch (err) {
-        console.warn('Supabase reseller check error:', err);
-      }
-    }
-
-    // 2. Check live backend /api/resellers
-    if (!reseller || !reseller.password) {
-      try {
-        const res = await fetch(apiUrl(`/api/resellers?email=${encodeURIComponent(cleanEmail)}`));
-        if (res.ok) {
-          const data = await res.json();
-          if (data.resellers && Array.isArray(data.resellers)) {
-            const mappedList = data.resellers.map(mapRawResellerRecord);
-            setResellers(prev => {
-              const map = new Map<string, Reseller>(prev.map(r => [r.id, r]));
-              for (const mr of mappedList) {
-                const old = map.get(mr.id);
-                map.set(mr.id, { ...old, ...mr, password: mr.password || old?.password || '' });
-              }
-              return Array.from(map.values());
-            });
-            const matchedFromApi = mappedList.find(
-              (r: Reseller) => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
-            );
-            if (matchedFromApi) {
-              reseller = reseller
-                ? { ...reseller, ...matchedFromApi, password: matchedFromApi.password || reseller.password }
-                : matchedFromApi;
+    // 1. Single call to backend /api/resellers?email=...
+    try {
+      const res = await fetch(apiUrl(`/api/resellers?email=${encodeURIComponent(cleanEmail)}`));
+      if (res.ok) {
+        const data = await res.json();
+        if (data.resellers && Array.isArray(data.resellers)) {
+          const mappedList = data.resellers.map(mapRawResellerRecord);
+          setResellers(prev => {
+            const map = new Map<string, Reseller>(prev.map(r => [r.id, r]));
+            for (const mr of mappedList) {
+              const old = map.get(mr.id);
+              map.set(mr.id, { ...old, ...mr, password: mr.password || old?.password || '' });
             }
-          }
+            return Array.from(map.values());
+          });
+          reseller = mappedList.find(
+            (r: Reseller) => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
+          );
         }
-      } catch (err) {
-        console.error('Error fetching resellers:', err);
       }
+    } catch (err) {
+      console.error('Error fetching reseller on login:', err);
     }
 
-    // 3. Fallback to local state
+    // 2. Fallback to local state if offline
     if (!reseller) {
       reseller = resellers.find(
         r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
@@ -1810,17 +1735,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const exists = prev.some(x => x.id === reseller!.id);
       return exists ? prev.map(x => (x.id === reseller!.id ? reseller! : x)) : [reseller!, ...prev];
     });
+    // Setting currentReseller triggers the useEffect above to call fetchResellerUsers ONCE
     setCurrentReseller(reseller);
-
-    // Immediately load all users assigned to this reseller from Supabase & Server
-    await fetchResellerUsers(reseller);
 
     return { success: true };
   };
 
   const loginAsReseller = (reseller: Reseller) => {
     setCurrentReseller(reseller);
-    fetchResellerUsers(reseller);
   };
 
   const logoutReseller = () => {
@@ -2919,6 +2841,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const payload = {
       userId,
+      email: userToUpdate?.email,
       data: {
         ...data,
         ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
@@ -2944,7 +2867,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
       if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
 
-      safeSupabaseUserUpdate(supabase, userId, userEmail, supaData, userToUpdate).catch(err => {
+      safeSupabaseUserUpdate(supabase, userId, userToUpdate?.email || userEmail, supaData, userToUpdate).catch(err => {
         console.error('Failed to sync update to Supabase:', err);
       });
     }
@@ -3061,16 +2984,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteUser = (userId: string) => {
-    setUsers(prev => prev.filter(u => u.id !== userId));
+    const targetUser = users.find(u => u.id === userId);
+    const targetEmail = (targetUser?.email || (userId.startsWith('usr-') && userId.includes('@') ? userId.slice(4) : '')).trim().toLowerCase();
+    setUsers(prev => prev.filter(u => u.id !== userId && (!targetEmail || u.email.trim().toLowerCase() !== targetEmail)));
     if (currentUser?.id === userId) {
       setCurrentUser(null);
     }
     const supabase = getSupabase();
     if (supabase) {
-      supabase.from('users').delete().eq('id', userId).then(() => {});
+      if (userId && !userId.includes('@')) {
+        supabase.from('users').delete().eq('id', userId).then(() => {});
+      }
+      if (targetEmail) {
+        supabase.from('users').delete().ilike('email', targetEmail).then(() => {});
+      }
     }
-    fetch(apiUrl(`/api/users?id=${encodeURIComponent(userId)}`), { method: 'DELETE' }).catch(() => {});
-    fetch(apiUrl(`/api/users/${userId}`), { method: 'DELETE' }).catch(() => {});
+    fetch(apiUrl(`/api/users?id=${encodeURIComponent(userId)}${targetEmail ? `&email=${encodeURIComponent(targetEmail)}` : ''}`), { method: 'DELETE' }).catch(() => {});
   };
 
   const deductCredits = (amount: number): boolean => {

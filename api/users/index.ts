@@ -138,14 +138,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             status: u.status || 'active',
             extensionAccess: u.extension_access !== false,
             canEditPrompts: u.can_edit_prompts === true,
-            isOnline: isLive || Boolean(u.is_online),
-            lastActive: u.last_active || new Date().toISOString(),
+            isOnline: isLive,
+            lastActive: u.last_active || '',
             createdAt: u.created_at || new Date().toISOString(),
             avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
           };
         });
 
-      // Ensure both default admins exist in the list
+      // 1. Reseller Portal gets ONLY their assigned users and ONLY the 10 allowed fields
+      const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
+      if (resellerId || resellerKey || resellerNameParam) {
+        const cleanTargetId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        const matchingUsers = validUsers
+          .filter(u => {
+            if (resellerId && u.resellerId && u.resellerId.trim().toLowerCase() === resellerId.toLowerCase()) return true;
+            const cleanUserResId = String(u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+            if (cleanTargetId && cleanUserResId && cleanTargetId === cleanUserResId) return true;
+            if (resellerNameParam && u.resellerName && String(u.resellerName).trim().toLowerCase() === resellerNameParam) return true;
+            return false;
+          })
+          .map(u => ({
+            name: u.name || 'User',
+            email: u.email || '',
+            plan: u.plan || 'basic',
+            credits: u.credits ?? 100,
+            maxCredits: u.maxCredits ?? (u.plan === 'ultra' ? 45000 : 100),
+            planDaysLeft: u.planDaysLeft ?? 30,
+            planExpiresAt: u.planExpiresAt || null,
+            planStartedAt: u.planStartedAt || u.createdAt || new Date().toISOString(),
+            isOnline: Boolean(u.isOnline),
+            lastActive: u.lastActive || '',
+          }));
+        return res.status(200).json({ users: matchingUsers });
+      }
+
+      // Ensure both default admins exist in the list for admin view
       const ensureAdmins = [
         { email: 'sachinxexplore@gmail.com', name: 'Sachin Kumar', ref: 'FLOWADMIN' },
         { email: 'sachinkumar629171@gmail.com', name: 'Sachin Kumar (Alt)', ref: 'FLOWADMIN2' },
@@ -179,23 +206,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
-      // 1. Admin gets all users
+      // 2. Admin gets all users
       if (isAdmin) {
         return res.status(200).json({ users: validUsers });
-      }
-
-      // 2. Reseller gets their users
-      const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
-      if (resellerId || resellerKey || resellerNameParam) {
-        const cleanTargetId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-        const matchingUsers = validUsers.filter(u => {
-          if (resellerId && u.resellerId && u.resellerId.trim().toLowerCase() === resellerId.toLowerCase()) return true;
-          const cleanUserResId = String(u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-          if (cleanTargetId && cleanUserResId && cleanTargetId === cleanUserResId) return true;
-          if (resellerNameParam && u.resellerName && String(u.resellerName).trim().toLowerCase() === resellerNameParam) return true;
-          return false;
-        });
-        return res.status(200).json({ users: matchingUsers });
       }
 
       // 3. Regular caller gets only own user profile
@@ -276,11 +289,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'DELETE') {
-      const id = (req.query.id || req.body?.id || '').toString();
-      if (!id) {
-        return res.status(400).json({ success: false, error: 'User ID is required' });
+      const id = (req.query.id || req.body?.id || '').toString().trim();
+      const email = (req.query.email || req.body?.email || '').toString().trim().toLowerCase();
+      if (!id && !email) {
+        return res.status(400).json({ success: false, error: 'User ID or email is required' });
       }
-      await supabase.from('users').delete().eq('id', id);
+      if (id && !(id.startsWith('usr-') && id.includes('@'))) {
+        await supabase.from('users').delete().eq('id', id);
+      }
+      const targetEmail = email || (id.startsWith('usr-') && id.includes('@') ? id.slice(4).toLowerCase() : '');
+      if (targetEmail) {
+        await supabase.from('users').delete().ilike('email', targetEmail);
+      }
       return res.status(200).json({ success: true });
     }
 

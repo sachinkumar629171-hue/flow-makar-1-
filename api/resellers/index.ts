@@ -105,6 +105,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         };
       });
 
+      const queryEmail = (req.query.email || '').toString().trim().toLowerCase();
+      if (queryEmail) {
+        const matched = mapped.filter(
+          (r: any) =>
+            (r.email && r.email.trim().toLowerCase() === queryEmail) ||
+            (r.id && String(r.id).trim().toLowerCase() === queryEmail)
+        );
+        return res.status(200).json({ resellers: matched });
+      }
+
       return res.status(200).json({ resellers: mapped });
     }
 

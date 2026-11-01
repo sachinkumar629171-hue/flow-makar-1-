@@ -348,8 +348,8 @@ export async function safeSupabaseUserUpdate(
 
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      // Strategy 1: Attempt update by ID
-      if (userId) {
+      // Strategy 1: Attempt update by ID (skip if userId is a synthetic email-based ID)
+      if (userId && !userId.includes('@')) {
         const { error } = await supabase.from('users').update(cleanFields).eq('id', userId);
         if (!error) {
           return true;
