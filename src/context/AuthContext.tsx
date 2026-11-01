@@ -2,7 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef } from 'r
 import { User, PlanType, Generation, ShowcaseVideo, ExtensionConfig, PlanExtensionsConfig, TutorialConfig, HeroConfig, Reseller, PromptConfig } from '../types';
 import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIAL_SHOWCASE, INITIAL_RESELLERS } from '../data/initialData';
 import { apiUrl } from '../config/api';
-import { getSupabase, getSupabaseConfig, saveSupabaseConfig, safeSupabaseUserUpdate, safeSupabaseUserUpsert } from '../lib/supabase';
+import { getSupabase, getSupabaseConfig, saveSupabaseConfig, safeSupabaseUserUpdate, safeSupabaseUserUpsert, safeSupabaseResellerUpsert } from '../lib/supabase';
 import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
 import { setUserExpiryMs, checkAndDowngradeExpiredUser } from '../lib/userStats';
 import { calculateResellerExpiry, getOrCreateResellerApiKey } from '../lib/resellerUtils';
@@ -102,6 +102,7 @@ interface AuthContextType {
   sessionTerminatedNotice: boolean;
   dismissSessionTerminatedNotice: () => void;
   refreshAdminData: () => Promise<boolean>;
+  syncServerUsers: (serverUsers: User[], forResellerId?: string) => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -1514,56 +1515,271 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const adminEmails = [ADMIN_EMAIL.toLowerCase(), 'sachinkumar629171@gmail.com', 'sachinxexplore@gmail.com'];
   const isAdmin = (currentUser?.email && adminEmails.includes(currentUser.email.toLowerCase())) || currentUser?.role === 'admin';
 
+  const ensureSupabaseClientReady = async () => {
+    let supa = getSupabase();
+    if (supa) return supa;
+    try {
+      const cfgRes = await fetch(apiUrl('/api/config'));
+      if (cfgRes.ok) {
+        const cfgData = await cfgRes.json();
+        if (cfgData?.supabaseConfig?.url && cfgData?.supabaseConfig?.anonKey) {
+          saveSupabaseConfig(cfgData.supabaseConfig.url, cfgData.supabaseConfig.anonKey);
+          supa = getSupabase();
+        }
+      }
+    } catch {}
+    return supa;
+  };
+
+  const mapRawResellerRecord = (sr: any): Reseller => {
+    const baseReseller: Reseller = {
+      id: sr.id,
+      portalName: sr.portal_name || sr.portalName || 'Reseller Portal',
+      email: (sr.email || '').trim(),
+      password: sr.password || '',
+      userLimit: Number(sr.user_limit ?? sr.userLimit ?? sr.max_users) || 20,
+      daysLeft: sr.days_left !== undefined ? Number(sr.days_left) : (sr.daysLeft !== undefined ? Number(sr.daysLeft) : 30),
+      expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
+      expiresAt: sr.expires_at || sr.expiresAt,
+      status: sr.status || 'active',
+      createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
+      notes: sr.notes || '',
+      apiKey: getOrCreateResellerApiKey(sr),
+    };
+    const expiryInfo = calculateResellerExpiry(baseReseller);
+    return {
+      ...baseReseller,
+      daysLeft: expiryInfo.daysLeft,
+      expiryDate: expiryInfo.expiryDate,
+      expiresAt: expiryInfo.expiresAt,
+      status: expiryInfo.status,
+    };
+  };
+
+  const syncServerUsers = React.useCallback((serverUsers: User[], forResellerId?: string) => {
+    if (!Array.isArray(serverUsers)) return;
+    const now = Date.now();
+    setUsers(prev => {
+      const incomingById = new Map<string, User>();
+      const incomingByEmail = new Map<string, User>();
+
+      for (const su of serverUsers) {
+        if (!su || !su.id || su.id.startsWith('admin_config_') || su.id.startsWith('sys_config_')) continue;
+        const pending = lastUpdatedUsersRef.current.get(su.id) || (su.email ? lastUpdatedUsersRef.current.get(su.email.toLowerCase()) : undefined);
+        const mergedItem: User = (pending && now - pending.timestamp < 10000)
+          ? { ...su, ...pending.data }
+          : su;
+        incomingById.set(mergedItem.id, mergedItem);
+        if (mergedItem.email) incomingByEmail.set(mergedItem.email.toLowerCase(), mergedItem);
+      }
+
+      const updatedExisting = prev.map(u => {
+        const match = incomingById.get(u.id) || (u.email ? incomingByEmail.get(u.email.toLowerCase()) : undefined);
+        if (match) {
+          return {
+            ...u,
+            ...match,
+            password: match.password || u.password,
+            resellerId: match.resellerId || u.resellerId || forResellerId,
+            resellerName: match.resellerName || u.resellerName,
+          };
+        }
+        return u;
+      });
+
+      const existingIds = new Set(updatedExisting.map(u => u.id));
+      const existingEmails = new Set(updatedExisting.map(u => (u.email || '').toLowerCase()));
+      const newIncoming = Array.from(incomingById.values()).filter(
+        su => !existingIds.has(su.id) && (!su.email || !existingEmails.has(su.email.toLowerCase()))
+      );
+
+      return [...newIncoming, ...updatedExisting];
+    });
+  }, []);
+
+  const fetchResellerUsers = React.useCallback(async (reseller: Reseller | null) => {
+    if (!reseller || !reseller.id) return;
+    const targetResId = reseller.id.trim();
+    const targetPortalName = (reseller.portalName || '').trim();
+
+    // 1. Direct Supabase query for this reseller's users
+    try {
+      const supabase = await ensureSupabaseClientReady();
+      if (supabase) {
+        const { data: supaById } = await supabase
+          .from('users')
+          .select('*')
+          .eq('reseller_id', targetResId);
+
+        let combinedSupaRows: any[] = Array.isArray(supaById) ? [...supaById] : [];
+
+        if (targetPortalName) {
+          const { data: supaByName } = await supabase
+            .from('users')
+            .select('*')
+            .ilike('reseller_name', targetPortalName);
+          if (Array.isArray(supaByName)) {
+            const seen = new Set(combinedSupaRows.map(r => r.id));
+            for (const row of supaByName) {
+              if (row && row.id && !seen.has(row.id)) {
+                seen.add(row.id);
+                combinedSupaRows.push(row);
+              }
+            }
+          }
+        }
+
+        if (combinedSupaRows.length > 0) {
+          const mappedSupaUsers: User[] = combinedSupaRows
+            .filter((su: any) => su.id && !su.id.startsWith('admin_config_') && !su.id.startsWith('sys_config_'))
+            .map((su: any) => {
+              const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
+              const isRecent = !isNaN(lastActiveTime) && (Date.now() - lastActiveTime <= 120000 && Date.now() - lastActiveTime >= -60000);
+              const baseUser: User = {
+                id: su.id,
+                name: su.name || 'User',
+                email: su.email || '',
+                password: su.password || '',
+                sessionToken: su.session_token || su.sessionToken || '',
+                whatsapp: su.whatsapp || '',
+                telegram: su.telegram || '',
+                referralCode: su.referral_code || '',
+                referredBy: su.referred_by || '',
+                plan: (su.plan as PlanType) || 'basic',
+                credits: Number(su.credits) !== undefined && !isNaN(Number(su.credits)) ? Number(su.credits) : (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
+                maxCredits: Number(su.max_credits) || (su.plan === 'unlimited' ? 99999 : su.plan === 'ultra' ? 45000 : 100),
+                planDaysLeft: Number(su.plan_days_left) ?? 30,
+                planExpiresAt: su.plan_expires_at || (su.created_at ? new Date(new Date(su.created_at).getTime() + (Number(su.plan_days_left) || 30) * 86400000).toISOString() : undefined),
+                planStartedAt: su.plan_started_at || su.created_at || new Date().toISOString(),
+                role: (su.role as any) || 'user',
+                resellerId: su.reseller_id || targetResId,
+                resellerName: su.reseller_name || targetPortalName,
+                createdAt: su.created_at || new Date().toISOString(),
+                avatarColor: su.plan === 'unlimited' ? 'from-amber-500 to-yellow-500' : su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600',
+                status: (su.status as any) || 'active',
+                extensionAccess: su.extension_access !== undefined ? su.extension_access : true,
+                canEditPrompts: su.can_edit_prompts === true,
+                isOnline: isRecent,
+                lastActive: su.last_active || '',
+              };
+              return checkAndDowngradeExpiredUser(baseUser).user;
+            });
+
+          syncServerUsers(mappedSupaUsers, targetResId);
+        }
+      }
+    } catch (err) {
+      console.warn('Supabase reseller users fetch error:', err);
+    }
+
+    // 2. Also fetch from backend /api/users with reseller headers
+    try {
+      const res = await fetch(
+        apiUrl(`/api/users?resellerId=${encodeURIComponent(targetResId)}&resellerName=${encodeURIComponent(targetPortalName)}`),
+        {
+          headers: {
+            'x-reseller-id': targetResId,
+            'x-reseller-api-key': reseller.apiKey || '',
+            'x-reseller-name': targetPortalName,
+          },
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.users && Array.isArray(data.users)) {
+          syncServerUsers(data.users, targetResId);
+        }
+      }
+    } catch (err) {
+      console.warn('API reseller users fetch error:', err);
+    }
+  }, [syncServerUsers]);
+
+  // Automatically load reseller's users on reseller login and on /reseller page refresh
+  useEffect(() => {
+    if (!currentReseller?.id) return;
+    fetchResellerUsers(currentReseller);
+  }, [currentReseller?.id, fetchResellerUsers]);
+
   const resellerLogin = async (email: string, pass: string): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
     const cleanPass = pass.trim();
 
-    // Check local first
-    let reseller = resellers.find(r => r.email.toLowerCase() === cleanEmail);
+    let reseller: Reseller | undefined = undefined;
 
-    // 0. Supabase direct check
-    const supabase = getSupabase();
+    // 1. Direct Supabase check (resellers table + admin_config_resellers backup row)
+    const supabase = await ensureSupabaseClientReady();
     if (supabase) {
       try {
-        const { data: supaR, error } = await supabase
+        const { data: supaR } = await supabase
           .from('resellers')
           .select('*')
-          .eq('email', cleanEmail)
+          .ilike('email', cleanEmail)
           .maybeSingle();
 
-        if (!error && supaR) {
-          const mapped: Reseller = {
-            id: supaR.id,
-            portalName: supaR.portal_name || supaR.portalName,
-            email: supaR.email,
-            password: supaR.password,
-            userLimit: supaR.user_limit || supaR.userLimit || supaR.max_users || 50,
-            daysLeft: supaR.days_left || supaR.daysLeft || 30,
-            expiryDate: supaR.expiry_date || supaR.expiryDate || '30/10/2026',
-            status: supaR.status || 'active',
-            createdAt: supaR.created_at || new Date().toISOString(),
-            notes: supaR.notes || '',
-          };
-          reseller = mapped;
-          setResellers(prev => {
-            const exists = prev.some(x => x.id === mapped.id);
-            return exists ? prev.map(x => x.id === mapped.id ? mapped : x) : [mapped, ...prev];
-          });
+        if (supaR) {
+          reseller = mapRawResellerRecord(supaR);
+        } else {
+          const { data: allSupaR } = await supabase.from('resellers').select('*');
+          if (Array.isArray(allSupaR) && allSupaR.length > 0) {
+            const mappedAll = allSupaR.map(mapRawResellerRecord);
+            setResellers(mappedAll);
+            reseller = mappedAll.find(
+              r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
+            );
+          }
+        }
+
+        if (!reseller) {
+          const { data: resRow } = await supabase
+            .from('users')
+            .select('name')
+            .eq('id', 'admin_config_resellers')
+            .maybeSingle();
+          if (resRow?.name) {
+            try {
+              const parsed = JSON.parse(resRow.name);
+              if (Array.isArray(parsed)) {
+                const mappedBackup = parsed.map(mapRawResellerRecord);
+                const foundInBackup = mappedBackup.find(
+                  r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
+                );
+                if (foundInBackup) {
+                  reseller = foundInBackup;
+                }
+              }
+            } catch {}
+          }
         }
       } catch (err) {
         console.warn('Supabase reseller check error:', err);
       }
     }
 
-    // If not found locally, fetch latest resellers from live backend
-    if (!reseller) {
+    // 2. Check live backend /api/resellers
+    if (!reseller || !reseller.password) {
       try {
-        const res = await fetch(apiUrl('/api/resellers'));
+        const res = await fetch(apiUrl(`/api/resellers?email=${encodeURIComponent(cleanEmail)}`));
         if (res.ok) {
           const data = await res.json();
           if (data.resellers && Array.isArray(data.resellers)) {
-            setResellers(data.resellers);
-            reseller = data.resellers.find((r: Reseller) => r.email.toLowerCase() === cleanEmail);
+            const mappedList = data.resellers.map(mapRawResellerRecord);
+            setResellers(prev => {
+              const map = new Map<string, Reseller>(prev.map(r => [r.id, r]));
+              for (const mr of mappedList) {
+                const old = map.get(mr.id);
+                map.set(mr.id, { ...old, ...mr, password: mr.password || old?.password || '' });
+              }
+              return Array.from(map.values());
+            });
+            const matchedFromApi = mappedList.find(
+              (r: Reseller) => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
+            );
+            if (matchedFromApi) {
+              reseller = reseller
+                ? { ...reseller, ...matchedFromApi, password: matchedFromApi.password || reseller.password }
+                : matchedFromApi;
+            }
           }
         }
       } catch (err) {
@@ -1571,11 +1787,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    // 3. Fallback to local state
+    if (!reseller) {
+      reseller = resellers.find(
+        r => r.email.trim().toLowerCase() === cleanEmail || r.id.trim().toLowerCase() === cleanEmail
+      );
+    }
+
     if (!reseller) {
       return { success: false, error: 'No reseller portal found with this email. Contact main administrator.' };
     }
 
-    if (reseller.password !== cleanPass) {
+    if (String(reseller.password || '').trim() !== cleanPass) {
       return { success: false, error: 'Incorrect portal password.' };
     }
 
@@ -1583,12 +1806,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'This reseller portal has been suspended by administration.' };
     }
 
+    setResellers(prev => {
+      const exists = prev.some(x => x.id === reseller!.id);
+      return exists ? prev.map(x => (x.id === reseller!.id ? reseller! : x)) : [reseller!, ...prev];
+    });
     setCurrentReseller(reseller);
+
+    // Immediately load all users assigned to this reseller from Supabase & Server
+    await fetchResellerUsers(reseller);
+
     return { success: true };
   };
 
   const loginAsReseller = (reseller: Reseller) => {
     setCurrentReseller(reseller);
+    fetchResellerUsers(reseller);
   };
 
   const logoutReseller = () => {
@@ -1646,40 +1878,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const updatedList = [newReseller, ...resellers];
     setResellers(updatedList);
 
-    // 1. Direct sync to Supabase resellers table
-    const supabase = getSupabase();
+    // 1. Direct resilient sync to Supabase resellers table + backup row
+    const supabase = await ensureSupabaseClientReady();
     if (supabase) {
-      try {
-        await supabase.from('resellers').upsert({
-          id: newReseller.id,
-          portal_name: newReseller.portalName,
-          email: newReseller.email,
-          password: newReseller.password,
-          user_limit: newReseller.userLimit,
-          days_left: newReseller.daysLeft,
-          expiry_date: newReseller.expiryDate,
-          expires_at: newReseller.expiresAt,
-          status: newReseller.status,
-          created_at: newReseller.createdAt,
-          notes: newReseller.notes,
-          api_key: newReseller.apiKey,
-        });
-      } catch (err) {
+      safeSupabaseResellerUpsert(supabase, newReseller).catch(err => {
         console.warn('Supabase resellers table upsert error:', err);
-      }
+      });
 
-      // 2. Also back up all resellers to admin_config_resellers row in users table (guaranteed persistence!)
-      try {
-        await supabase.from('users').upsert({
-          id: 'admin_config_resellers',
-          name: JSON.stringify(updatedList),
-          email: 'resellers_backup@flowmaker.local',
-          role: 'user',
-          status: 'active',
-        });
-      } catch (err) {
+      safeSupabaseUserUpsert(supabase, {
+        id: 'admin_config_resellers',
+        name: JSON.stringify(updatedList),
+        email: 'resellers_backup@flowmaker.local',
+        password: 'config_no_login_123',
+        plan: 'basic',
+        credits: 0,
+        max_credits: 0,
+        plan_days_left: 0,
+        role: 'user',
+        status: 'active',
+      }).catch(err => {
         console.warn('Backup resellers row insert error:', err);
-      }
+      });
     }
 
     try {
@@ -1737,27 +1956,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const supa = getSupabase();
       if (supa) {
-        const supaUpdatePayload: any = {
-          id: resellerId,
-          portal_name: updatedReseller.portalName,
-          email: updatedReseller.email,
-          password: updatedReseller.password,
-          user_limit: updatedReseller.userLimit,
-          days_left: updatedReseller.daysLeft,
-          expiry_date: updatedReseller.expiryDate,
-          expires_at: updatedReseller.expiresAt,
-          status: updatedReseller.status,
-          notes: updatedReseller.notes,
-          api_key: updatedReseller.apiKey,
-        };
-        supa.from('resellers').upsert(supaUpdatePayload).then(() => {}, () => {});
-        supa.from('users').upsert({
+        safeSupabaseResellerUpsert(supa, updatedReseller).catch(() => {});
+        safeSupabaseUserUpsert(supa, {
           id: 'admin_config_resellers',
           name: JSON.stringify(updatedList),
           email: 'resellers_backup@flowmaker.local',
+          password: 'config_no_login_123',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
           role: 'user',
           status: 'active',
-        }).then(() => {}, () => {});
+        }).catch(() => {});
       }
 
       fetch(apiUrl('/api/resellers'), {
@@ -1777,14 +1988,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const supa = getSupabase();
     if (supa) {
       supa.from('resellers').delete().eq('id', resellerId).then(() => {}, () => {});
-      supa.from('users').upsert({
+      safeSupabaseUserUpsert(supa, {
         id: 'admin_config_resellers',
         name: JSON.stringify(updatedList),
         email: 'resellers_backup@flowmaker.local',
+        password: 'config_no_login_123',
+        plan: 'basic',
+        credits: 0,
+        max_credits: 0,
+        plan_days_left: 0,
         role: 'user',
         status: 'active',
-      }).then(() => {}, () => {});
+      }).catch(() => {});
     }
+    fetch(apiUrl(`/api/resellers?id=${encodeURIComponent(resellerId)}`), { method: 'DELETE' }).catch(() => {});
     fetch(apiUrl(`/api/resellers/${resellerId}`), { method: 'DELETE' }).catch(() => {});
   };
 
@@ -1802,7 +2019,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       planExpiresAt?: string;
     }
   ): Promise<{ success: boolean; error?: string }> => {
-    const targetReseller = resellers.find(r => r.id === resellerId);
+    const targetReseller = resellers.find(r => r.id === resellerId) || (currentReseller && currentReseller.id === resellerId ? currentReseller : undefined);
     if (!targetReseller) {
       return { success: false, error: 'Reseller not found.' };
     }
@@ -1833,7 +2050,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Double check Supabase for absolute certainty
-    const supa = getSupabase();
+    const supa = await ensureSupabaseClientReady();
     if (supa) {
       const { data: supaExists } = await supa.from('users').select('id').eq('email', cleanEmail).maybeSingle();
       if (supaExists) {
@@ -1896,42 +2113,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Supabase direct database insert & admin_config_all_users backup
-    const supabase = getSupabase();
-    if (supabase) {
-      safeSupabaseUserUpsert(supabase, newUser).catch(err => {
+    if (supa) {
+      safeSupabaseUserUpsert(supa, newUser).catch(err => {
         console.error('Supabase reseller user insert error:', err);
       });
-      supabase.from('users').upsert({
-        id: 'admin_config_all_users',
-        name: JSON.stringify(updatedUsersList),
-        email: 'all_users_backup@flowmaker.local',
-        role: 'user',
-        status: 'active',
-      }).then(() => {}, () => {});
     }
 
-    // Send to central server database immediately
+    const userBodyPayload = {
+      id: newUser.id,
+      name: newUser.name,
+      email: newUser.email,
+      password: newUser.password,
+      plan: newUser.plan,
+      credits: newUser.credits,
+      maxCredits: newUser.maxCredits,
+      planDaysLeft: newUser.planDaysLeft,
+      planExpiresAt: newUser.planExpiresAt,
+      role: newUser.role,
+      resellerId: newUser.resellerId,
+      reseller_id: newUser.resellerId,
+      resellerName: targetReseller.portalName,
+      reseller_name: targetReseller.portalName,
+      createdAt: newUser.createdAt,
+      avatarColor: newUser.avatarColor,
+      status: newUser.status,
+    };
+
+    // Send to both /api/users and /api/users/signup for Vercel + Express compatibility
     try {
-      await fetch(apiUrl('/api/users/signup'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: newUser.id,
-          name: newUser.name,
-          email: newUser.email,
-          password: newUser.password,
-          plan: newUser.plan,
-          credits: newUser.credits,
-          maxCredits: newUser.maxCredits,
-          planDaysLeft: newUser.planDaysLeft,
-          role: newUser.role,
-          resellerId: newUser.resellerId,
-          resellerName: targetReseller.portalName,
-          createdAt: newUser.createdAt,
-          avatarColor: newUser.avatarColor,
-          status: newUser.status,
+      await Promise.allSettled([
+        fetch(apiUrl('/api/users'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(userBodyPayload),
         }),
-      });
+        fetch(apiUrl('/api/users/signup'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(userBodyPayload),
+        }),
+      ]);
     } catch (err) {
       console.error('Error saving reseller user to central server:', err);
     }
@@ -2848,6 +3069,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (supabase) {
       supabase.from('users').delete().eq('id', userId).then(() => {});
     }
+    fetch(apiUrl(`/api/users?id=${encodeURIComponent(userId)}`), { method: 'DELETE' }).catch(() => {});
     fetch(apiUrl(`/api/users/${userId}`), { method: 'DELETE' }).catch(() => {});
   };
 
@@ -3092,6 +3314,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionTerminatedNotice,
         dismissSessionTerminatedNotice,
         refreshAdminData,
+        syncServerUsers,
       }}
     >
       {children}

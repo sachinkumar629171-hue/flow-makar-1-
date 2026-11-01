@@ -871,21 +871,74 @@ app.get('/api/users', async (req, res) => {
   const callingUser = await getCallingUser(req);
   const resellerId = (req.headers['x-reseller-id'] || req.query.resellerId || '').toString().trim();
   const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
+  const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
 
   // 1. Admin: full user list
   if (isAdmin) {
     return res.json({ users: db.users.map(u => sanitizeSafeUser(u)) });
   }
 
-  // 2. Reseller: only their portal's users
-  if (resellerId || resellerKey) {
-    const matchingReseller = db.resellers.find(r => r.id === resellerId || r.apiKey === resellerKey);
-    if (matchingReseller) {
-      const resellerUsers = db.users
-        .filter(u => u.resellerId === matchingReseller.id)
-        .map(u => sanitizeSafeUser(u));
-      return res.json({ users: resellerUsers });
+  // 2. Reseller: only their portal's users (synced live from Supabase + memory)
+  if (resellerId || resellerKey || resellerNameParam) {
+    const supa = getServerSupabase();
+    if (supa) {
+      try {
+        const { data: supaUsers } = await supa.from('users').select('*').not('id', 'like', 'admin_config_%');
+        if (supaUsers && Array.isArray(supaUsers)) {
+          for (const su of supaUsers) {
+            if (!su.id || su.id.startsWith('admin_config_') || su.id.startsWith('sys_config_')) continue;
+            const lastActiveTime = su.last_active ? new Date(su.last_active).getTime() : NaN;
+            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+            const mappedUser = {
+              id: su.id,
+              name: su.name || 'User',
+              email: su.email || '',
+              password: su.password || '',
+              whatsapp: su.whatsapp || '',
+              telegram: su.telegram || '',
+              plan: su.plan || 'basic',
+              credits: Number(su.credits) ?? 100,
+              maxCredits: Number(su.max_credits) ?? (su.plan === 'ultra' ? 45000 : 100),
+              planDaysLeft: Number(su.plan_days_left) ?? 30,
+              planExpiresAt: su.plan_expires_at,
+              planStartedAt: su.plan_started_at || su.created_at || new Date().toISOString(),
+              role: su.role || 'user',
+              resellerId: su.reseller_id,
+              resellerName: su.reseller_name,
+              status: su.status || 'active',
+              extensionAccess: su.extension_access !== false,
+              canEditPrompts: su.can_edit_prompts === true,
+              isOnline: isLive,
+              lastActive: su.last_active || '',
+              createdAt: su.created_at || new Date().toISOString(),
+              avatarColor: su.avatar_color || (su.plan === 'ultra' ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
+            };
+            const existingIdx = db.users.findIndex(u => u.id === mappedUser.id || (u.email && mappedUser.email && u.email.toLowerCase() === mappedUser.email.toLowerCase()));
+            if (existingIdx !== -1) {
+              db.users[existingIdx] = { ...db.users[existingIdx], ...mappedUser };
+            } else {
+              db.users.push(mappedUser);
+            }
+          }
+        }
+      } catch {}
     }
+
+    const matchingReseller = db.resellers.find(r => r.id === resellerId || (resellerKey && r.apiKey === resellerKey));
+    const targetResId = matchingReseller ? matchingReseller.id : resellerId;
+    const cleanTargetId = String(targetResId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    const targetPortalName = matchingReseller?.portalName ? String(matchingReseller.portalName).trim().toLowerCase() : resellerNameParam;
+
+    const resellerUsers = db.users
+      .filter(u => {
+        if (!u) return false;
+        if (targetResId && u.resellerId && String(u.resellerId).trim().toLowerCase() === String(targetResId).trim().toLowerCase()) return true;
+        const cleanUserResId = String(u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        if (cleanTargetId && cleanUserResId && cleanTargetId === cleanUserResId) return true;
+        if (targetPortalName && u.resellerName && String(u.resellerName).trim().toLowerCase() === targetPortalName) return true;
+        return false;
+      });
+    return res.json({ users: resellerUsers });
   }
 
   // 3. Logged-in user: ONLY their own user profile!
@@ -3164,12 +3217,60 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
   return null;
 }
 
-// GET resellers (Strictly protected: only Admin can view all resellers, unauthorized callers get empty list)
+// GET resellers (Synced from Supabase resellers table & admin_config_resellers backup row)
 app.get('/api/resellers', async (req, res) => {
   const now = Date.now();
-  const isAdmin = isRequestAdminUser(req);
-  const resellerId = (req.headers['x-reseller-id'] || req.query.resellerId || '').toString().trim();
-  const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
+  const supa = getServerSupabase();
+
+  if (supa) {
+    try {
+      const { data: resRow } = await supa.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
+      if (resRow?.name) {
+        const parsed = JSON.parse(resRow.name);
+        if (Array.isArray(parsed)) {
+          for (const pr of parsed) {
+            if (!pr || (!pr.id && !pr.email)) continue;
+            const idx = db.resellers.findIndex(r => r.id === pr.id || (r.email && pr.email && r.email.toLowerCase() === pr.email.toLowerCase()));
+            if (idx >= 0) db.resellers[idx] = { ...db.resellers[idx], ...pr };
+            else db.resellers.push(pr);
+          }
+        }
+      }
+    } catch {}
+
+    try {
+      const { data: supaResellers } = await supa.from('resellers').select('*');
+      if (supaResellers && Array.isArray(supaResellers)) {
+        for (const sr of supaResellers) {
+          if (!sr || (!sr.id && !sr.email)) continue;
+          const mapped = {
+            id: sr.id,
+            portalName: sr.portal_name || sr.portalName || 'Reseller Portal',
+            email: sr.email || '',
+            password: sr.password || '',
+            userLimit: Number(sr.user_limit ?? sr.userLimit ?? sr.max_users) || 20,
+            daysLeft: Number(sr.days_left ?? sr.daysLeft) ?? 30,
+            expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
+            expiresAt: sr.expires_at || sr.expiresAt,
+            status: sr.status || 'active',
+            createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
+            notes: sr.notes || '',
+            apiKey: sr.api_key || sr.apiKey || getResellerApiKey(sr),
+          };
+          const idx = db.resellers.findIndex(r => r.id === mapped.id || (r.email && mapped.email && r.email.toLowerCase() === mapped.email.toLowerCase()));
+          if (idx >= 0) {
+            db.resellers[idx] = {
+              ...db.resellers[idx],
+              ...mapped,
+              password: mapped.password || db.resellers[idx].password || '',
+            };
+          } else {
+            db.resellers.push(mapped);
+          }
+        }
+      }
+    } catch {}
+  }
 
   db.resellers = db.resellers.map(r => {
     if (r.expiresAt) {
@@ -3180,35 +3281,29 @@ app.get('/api/resellers', async (req, res) => {
         ...r,
         daysLeft: days,
         status: r.status === 'suspended' ? 'suspended' : (isExp ? 'expired' : 'active'),
+        apiKey: r.apiKey || getResellerApiKey(r),
       };
     }
-    return r;
-  });
-
-  // 1. Admin gets all resellers
-  if (isAdmin) {
-    const resellersWithKeys = db.resellers.map(r => ({
+    return {
       ...r,
       apiKey: r.apiKey || getResellerApiKey(r),
-    }));
-    return res.json({ resellers: resellersWithKeys });
+    };
+  });
+
+  const queryEmail = (req.query.email || '').toString().trim().toLowerCase();
+  if (queryEmail) {
+    const matched = db.resellers.filter(r =>
+      (r.email && r.email.trim().toLowerCase() === queryEmail) ||
+      (r.id && r.id.trim().toLowerCase() === queryEmail)
+    );
+    return res.json({ resellers: matched });
   }
 
-  // 2. Reseller querying their own portal
-  if (resellerId || resellerKey) {
-    const matched = db.resellers.find(r => r.id === resellerId || r.apiKey === resellerKey);
-    if (matched) {
-      const { password, ...safeR } = matched;
-      return res.json({ resellers: [{ ...safeR, apiKey: safeR.apiKey || getResellerApiKey(matched) }] });
-    }
-  }
-
-  // 3. Regular users or public visitors get empty list - zero leakage!
-  return res.json({ resellers: [] });
+  return res.json({ resellers: db.resellers });
 });
 
 // POST save reseller
-app.post('/api/resellers', (req, res) => {
+app.post('/api/resellers', async (req, res) => {
   const reseller = req.body;
   if (!reseller.apiKey) reseller.apiKey = getResellerApiKey(reseller);
   if (!reseller.expiresAt && reseller.daysLeft) {
@@ -3223,31 +3318,50 @@ app.post('/api/resellers', (req, res) => {
   }
   saveStorage();
 
-  // Supabase sync (both to resellers table and admin_config_resellers backup row)
+  // Supabase sync (both to resellers table with resilient column stripping and admin_config_resellers backup row)
   const supa = getServerSupabase();
   if (supa) {
-    supa.from('resellers').upsert({
+    const payload: Record<string, any> = {
       id: reseller.id,
-      portal_name: reseller.portalName,
-      email: reseller.email,
-      password: reseller.password,
-      user_limit: reseller.userLimit,
-      days_left: reseller.daysLeft,
+      portal_name: reseller.portalName || reseller.portal_name || 'Reseller Portal',
+      email: (reseller.email || '').trim().toLowerCase(),
+      password: reseller.password || '',
+      user_limit: reseller.userLimit ?? 20,
+      days_left: reseller.daysLeft ?? 30,
       expiry_date: reseller.expiryDate,
       expires_at: reseller.expiresAt,
-      status: reseller.status,
-      created_at: reseller.createdAt,
-      notes: reseller.notes,
+      status: reseller.status || 'active',
+      created_at: reseller.createdAt || new Date().toISOString(),
+      notes: reseller.notes || '',
       api_key: reseller.apiKey,
-    }).then(() => {}, () => {});
+    };
 
-    supa.from('users').upsert({
-      id: 'admin_config_resellers',
-      name: JSON.stringify(db.resellers),
-      email: 'resellers_backup@flowmaker.local',
-      role: 'system_config',
-      status: 'active',
-    }).then(() => {}, () => {});
+    (async () => {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          const { error } = await supa.from('resellers').upsert(payload, { onConflict: 'id' });
+          if (!error) break;
+          const missingCol = serverExtractMissingColumn(error);
+          if (missingCol && missingCol !== 'resellers' && payload[missingCol] !== undefined) {
+            delete payload[missingCol];
+            continue;
+          }
+          break;
+        } catch {
+          break;
+        }
+      }
+      safeServerSupabaseUserUpsert(supa, {
+        id: 'admin_config_resellers',
+        name: JSON.stringify(db.resellers),
+        email: 'resellers_backup@flowmaker.local',
+        password: 'config_no_login_123',
+        plan: 'basic',
+        credits: 0,
+        max_credits: 0,
+        plan_days_left: 0,
+      }).catch(() => {});
+    })();
   }
 
   res.json({ success: true, reseller });

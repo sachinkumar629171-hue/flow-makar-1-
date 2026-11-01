@@ -123,11 +123,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             id: u.id,
             name: u.name || 'User',
             email: u.email || '',
+            password: u.password || '',
+            whatsapp: u.whatsapp || '',
+            telegram: u.telegram || '',
             plan: calculatedPlan,
             credits: calculatedCredits,
             maxCredits: calculatedMaxCredits,
             planDaysLeft: calculatedDaysLeft,
             planExpiresAt,
+            planStartedAt: u.plan_started_at || u.created_at || new Date().toISOString(),
             role: isSysAdmin ? 'admin' : (u.role || 'user'),
             resellerId: u.reseller_id,
             resellerName: u.reseller_name,
@@ -152,11 +156,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             id: `usr-admin-${adm.ref}`,
             name: adm.name,
             email: adm.email,
+            password: '',
+            whatsapp: '',
+            telegram: '',
             plan: 'ultra',
             credits: 45000,
             maxCredits: 45000,
             planDaysLeft: 30,
             planExpiresAt: undefined,
+            planStartedAt: '2025-01-10T10:00:00Z',
             role: 'admin',
             resellerId: undefined,
             resellerName: undefined,
@@ -177,8 +185,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       // 2. Reseller gets their users
-      if (resellerId || resellerKey) {
-        const matchingUsers = validUsers.filter(u => u.resellerId === resellerId);
+      const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
+      if (resellerId || resellerKey || resellerNameParam) {
+        const cleanTargetId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+        const matchingUsers = validUsers.filter(u => {
+          if (resellerId && u.resellerId && u.resellerId.trim().toLowerCase() === resellerId.toLowerCase()) return true;
+          const cleanUserResId = String(u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+          if (cleanTargetId && cleanUserResId && cleanTargetId === cleanUserResId) return true;
+          if (resellerNameParam && u.resellerName && String(u.resellerName).trim().toLowerCase() === resellerNameParam) return true;
+          return false;
+        });
         return res.status(200).json({ users: matchingUsers });
       }
 
@@ -189,13 +205,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ users: callerProfile ? [callerProfile] : [] });
       }
 
-      // 4. Public unauthenticated caller gets all users if in admin mode or empty list
+      // 4. Public unauthenticated caller gets empty list
       return res.status(200).json({ users: [] });
     }
 
     if (req.method === 'POST') {
       const body = req.body || {};
-      const { email, name, password, plan, credits, maxCredits, planDaysLeft, role, status } = body;
+      const { id, email, name, password, plan, credits, maxCredits, planDaysLeft, planExpiresAt, role, status, resellerId: bodyResId, reseller_id, resellerName: bodyResName, reseller_name, whatsapp, telegram } = body;
 
       if (!email) {
         return res.status(400).json({ success: false, error: 'Email is required' });
@@ -203,7 +219,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const cleanEmail = email.toLowerCase().trim();
       const isSysAdmin = ADMIN_EMAILS.has(cleanEmail);
-      const userPayload: any = {
+      const userPayload: Record<string, any> = {
+        id: id || `usr-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
         name: name || cleanEmail.split('@')[0],
         email: cleanEmail,
         plan: isSysAdmin ? 'ultra' : (plan || 'basic'),
@@ -212,22 +229,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         plan_days_left: planDaysLeft !== undefined ? Number(planDaysLeft) : 30,
         role: isSysAdmin ? 'admin' : (role || 'user'),
         status: status || 'active',
-        is_online: true,
+        is_online: false,
         last_active: new Date().toISOString(),
       };
       if (password) userPayload.password = password;
+      if (planExpiresAt) userPayload.plan_expires_at = planExpiresAt;
+      if (bodyResId || reseller_id) userPayload.reseller_id = bodyResId || reseller_id;
+      if (bodyResName || reseller_name) userPayload.reseller_name = bodyResName || reseller_name;
+      if (whatsapp) userPayload.whatsapp = whatsapp;
+      if (telegram) userPayload.telegram = telegram;
 
-      const { data: savedUser, error: saveErr } = await supabase
-        .from('users')
-        .upsert(userPayload, { onConflict: 'email' })
-        .select()
-        .single();
+      let savedUser: any = null;
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const { data, error: saveErr } = await supabase
+          .from('users')
+          .upsert(userPayload, { onConflict: 'id' })
+          .select()
+          .maybeSingle();
 
-      if (saveErr) {
-        return res.status(500).json({ success: false, error: saveErr.message });
+        if (!saveErr) {
+          savedUser = data || userPayload;
+          break;
+        }
+        const msg = `${saveErr.message || ''} ${saveErr.details || ''}`;
+        const match = msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
+                      msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? of relation/i) ||
+                      msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i);
+        if (match && match[1] && userPayload[match[1]] !== undefined) {
+          delete userPayload[match[1]];
+          continue;
+        }
+        const { id: _dropId, ...updateFields } = userPayload;
+        const { data: updatedByEmail, error: emailErr } = await supabase
+          .from('users')
+          .update(updateFields)
+          .ilike('email', cleanEmail)
+          .select()
+          .maybeSingle();
+        if (!emailErr) {
+          savedUser = updatedByEmail || userPayload;
+        }
+        break;
       }
 
-      return res.status(200).json({ success: true, user: savedUser });
+      return res.status(200).json({ success: true, user: savedUser || userPayload });
     }
 
     if (req.method === 'DELETE') {

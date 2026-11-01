@@ -192,16 +192,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 2. Fetch Resellers
     let resellersList: any[] = [];
     try {
-      const { data: supaResellers } = await supabase.from('resellers').select('*');
-      let rawResellers = supaResellers || [];
-      if (!rawResellers.length) {
+      const mergedMap = new Map<string, any>();
+      try {
         const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
         if (resRow?.name) {
-          try {
-            const parsed = JSON.parse(resRow.name);
-            if (Array.isArray(parsed)) rawResellers = parsed;
-          } catch {}
+          const parsed = JSON.parse(resRow.name);
+          if (Array.isArray(parsed)) {
+            for (const r of parsed) {
+              const key = String(r.id || r.email || '').trim().toLowerCase();
+              if (key) mergedMap.set(key, r);
+            }
+          }
         }
+      } catch {}
+
+      const { data: supaResellers } = await supabase.from('resellers').select('*');
+      if (supaResellers && Array.isArray(supaResellers)) {
+        for (const sr of supaResellers) {
+          const keyById = String(sr.id || '').trim().toLowerCase();
+          const keyByEmail = String(sr.email || '').trim().toLowerCase();
+          const existing = mergedMap.get(keyById) || (keyByEmail ? mergedMap.get(keyByEmail) : undefined) || {};
+          const merged = {
+            ...existing,
+            ...sr,
+            password: sr.password || existing.password || '',
+          };
+          if (keyById) mergedMap.set(keyById, merged);
+          else if (keyByEmail) mergedMap.set(keyByEmail, merged);
+        }
+      }
+
+      const seenIds = new Set<string>();
+      const seenEmails = new Set<string>();
+      const rawResellers: any[] = [];
+      for (const item of mergedMap.values()) {
+        const idKey = String(item.id || '').trim().toLowerCase();
+        const emailKey = String(item.email || '').trim().toLowerCase();
+        if ((idKey && seenIds.has(idKey)) || (emailKey && seenEmails.has(emailKey))) continue;
+        if (idKey) seenIds.add(idKey);
+        if (emailKey) seenEmails.add(emailKey);
+        rawResellers.push(item);
       }
 
       resellersList = rawResellers.map((sr: any) => {
@@ -218,6 +248,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           id: sr.id,
           portalName: sr.portal_name || sr.portalName || 'Reseller Portal',
           email: sr.email || '',
+          password: sr.password || '',
           userLimit: sr.user_limit || sr.userLimit || sr.max_users || 50,
           daysLeft,
           expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',

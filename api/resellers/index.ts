@@ -30,19 +30,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     if (req.method === 'GET') {
-      let rawResellers: any[] = [];
-      const { data: supaResellers } = await supabase.from('resellers').select('*');
-      if (supaResellers && Array.isArray(supaResellers) && supaResellers.length > 0) {
-        rawResellers = supaResellers;
-      } else {
-        // Fallback: check admin_config_resellers row in users table
+      const mergedMap = new Map<string, any>();
+
+      // 1. Load backup row from users table first
+      try {
         const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
         if (resRow?.name) {
-          try {
-            const parsed = JSON.parse(resRow.name);
-            if (Array.isArray(parsed)) rawResellers = parsed;
-          } catch {}
+          const parsed = JSON.parse(resRow.name);
+          if (Array.isArray(parsed)) {
+            for (const r of parsed) {
+              const key = String(r.id || r.email || '').trim().toLowerCase();
+              if (key) mergedMap.set(key, r);
+            }
+          }
         }
+      } catch {}
+
+      // 2. Load authoritative resellers table and merge
+      try {
+        const { data: supaResellers } = await supabase.from('resellers').select('*');
+        if (supaResellers && Array.isArray(supaResellers)) {
+          for (const sr of supaResellers) {
+            const keyById = String(sr.id || '').trim().toLowerCase();
+            const keyByEmail = String(sr.email || '').trim().toLowerCase();
+            const existing = mergedMap.get(keyById) || (keyByEmail ? mergedMap.get(keyByEmail) : undefined) || {};
+            const merged = {
+              ...existing,
+              ...sr,
+              password: sr.password || existing.password || '',
+            };
+            if (keyById) mergedMap.set(keyById, merged);
+            else if (keyByEmail) mergedMap.set(keyByEmail, merged);
+          }
+        }
+      } catch {}
+
+      // Deduplicate by id / email
+      const seenIds = new Set<string>();
+      const seenEmails = new Set<string>();
+      const rawResellers: any[] = [];
+      for (const item of mergedMap.values()) {
+        const idKey = String(item.id || '').trim().toLowerCase();
+        const emailKey = String(item.email || '').trim().toLowerCase();
+        if ((idKey && seenIds.has(idKey)) || (emailKey && seenEmails.has(emailKey))) continue;
+        if (idKey) seenIds.add(idKey);
+        if (emailKey) seenEmails.add(emailKey);
+        rawResellers.push(item);
       }
 
       const now = Date.now();
@@ -60,6 +93,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           id: sr.id,
           portalName: sr.portal_name || sr.portalName || 'Reseller Portal',
           email: sr.email || '',
+          password: sr.password || '',
           userLimit: sr.user_limit || sr.userLimit || sr.max_users || 50,
           daysLeft,
           expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
@@ -82,24 +116,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         reseller.expiresAt = new Date(Date.now() + Number(reseller.daysLeft) * 86400000).toISOString();
       }
 
-      const payload = {
+      const payload: Record<string, any> = {
         id: reseller.id,
-        portal_name: reseller.portalName,
-        email: reseller.email,
-        password: reseller.password,
-        user_limit: reseller.userLimit,
-        days_left: reseller.daysLeft,
-        expiry_date: reseller.expiryDate,
-        expires_at: reseller.expiresAt,
-        status: reseller.status,
-        created_at: reseller.createdAt,
-        notes: reseller.notes,
-        api_key: reseller.apiKey,
+        portal_name: reseller.portalName || reseller.portal_name || 'Reseller Portal',
+        email: (reseller.email || '').trim().toLowerCase(),
+        password: reseller.password || '',
+        user_limit: reseller.userLimit ?? reseller.user_limit ?? 20,
+        days_left: reseller.daysLeft ?? reseller.days_left ?? 30,
+        expiry_date: reseller.expiryDate || reseller.expiry_date,
+        expires_at: reseller.expiresAt || reseller.expires_at,
+        status: reseller.status || 'active',
+        created_at: reseller.createdAt || reseller.created_at || new Date().toISOString(),
+        notes: reseller.notes || '',
+        api_key: reseller.apiKey || reseller.api_key,
       };
 
-      try {
-        await supabase.from('resellers').upsert(payload, { onConflict: 'id' });
-      } catch {}
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          const { error } = await supabase.from('resellers').upsert(payload, { onConflict: 'id' });
+          if (!error) break;
+          const msg = `${error.message || ''} ${error.details || ''}`;
+          const match = msg.match(/Could not find the ['"]?([a-zA-Z0-9_]+)['"]? column/i) ||
+                        msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? of relation/i) ||
+                        msg.match(/column ['"]?([a-zA-Z0-9_]+)['"]? does not exist/i);
+          if (match && match[1] && payload[match[1]] !== undefined) {
+            delete payload[match[1]];
+            continue;
+          }
+          break;
+        } catch {
+          break;
+        }
+      }
 
       return res.status(200).json({ success: true, reseller });
     }

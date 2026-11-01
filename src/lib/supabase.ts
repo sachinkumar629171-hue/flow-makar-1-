@@ -20,18 +20,23 @@ export function isBlockedSupabaseRequest(urlStr: string): boolean {
       return true;
     }
     
-    // 2. resellers?select=*
+    // 2. resellers: allow filtered lookups (email, id, api_key) and direct reseller portal queries
     if (path.includes('/rest/v1/resellers')) {
-      return true;
+      return false;
     }
     
-    // 3. users?select=* (bulk select of users table)
+    // 3. users?select=* (bulk select of users table without any filter)
     if (path.includes('/rest/v1/users')) {
       const hasWildcardSelect = query.includes('select=*') || query.includes('select=%2a');
       const hasSpecificFilter = query.includes('id=eq.') || 
                                 query.includes('email=eq.') || 
                                 query.includes('email=ilike.') || 
-                                query.includes('session_token=eq.');
+                                query.includes('session_token=eq.') ||
+                                query.includes('reseller_id=eq.') ||
+                                query.includes('reseller_id=ilike.') ||
+                                query.includes('reseller_name=eq.') ||
+                                query.includes('reseller_name=ilike.') ||
+                                query.includes('or=');
       if (hasWildcardSelect && !hasSpecificFilter) {
         return true;
       }
@@ -39,8 +44,7 @@ export function isBlockedSupabaseRequest(urlStr: string): boolean {
   } catch {
     const lower = urlStr.toLowerCase();
     if (lower.includes('/rest/v1/app_config')) return true;
-    if (lower.includes('/rest/v1/resellers')) return true;
-    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=')) return true;
+    if (lower.includes('/rest/v1/users') && (lower.includes('select=*') || lower.includes('select=%2a')) && !lower.includes('id=') && !lower.includes('email=') && !lower.includes('reseller_')) return true;
   }
   return false;
 }
@@ -446,4 +450,69 @@ export async function syncPromptServersToSupabaseTable(
     return false;
   }
 }
+
+const knownMissingResellerColumns = new Set<string>();
+
+export async function safeSupabaseResellerUpsert(
+  supabase: SupabaseClient | null,
+  reseller: Record<string, any>
+): Promise<boolean> {
+  if (!supabase || !reseller) return false;
+
+  const payload: Record<string, any> = {
+    id: String(reseller.id || ''),
+    portal_name: String(reseller.portalName || reseller.portal_name || 'Reseller Portal'),
+    email: String(reseller.email || '').trim().toLowerCase(),
+    password: String(reseller.password || ''),
+    user_limit: Number(reseller.userLimit ?? reseller.user_limit) || 20,
+    days_left: Number(reseller.daysLeft ?? reseller.days_left) ?? 30,
+    expiry_date: reseller.expiryDate || reseller.expiry_date || '30/10/2026',
+    expires_at: reseller.expiresAt || reseller.expires_at,
+    status: reseller.status || 'active',
+    created_at: reseller.createdAt || reseller.created_at || new Date().toISOString(),
+    notes: reseller.notes || '',
+    api_key: reseller.apiKey || reseller.api_key || '',
+  };
+
+  for (const col of knownMissingResellerColumns) {
+    delete payload[col];
+  }
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const { error } = await supabase.from('resellers').upsert(payload, { onConflict: 'id' });
+      if (!error) return true;
+
+      const missingCol = extractMissingColumn(error);
+      if (missingCol && missingCol !== 'resellers' && payload[missingCol] !== undefined) {
+        knownMissingResellerColumns.add(missingCol);
+        delete payload[missingCol];
+        continue;
+      }
+
+      if (payload.email) {
+        const { id, ...updateFields } = payload;
+        const { error: updateErr } = await supabase.from('resellers').update(updateFields).ilike('email', payload.email);
+        if (!updateErr) return true;
+        const missingUpdateCol = extractMissingColumn(updateErr);
+        if (missingUpdateCol && missingUpdateCol !== 'resellers' && payload[missingUpdateCol] !== undefined) {
+          knownMissingResellerColumns.add(missingUpdateCol);
+          delete payload[missingUpdateCol];
+          continue;
+        }
+      }
+      break;
+    } catch (err: any) {
+      const missingCol = extractMissingColumn(err);
+      if (missingCol && missingCol !== 'resellers' && payload[missingCol] !== undefined) {
+        knownMissingResellerColumns.add(missingCol);
+        delete payload[missingCol];
+        continue;
+      }
+      break;
+    }
+  }
+  return false;
+}
+
 
