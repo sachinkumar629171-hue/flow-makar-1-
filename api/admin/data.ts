@@ -55,10 +55,32 @@ function getResellerApiKey(reseller: any): string {
   return `flw_res_${cleanId}`;
 }
 
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+function verifySignedAdminSessionToken(token: string): boolean {
+  if (!token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken.startsWith('asess_')) return false;
+  const parts = cleanToken.split('_');
+  if (parts.length < 3) return false;
+  const suffix = parts.slice(2).join('_');
+  for (const adminEmail of ADMIN_EMAILS) {
+    if (cleanToken === createAdminSessionToken(adminEmail, suffix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-key');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-session-id, x-admin-key');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -74,7 +96,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const supabase = createClient(supaUrl, supaKey);
 
+  // Strictly require Admin sessionId in request headers or body (never allow unauthenticated direct link access)
+  const authHeader = (req.headers.authorization || '').toString();
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const headerSessionId = (req.headers['x-admin-session-id'] || req.headers['x-session-token'] || '').toString().trim();
+  const bodySessionId = (req.body?.sessionId || req.body?.sessionToken || '').toString().trim();
+  const sessionId = headerSessionId || bearerToken || bodySessionId;
+
+  if (!sessionId) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Admin sessionId is required to access admin data.',
+    });
+  }
+
   try {
+    let isAuthorizedAdmin = verifySignedAdminSessionToken(sessionId);
+
+    if (!isAuthorizedAdmin) {
+      const { data: callerUser } = await supabase
+        .from('users')
+        .select('id, email, role, session_token')
+        .eq('session_token', sessionId)
+        .maybeSingle();
+
+      if (callerUser) {
+        const callerEmail = String(callerUser.email || '').trim().toLowerCase();
+        if (ADMIN_EMAILS.has(callerEmail) || callerUser.role === 'admin') {
+          isAuthorizedAdmin = true;
+        }
+      }
+    }
+
+    if (!isAuthorizedAdmin) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Invalid or expired admin sessionId.',
+      });
+    }
+
     const now = Date.now();
 
     // 1. Fetch Users (excluding heavy admin_config_% backup rows to save Egress)

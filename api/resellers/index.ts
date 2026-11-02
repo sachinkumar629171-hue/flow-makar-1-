@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const ADMIN_PASSWORD = '147258';
 
 function getResellerApiKey(reseller: any): string {
   if (reseller.apiKey || reseller.api_key) return reseller.apiKey || reseller.api_key;
@@ -18,10 +19,53 @@ export function createResellerSessionToken(reseller: any, randomSuffix?: string)
   return `rsess_${sig}_${rand}`;
 }
 
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`adm|${cleanEmail}|${ADMIN_PASSWORD}|flw_adm_sec`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+async function verifyAdminSession(supabase: any, token: string): Promise<boolean> {
+  if (!token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken) return false;
+
+  if (cleanToken.startsWith('asess_')) {
+    const parts = cleanToken.split('_');
+    if (parts.length >= 3) {
+      const rand = parts.slice(2).join('_');
+      for (const adminEmail of ADMIN_EMAILS) {
+        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  if (supabase && (cleanToken.startsWith('asess_') || cleanToken.startsWith('sess-'))) {
+    try {
+      const { data: callerData } = await supabase
+        .from('users')
+        .select('id, email, role, session_token')
+        .eq('session_token', cleanToken)
+        .maybeSingle();
+      if (callerData) {
+        const callerEmail = String(callerData.email || '').trim().toLowerCase();
+        if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  return false;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-session-id, x-reseller-api-key, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-session-id, x-reseller-id, x-reseller-session-id, x-reseller-api-key, x-admin-key');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -36,6 +80,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supabase = createClient(supaUrl, supaKey);
+
+  // Extract Admin session token from headers or body
+  const authHeader = (req.headers.authorization || '').toString();
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const adminSessionId = (
+    req.body?.sessionId ||
+    req.body?.adminSessionId ||
+    req.headers['x-admin-session-id'] ||
+    req.headers['x-session-token'] ||
+    bearerToken ||
+    ''
+  ).toString().trim();
 
   try {
     const loadAllResellersFromSupabase = async () => {
@@ -129,9 +185,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
 
     if (req.method === 'GET') {
-      const adminKey = (req.headers['x-admin-key'] || '').toString().trim();
-      if (adminKey !== 'admin_master_key' && !ADMIN_EMAILS.has(adminKey.toLowerCase())) {
-        return res.status(200).json({ resellers: [] });
+      if (!adminSessionId || !(await verifyAdminSession(supabase, adminSessionId))) {
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Valid Admin sessionId is required.',
+        });
       }
       const mapped = await loadAllResellersFromSupabase();
       return res.status(200).json({ resellers: mapped.map(toSafeReseller) });
@@ -183,7 +241,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const sessionId = createResellerSessionToken(matched);
         matched.sessionId = sessionId;
 
-        // Persist updated sessionId in admin_config_resellers backup row so backend verification always knows the latest sessionId
+        // Persist updated sessionId in admin_config_resellers backup row
         try {
           const updatedBackup = allResellers.map((r: any) =>
             r.id === matched.id ? { ...r, sessionId } : r
@@ -215,7 +273,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      // 2. Admin Create/Update Reseller Request
+      // 2. Admin Create/Update Reseller Request: Strictly require Admin sessionId
+      if (!adminSessionId || !(await verifyAdminSession(supabase, adminSessionId))) {
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Valid Admin sessionId is required to manage resellers.',
+        });
+      }
+
       const reseller = body;
       const internalApiKey = reseller.apiKey || reseller.api_key || getResellerApiKey(reseller);
       if (!reseller.expiresAt && reseller.daysLeft) {
@@ -259,6 +324,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'DELETE') {
+      if (!adminSessionId || !(await verifyAdminSession(supabase, adminSessionId))) {
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Valid Admin sessionId is required to delete resellers.',
+        });
+      }
       const id = (req.query.id || req.body?.id || '').toString();
       if (id) {
         await supabase.from('resellers').delete().eq('id', id);

@@ -738,13 +738,40 @@ function markUserOnline(emailOrId?: string, sessionToken?: string): void {
 
 const SYSTEM_ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+function verifySignedAdminSessionToken(token: string): boolean {
+  if (!token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken.startsWith('asess_')) return false;
+  const parts = cleanToken.split('_');
+  if (parts.length < 3) return false;
+  const suffix = parts.slice(2).join('_');
+  for (const adminEmail of SYSTEM_ADMIN_EMAILS) {
+    if (cleanToken === createAdminSessionToken(adminEmail, suffix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isRequestAdminUser(req: any): boolean {
   const token = (
+    req.headers['x-admin-session-id'] ||
     req.headers['x-session-token'] || 
     req.query.sessionToken || 
     req.headers.authorization?.replace(/^Bearer\s+/i, '') || 
     ''
   ).toString().trim();
+
+  if (token && verifySignedAdminSessionToken(token)) {
+    return true;
+  }
 
   const apiKey = (req.headers['x-admin-key'] || req.headers['x-api-key'] || req.query.apiKey || '').toString().trim();
   if (apiKey === 'admin_master_key' || SYSTEM_ADMIN_EMAILS.has(apiKey.toLowerCase())) {
@@ -963,8 +990,54 @@ app.get('/api/users', async (req, res) => {
 });
 
 // Single-Route All-In-One Admin Data Endpoint (Users + Resellers + Configs from Supabase)
-app.get('/api/admin/data', async (req, res) => {
+// Strictly requires valid Admin sessionId in headers or body (never returns data on direct unauthenticated link)
+app.all('/api/admin/data', async (req, res) => {
+  const authHeader = (req.headers.authorization || '').toString();
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const headerSessionId = (req.headers['x-admin-session-id'] || req.headers['x-session-token'] || '').toString().trim();
+  const bodySessionId = (req.body?.sessionId || req.body?.sessionToken || '').toString().trim();
+  const sessionId = headerSessionId || bearerToken || bodySessionId;
+
+  if (!sessionId) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Admin sessionId is required to access admin data.',
+    });
+  }
+
   const supa = getServerSupabase();
+  let isAuthorizedAdmin = verifySignedAdminSessionToken(sessionId);
+
+  if (!isAuthorizedAdmin) {
+    const memUser = db.users.find(u => u.sessionToken && u.sessionToken === sessionId);
+    if (memUser && (memUser.role === 'admin' || (memUser.email && SYSTEM_ADMIN_EMAILS.has(memUser.email.toLowerCase())))) {
+      isAuthorizedAdmin = true;
+    }
+  }
+
+  if (!isAuthorizedAdmin && supa) {
+    try {
+      const { data: callerUser } = await supa
+        .from('users')
+        .select('id, email, role, session_token')
+        .eq('session_token', sessionId)
+        .maybeSingle();
+      if (callerUser) {
+        const callerEmail = String(callerUser.email || '').trim().toLowerCase();
+        if (SYSTEM_ADMIN_EMAILS.has(callerEmail) || callerUser.role === 'admin') {
+          isAuthorizedAdmin = true;
+        }
+      }
+    } catch {}
+  }
+
+  if (!isAuthorizedAdmin) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Invalid or expired admin sessionId.',
+    });
+  }
+
   const now = Date.now();
   // Synchronize local database users state with continuous plan expiration and 2-min heartbeat window
   for (const u of db.users) {
@@ -1397,7 +1470,10 @@ app.all('/api/users/login', async (req, res) => {
     }
   }
 
-  const newSessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+  const isUserAdmin = isSystemAdmin || user.role === 'admin';
+  const newSessionToken = isUserAdmin
+    ? createAdminSessionToken(cleanEmail)
+    : 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
   user.sessionToken = newSessionToken;
   user.isOnline = true;
   user.lastActive = new Date().toISOString();

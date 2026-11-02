@@ -1,6 +1,9 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
+const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const ADMIN_PASSWORD = '147258';
+
 function createResellerSessionToken(reseller: any, randomSuffix?: string): string {
   const cleanId = String(reseller.id || '').trim();
   const cleanEmail = String(reseller.email || '').trim().toLowerCase();
@@ -20,6 +23,49 @@ function verifyResellerSessionToken(reseller: any, token: string): boolean {
   if (parts.length < 3) return false;
   const expected = createResellerSessionToken(reseller, parts.slice(2).join('_'));
   return cleanToken === expected;
+}
+
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`adm|${cleanEmail}|${ADMIN_PASSWORD}|flw_adm_sec`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+async function verifyAdminSession(supabase: any, token: string): Promise<boolean> {
+  if (!token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken) return false;
+
+  if (cleanToken.startsWith('asess_')) {
+    const parts = cleanToken.split('_');
+    if (parts.length >= 3) {
+      const rand = parts.slice(2).join('_');
+      for (const adminEmail of ADMIN_EMAILS) {
+        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  if (supabase && (cleanToken.startsWith('asess_') || cleanToken.startsWith('sess-'))) {
+    try {
+      const { data: callerData } = await supabase
+        .from('users')
+        .select('id, email, role, session_token')
+        .eq('session_token', cleanToken)
+        .maybeSingle();
+      if (callerData) {
+        const callerEmail = String(callerData.email || '').trim().toLowerCase();
+        if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  return false;
 }
 
 async function findResellerFromSupabase(supabase: any, resellerId: string): Promise<any | null> {
@@ -65,7 +111,7 @@ async function findResellerFromSupabase(supabase: any, resellerId: string): Prom
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-session-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-session-id, x-reseller-id, x-reseller-session-id');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -81,10 +127,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const body = req.body || {};
     const { userId, email, data } = body;
     const resellerId = (body.resellerId || req.headers['x-reseller-id'] || '').toString().trim();
+    const authHeader = (req.headers.authorization || '').toString();
+    const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
     const sessionId = (
       body.sessionId ||
+      body.sessionToken ||
       req.headers['x-reseller-session-id'] ||
+      req.headers['x-admin-session-id'] ||
       req.headers['x-session-token'] ||
+      bearerToken ||
       ''
     ).toString().trim();
 
@@ -96,15 +147,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ success: false, error: 'Database configuration missing' });
     }
 
-    // If update is initiated by a Reseller, strictly verify both resellerId and sessionId
-    if (resellerId) {
-      if (!sessionId) {
-        return res.status(401).json({
-          success: false,
-          error: 'Unauthorized: Reseller sessionId is required to update members. Please sign in again.',
-        });
-      }
+    if (!sessionId) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Valid sessionId is required to update user data.',
+      });
+    }
 
+    // 1. If update is initiated by a Reseller, strictly verify both resellerId and sessionId
+    if (resellerId) {
       const matchedReseller = await findResellerFromSupabase(supabase, resellerId);
       if (!matchedReseller || !verifyResellerSessionToken(matchedReseller, sessionId)) {
         return res.status(401).json({
@@ -118,6 +169,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           success: false,
           error: 'This reseller portal has been suspended by administration.',
         });
+      }
+    } else {
+      // 2. Otherwise verify Admin sessionId (or the user's own sessionId for self-updates like credit deduction)
+      const isAdmin = await verifyAdminSession(supabase, sessionId);
+      if (!isAdmin) {
+        const { data: selfUser } = await supabase
+          .from('users')
+          .select('id, email, session_token')
+          .eq('session_token', sessionId)
+          .maybeSingle();
+        const targetEmailCheck = String(email || '').trim().toLowerCase();
+        const isSelf =
+          selfUser &&
+          (selfUser.id === userId || (targetEmailCheck && String(selfUser.email || '').trim().toLowerCase() === targetEmailCheck));
+        if (!isSelf) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Valid Admin or Reseller sessionId is required.',
+          });
+        }
       }
     }
 
@@ -164,7 +235,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         const { data: updatedRows, error: updErr } = await query.select('id');
         if (!updErr) {
-          // If matched by realId returned 0 rows and we also have targetEmail, fallback to email match
           if ((!updatedRows || updatedRows.length === 0) && hasRealId && targetEmail) {
             await supabase.from('users').update(payload).ilike('email', targetEmail);
           }

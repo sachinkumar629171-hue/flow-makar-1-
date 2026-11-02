@@ -321,7 +321,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const saved = localStorage.getItem(CURRENT_USER_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.email) {
+          const cleanEmail = String(parsed.email).trim().toLowerCase();
+          const isSysAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail) || parsed.role === 'admin';
+          let token = parsed.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+          if (isSysAdmin && !token) {
+            const sig = btoa(`admin|${cleanEmail}|flw_adm_sec_2026`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 16);
+            token = `asess_${sig}_${Date.now().toString(36)}`;
+            try {
+              localStorage.setItem('flowmaker_session_token', token);
+            } catch {}
+          }
+          if (token) {
+            parsed.sessionToken = token;
+          }
+        }
+        return parsed;
       }
     } catch {
       // ignore
@@ -991,17 +1007,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         // 2. Fetch config & fallback server (Strictly token-authenticated: users only fetch their own profile)
-        const activeToken = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
+        const activeToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
         const isUserAdmin = currentUser?.role === 'admin' || 
           (currentUser?.email && ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(currentUser.email.toLowerCase()));
 
         const userHeaders: Record<string, string> = {
-          ...(activeToken ? { 'x-session-token': activeToken, 'Authorization': `Bearer ${activeToken}` } : {}),
-          ...(isUserAdmin ? { 'x-admin-key': 'admin_master_key' } : {}),
+          ...(activeToken ? {
+            'x-session-token': activeToken,
+            'x-admin-session-id': activeToken,
+            'Authorization': `Bearer ${activeToken}`,
+          } : {}),
         };
 
-        // 1. Single Route: All Supabase data in one request (/api/admin/data)
-        if (isUserAdmin) {
+        // 1. Single Route: All Supabase data in one request (/api/admin/data) - strictly requires admin sessionId
+        if (isUserAdmin && activeToken) {
           try {
             const adminDataRes = await fetch(apiUrl('/api/admin/data'), { headers: userHeaders });
             if (adminDataRes.ok) {
@@ -1234,7 +1253,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (pollInterval) clearInterval(pollInterval);
       window.removeEventListener('focus', handleTabFocus);
     };
-  }, []); // Run only once on mount to prevent infinite poll cycles
+  }, [currentUser?.id, currentUser?.sessionToken]);
 
   // Live countdown timer: naturally decreases reseller validity and auto-converts expired Ultra users to Basic plan (0D 0h)
   useEffect(() => {
@@ -2312,7 +2331,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isOnline: true,
           lastActive: new Date().toISOString(),
         };
-        const offlineToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+        const sig = btoa(`admin|${cleanEmail}|flw_adm_sec_2026`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 16);
+        const offlineToken = `asess_${sig}_${Date.now().toString(36)}`;
         adminUser.sessionToken = offlineToken;
         localStorage.setItem('flowmaker_session_token', offlineToken);
         setCurrentUser(adminUser);
@@ -3200,12 +3220,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const refreshAdminData = async () => {
-    const token = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken || '';
+    const token = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+    if (!token) return false;
     try {
       const res = await fetch(apiUrl('/api/admin/data'), {
         headers: {
-          ...(token ? { 'x-session-token': token, 'Authorization': `Bearer ${token}` } : {}),
-          'x-admin-key': 'admin_master_key'
+          'x-session-token': token,
+          'x-admin-session-id': token,
+          'Authorization': `Bearer ${token}`,
         }
       });
       if (res.ok) {

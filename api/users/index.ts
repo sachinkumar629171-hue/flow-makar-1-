@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const ADMIN_PASSWORD = '147258';
 
 function createResellerSessionToken(reseller: any, randomSuffix?: string): string {
   const cleanId = String(reseller.id || '').trim();
@@ -22,6 +23,49 @@ function verifyResellerSessionToken(reseller: any, token: string): boolean {
   if (parts.length < 3) return false;
   const expected = createResellerSessionToken(reseller, parts.slice(2).join('_'));
   return cleanToken === expected;
+}
+
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`adm|${cleanEmail}|${ADMIN_PASSWORD}|flw_adm_sec`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+async function verifyAdminSession(supabase: any, token: string): Promise<boolean> {
+  if (!token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken) return false;
+
+  if (cleanToken.startsWith('asess_')) {
+    const parts = cleanToken.split('_');
+    if (parts.length >= 3) {
+      const rand = parts.slice(2).join('_');
+      for (const adminEmail of ADMIN_EMAILS) {
+        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  if (supabase && (cleanToken.startsWith('asess_') || cleanToken.startsWith('sess-'))) {
+    try {
+      const { data: callerData } = await supabase
+        .from('users')
+        .select('id, email, role, session_token')
+        .eq('session_token', cleanToken)
+        .maybeSingle();
+      if (callerData) {
+        const callerEmail = String(callerData.email || '').trim().toLowerCase();
+        if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  return false;
 }
 
 async function findResellerFromSupabase(supabase: any, resellerId: string): Promise<any | null> {
@@ -67,7 +111,7 @@ async function findResellerFromSupabase(supabase: any, resellerId: string): Prom
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-session-id, x-reseller-api-key, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-session-id, x-reseller-id, x-reseller-session-id, x-reseller-api-key, x-admin-key');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -83,25 +127,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const supabase = createClient(supaUrl, supaKey);
 
-  // Extract auth token
+  // Extract auth token from headers or body (never allow static x-admin-key without sessionId)
   const authHeader = (req.headers.authorization || '').toString();
   const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const headerToken = (req.headers['x-session-token'] || '').toString().trim();
-  const queryToken = (req.query.sessionToken || req.query.token || '').toString().trim();
-  const token = bearerToken || headerToken || queryToken;
+  const headerToken = (
+    req.headers['x-admin-session-id'] ||
+    req.headers['x-session-token'] ||
+    req.body?.sessionId ||
+    req.body?.sessionToken ||
+    ''
+  ).toString().trim();
+  const token = headerToken || bearerToken;
 
-  const apiKey = (req.headers['x-admin-key'] || req.headers['x-api-key'] || req.query.apiKey || '').toString().trim();
   const resellerId = (req.headers['x-reseller-id'] || req.query.resellerId || '').toString().trim();
+  const resellerSessionId = (
+    req.headers['x-reseller-session-id'] ||
+    req.body?.sessionId ||
+    req.headers['x-session-token'] ||
+    ''
+  ).toString().trim();
   const resellerKey = (req.headers['x-reseller-api-key'] || req.query.resellerApiKey || '').toString().trim();
 
   try {
-    // 1. Fetch the calling user if token provided
+    // 1. Verify if caller has a valid Admin sessionId or User sessionId
     let callingUser: any = null;
-    let isAdmin = apiKey === 'admin_master_key' || ADMIN_EMAILS.has(apiKey.toLowerCase());
+    let isAdmin = await verifyAdminSession(supabase, token);
 
-    if (token && !token.startsWith('rsess_')) {
+    if (token && !token.startsWith('rsess_') && !isAdmin) {
       let tokenQuery = supabase.from('users').select('*');
-      if (token.startsWith('sess-')) {
+      if (token.startsWith('sess-') || token.startsWith('asess_')) {
         tokenQuery = tokenQuery.eq('session_token', token);
       } else {
         tokenQuery = tokenQuery.or(`session_token.eq.${token},id.eq.${token}`);
@@ -117,6 +171,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (req.method === 'GET') {
+      const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
+
+      // If this is a Reseller Portal query, require valid Reseller sessionId (or Admin sessionId) — never allow plain link access without sessionId!
+      if (resellerId || resellerKey || resellerNameParam) {
+        if (!isAdmin) {
+          const matchedReseller = resellerId ? await findResellerFromSupabase(supabase, resellerId) : null;
+          const validResSession = matchedReseller && resellerSessionId && verifyResellerSessionToken(matchedReseller, resellerSessionId);
+          const validResKey = matchedReseller && resellerKey && (matchedReseller.apiKey === resellerKey || matchedReseller.api_key === resellerKey);
+          if (!validResSession && !validResKey) {
+            return res.status(401).json({
+              success: false,
+              error: 'Unauthorized: Valid Reseller sessionId is required. Direct link access without sessionId is blocked.',
+            });
+          }
+        }
+      } else if (!isAdmin && !callingUser) {
+        // Block unauthenticated direct link visits to /api/users
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Valid sessionId is required.',
+        });
+      }
+
       // Fetch all users from Supabase (excluding heavy admin_config_% backup rows to save Egress)
       const { data: allUsers, error: usersErr } = await supabase.from('users').select('*').not('id', 'like', 'admin_config_%');
 
@@ -184,7 +261,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             id: u.id,
             name: u.name || 'User',
             email: u.email || '',
-            password: u.password || '',
             whatsapp: u.whatsapp || '',
             telegram: u.telegram || '',
             plan: calculatedPlan,
@@ -207,7 +283,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
 
       // 1. Reseller Portal gets ONLY their assigned users and ONLY the 10 allowed fields
-      const resellerNameParam = (req.headers['x-reseller-name'] || req.query.resellerName || '').toString().trim().toLowerCase();
       if (resellerId || resellerKey || resellerNameParam) {
         const cleanTargetId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
         const matchingUsers = validUsers
@@ -244,7 +319,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             id: `usr-admin-${adm.ref}`,
             name: adm.name,
             email: adm.email,
-            password: '',
             whatsapp: '',
             telegram: '',
             plan: 'ultra',
@@ -279,8 +353,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ users: callerProfile ? [callerProfile] : [] });
       }
 
-      // 4. Public unauthenticated caller gets empty list
-      return res.status(200).json({ users: [] });
+      return res.status(401).json({ success: false, error: 'Unauthorized: Valid sessionId is required.' });
     }
 
     if (req.method === 'POST') {
@@ -306,18 +379,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } = body;
 
       const targetResellerId = (bodyResId || reseller_id || req.headers['x-reseller-id'] || '').toString().trim();
-      const resellerSessionId = (
-        body.sessionId ||
-        req.headers['x-reseller-session-id'] ||
-        req.headers['x-session-token'] ||
-        ''
-      ).toString().trim();
 
       if (!email) {
         return res.status(400).json({ success: false, error: 'Email is required' });
       }
 
-      // If member is being created by a Reseller, verify resellerId + sessionId match
+      // 1. If member is being created by a Reseller, verify resellerId + sessionId match
       if (targetResellerId) {
         if (!resellerSessionId) {
           return res.status(401).json({
@@ -338,12 +405,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             error: 'This reseller portal has been suspended by administration.',
           });
         }
+      } else if (plan === 'ultra' || plan === 'unlimited' || (credits && Number(credits) > 100)) {
+        // 2. If creating an Ultra/VIP user directly (Admin create user), require valid Admin sessionId
+        if (!isAdmin) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Valid Admin sessionId is required to create VIP members.',
+          });
+        }
       }
 
       const cleanEmail = email.toLowerCase().trim();
 
-      // If created by a reseller, verify email isn't already registered in Supabase
-      if (targetResellerId) {
+      if (targetResellerId || isAdmin) {
         const { data: existingRow } = await supabase
           .from('users')
           .select('id')
@@ -411,7 +485,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         break;
       }
 
-      return res.status(200).json({ success: true, user: savedUser || userPayload });
+      const safeSaved = { ...(savedUser || userPayload) };
+      delete safeSaved.password;
+      return res.status(200).json({ success: true, user: safeSaved });
     }
 
     if (req.method === 'DELETE') {
@@ -422,7 +498,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         req.query.sessionId ||
         req.body?.sessionId ||
         req.headers['x-reseller-session-id'] ||
+        req.headers['x-admin-session-id'] ||
         req.headers['x-session-token'] ||
+        bearerToken ||
         ''
       ).toString().trim();
 
@@ -432,6 +510,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return res.status(401).json({
             success: false,
             error: 'Unauthorized: Invalid reseller ID or session ID.',
+          });
+        }
+      } else {
+        const isValidAdmin = await verifyAdminSession(supabase, delSessionId);
+        if (!isValidAdmin) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Valid Admin or Reseller sessionId is required to delete users.',
           });
         }
       }

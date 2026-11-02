@@ -4,11 +4,18 @@ import { createClient } from '@supabase/supabase-js';
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 const ADMIN_PASSWORD = '147258';
 
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-session-id');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -62,7 +69,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (passwordRaw && passwordRaw !== ADMIN_PASSWORD) {
         return res.status(401).json({ success: false, error: 'Incorrect password.' });
       }
-      const newSessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+      const newSessionToken = createAdminSessionToken(cleanEmail);
       const adminUserData = {
         id: 'usr-admin-1',
         name: 'Sachin Kumar',
@@ -139,8 +146,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // 6. Generate brand new session token
-    const newSessionToken = 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
+    // 6. Generate brand new session token (asess_... for admin, sess-... for regular user)
+    const isUserAdmin = isSystemAdmin || supaUser.role === 'admin';
+    const newSessionToken = isUserAdmin
+      ? createAdminSessionToken(cleanEmail)
+      : 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
     const nowIso = new Date().toISOString();
 
     // Update session token and online status in database
