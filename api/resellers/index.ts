@@ -9,10 +9,19 @@ function getResellerApiKey(reseller: any): string {
   return `flw_res_${cleanId}`;
 }
 
+export function createResellerSessionToken(reseller: any, randomSuffix?: string): string {
+  const cleanId = String(reseller.id || '').trim();
+  const cleanEmail = String(reseller.email || '').trim().toLowerCase();
+  const cleanPass = String(reseller.password || '').trim();
+  const sig = Buffer.from(`${cleanId}|${cleanEmail}|${cleanPass}|flw_res_sec`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `rsess_${sig}_${rand}`;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-api-key, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-session-id, x-reseller-api-key, x-admin-key');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -58,6 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               ...existing,
               ...sr,
               password: sr.password || existing.password || '',
+              sessionId: sr.session_token || sr.session_id || existing.sessionId || existing.session_token || '',
             };
             if (keyById) mergedMap.set(keyById, merged);
             else if (keyByEmail) mergedMap.set(keyByEmail, merged);
@@ -101,6 +111,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           status,
           createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
           notes: sr.notes || '',
+          sessionId: sr.sessionId || sr.session_token || sr.session_id || '',
         };
       });
     };
@@ -169,9 +180,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         }
 
+        const sessionId = createResellerSessionToken(matched);
+        matched.sessionId = sessionId;
+
+        // Persist updated sessionId in admin_config_resellers backup row so backend verification always knows the latest sessionId
+        try {
+          const updatedBackup = allResellers.map((r: any) =>
+            r.id === matched.id ? { ...r, sessionId } : r
+          );
+          await supabase.from('users').upsert(
+            {
+              id: 'admin_config_resellers',
+              name: JSON.stringify(updatedBackup),
+              email: 'resellers_backup@flowmaker.local',
+              password: 'config_no_login_123',
+              plan: 'basic',
+              credits: 0,
+              max_credits: 0,
+              plan_days_left: 0,
+              role: 'user',
+              status: 'active',
+            },
+            { onConflict: 'id' }
+          );
+        } catch {}
+
         return res.status(200).json({
           success: true,
-          reseller: toSafeReseller(matched),
+          sessionId,
+          reseller: {
+            ...toSafeReseller(matched),
+            sessionId,
+          },
         });
       }
 

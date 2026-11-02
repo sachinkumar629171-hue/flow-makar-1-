@@ -78,9 +78,11 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     if (!currentReseller) return;
     setIsRefreshing(true);
     try {
+      const sessionId = currentReseller.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
       const res = await fetch(`/api/users?resellerId=${encodeURIComponent(currentReseller.id)}`, {
         headers: {
           'x-reseller-id': currentReseller.id,
+          ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
         }
       });
       if (res.ok) {

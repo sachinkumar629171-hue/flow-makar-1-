@@ -1168,15 +1168,42 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
   });
 });
 
-// POST signup
-app.post('/api/users/signup', async (req, res) => {
+// POST create user / signup
+app.post(['/api/users', '/api/users/signup'], async (req, res) => {
   const { name, email, password, whatsapp, telegram, referralCode } = req.body;
+  const targetResellerId = (req.body.resellerId || req.body.reseller_id || req.headers['x-reseller-id'] || '').toString().trim();
 
-  if (!email || !name) {
-    return res.status(400).json({ success: false, error: 'Name and email are required.' });
+  if (!email) {
+    return res.status(400).json({ success: false, error: 'Email is required.' });
   }
 
-  const existing = db.users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  // If member is being created by a Reseller, strictly verify resellerId + sessionId match
+  if (targetResellerId) {
+    const authCheck = await verifyResellerRequestSession(req, targetResellerId);
+    if (!authCheck.valid) {
+      return res.status(authCheck.status || 401).json({ success: false, error: authCheck.error });
+    }
+  }
+
+  const cleanEmail = email.trim().toLowerCase();
+  const existing = db.users.find(u => u.email && u.email.toLowerCase() === cleanEmail);
+
+  // If created by a reseller, reject duplicate email
+  if (targetResellerId) {
+    if (existing) {
+      return res.status(400).json({ success: false, error: 'This Gmail ID is already registered! Please use a different Gmail.' });
+    }
+    const supaCheck = getServerSupabase();
+    if (supaCheck) {
+      try {
+        const { data: supaExists } = await supaCheck.from('users').select('id').ilike('email', cleanEmail).maybeSingle();
+        if (supaExists) {
+          return res.status(400).json({ success: false, error: 'This Gmail ID is already registered! Please use a different Gmail.' });
+        }
+      } catch {}
+    }
+  }
+
   if (existing) {
     existing.name = name || existing.name;
     if (password) existing.password = password;
@@ -1228,8 +1255,8 @@ app.post('/api/users/signup', async (req, res) => {
     maxCredits: userMaxCredits,
     planDaysLeft: userDaysLeft,
     role: req.body.role || (email.toLowerCase() === ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user'),
-    resellerId: req.body.resellerId || undefined,
-    resellerName: req.body.resellerName || undefined,
+    resellerId: targetResellerId || undefined,
+    resellerName: req.body.resellerName || req.body.reseller_name || undefined,
     createdAt: req.body.createdAt || new Date().toISOString(),
     avatarColor: req.body.avatarColor || randomColor,
     status: req.body.status || 'active',
@@ -1475,26 +1502,37 @@ app.post('/api/users/heartbeat', async (req, res) => {
 
 // POST update user (plan, credits, days, details, etc.)
 app.post('/api/users/update', async (req, res) => {
-  const { userId, email, data } = req.body;
+  const { userId, email, data } = req.body || {};
+  const targetResellerId = (req.body?.resellerId || req.headers['x-reseller-id'] || '').toString().trim();
+
+  if (targetResellerId) {
+    const authCheck = await verifyResellerRequestSession(req, targetResellerId);
+    if (!authCheck.valid) {
+      return res.status(authCheck.status || 401).json({ success: false, error: authCheck.error });
+    }
+  }
+
   const fallbackEmail = (email || (typeof userId === 'string' && userId.startsWith('usr-') && userId.includes('@') ? userId.slice(4) : '') || data?.email || '').toString().trim().toLowerCase();
   const userIndex = db.users.findIndex(
     u => u.id === userId || (fallbackEmail && u.email && u.email.trim().toLowerCase() === fallbackEmail)
   );
-  if (userIndex === -1) {
-    return res.status(404).json({ success: false, error: 'User not found' });
+
+  let prevEmail = fallbackEmail;
+  let targetId = userId;
+
+  if (userIndex !== -1) {
+    prevEmail = db.users[userIndex].email || fallbackEmail;
+    targetId = db.users[userIndex].id;
+    db.users[userIndex] = {
+      ...db.users[userIndex],
+      ...data,
+    };
+    checkAndConvertToBasic(db.users[userIndex]);
+    saveStorage();
   }
 
-  const prevEmail = db.users[userIndex].email;
-  db.users[userIndex] = {
-    ...db.users[userIndex],
-    ...data,
-  };
-  checkAndConvertToBasic(db.users[userIndex]);
-  saveStorage();
-
   const supa = getServerSupabase();
-  if (supa) {
-    const currentUser = db.users[userIndex];
+  if (supa && data) {
     const supaData: any = {};
     if (data.name !== undefined) supaData.name = data.name;
     if (data.email !== undefined) supaData.email = data.email;
@@ -1513,16 +1551,24 @@ app.post('/api/users/update', async (req, res) => {
     if (data.resellerName !== undefined) supaData.reseller_name = data.resellerName;
     if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
 
-    safeServerSupabaseUserUpdate(supa, currentUser.id, prevEmail || currentUser.email, supaData).catch(err => {
+    await safeServerSupabaseUserUpdate(supa, targetId, prevEmail, supaData).catch(err => {
       console.error('Server Supabase user update error:', err);
     });
   }
 
-  res.json({ success: true, user: db.users[userIndex] });
+  res.json({ success: true, user: userIndex !== -1 ? sanitizeSafeUser(db.users[userIndex]) : undefined });
 });
 
 // DELETE user
-app.delete(['/api/users/:id', '/api/users'], (req, res) => {
+app.delete(['/api/users/:id', '/api/users'], async (req, res) => {
+  const targetResellerId = (req.query.resellerId || req.body?.resellerId || req.headers['x-reseller-id'] || '').toString().trim();
+  if (targetResellerId) {
+    const authCheck = await verifyResellerRequestSession(req, targetResellerId);
+    if (!authCheck.valid) {
+      return res.status(authCheck.status || 401).json({ success: false, error: authCheck.error });
+    }
+  }
+
   const id = (req.params.id || req.query.id || req.body?.id || '').toString().trim();
   const email = (req.query.email || req.body?.email || (id.startsWith('usr-') && id.includes('@') ? id.slice(4) : '')).toString().trim().toLowerCase();
   db.users = db.users.filter(
@@ -3318,6 +3364,79 @@ async function syncResellersFromSupabase() {
   });
 }
 
+function createResellerSessionToken(reseller: any, randomSuffix?: string): string {
+  const cleanId = String(reseller.id || '').trim();
+  const cleanEmail = String(reseller.email || '').trim().toLowerCase();
+  const cleanPass = String(reseller.password || '').trim();
+  const sig = Buffer.from(`${cleanId}|${cleanEmail}|${cleanPass}|flw_res_sec`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `rsess_${sig}_${rand}`;
+}
+
+function verifyResellerSessionToken(reseller: any, token: string): boolean {
+  if (!reseller || !token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken) return false;
+  if (reseller.sessionId && String(reseller.sessionId).trim() === cleanToken) return true;
+  if (!cleanToken.startsWith('rsess_')) return false;
+  const parts = cleanToken.split('_');
+  if (parts.length < 3) return false;
+  const expected = createResellerSessionToken(reseller, parts.slice(2).join('_'));
+  return cleanToken === expected;
+}
+
+async function verifyResellerRequestSession(req: any, resellerId: string): Promise<{ valid: boolean; status?: number; error?: string; reseller?: any }> {
+  const sessionId = (
+    req.body?.sessionId ||
+    req.query?.sessionId ||
+    req.headers['x-reseller-session-id'] ||
+    req.headers['x-session-token'] ||
+    ''
+  ).toString().trim();
+
+  if (!sessionId) {
+    return {
+      valid: false,
+      status: 401,
+      error: 'Unauthorized: Reseller sessionId is required. Please sign in again.',
+    };
+  }
+
+  const cleanTarget = resellerId.trim().toLowerCase();
+  let matched = db.resellers.find(
+    r =>
+      (r.id && String(r.id).trim().toLowerCase() === cleanTarget) ||
+      (r.email && String(r.email).trim().toLowerCase() === cleanTarget)
+  );
+
+  if (!matched || !verifyResellerSessionToken(matched, sessionId)) {
+    await syncResellersFromSupabase();
+    matched = db.resellers.find(
+      r =>
+        (r.id && String(r.id).trim().toLowerCase() === cleanTarget) ||
+        (r.email && String(r.email).trim().toLowerCase() === cleanTarget)
+    );
+  }
+
+  if (!matched || !verifyResellerSessionToken(matched, sessionId)) {
+    return {
+      valid: false,
+      status: 401,
+      error: 'Unauthorized: Invalid reseller ID or session ID. Please sign in again.',
+    };
+  }
+
+  if (matched.status === 'suspended') {
+    return {
+      valid: false,
+      status: 403,
+      error: 'This reseller portal has been suspended by administration.',
+    };
+  }
+
+  return { valid: true, reseller: matched };
+}
+
 function sanitizeSafeReseller(r: any) {
   return {
     id: r.id,
@@ -3386,9 +3505,31 @@ app.post('/api/resellers', async (req, res) => {
       });
     }
 
+    const sessionId = createResellerSessionToken(matched);
+    matched.sessionId = sessionId;
+    saveStorage();
+
+    const supa = getServerSupabase();
+    if (supa) {
+      safeServerSupabaseUserUpsert(supa, {
+        id: 'admin_config_resellers',
+        name: JSON.stringify(db.resellers),
+        email: 'resellers_backup@flowmaker.local',
+        password: 'config_no_login_123',
+        plan: 'basic',
+        credits: 0,
+        max_credits: 0,
+        plan_days_left: 0,
+      }).catch(() => {});
+    }
+
     return res.status(200).json({
       success: true,
-      reseller: sanitizeSafeReseller(matched),
+      sessionId,
+      reseller: {
+        ...sanitizeSafeReseller(matched),
+        sessionId,
+      },
     });
   }
 

@@ -305,7 +305,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const saved = localStorage.getItem(CURRENT_RESELLER_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        const sessionToken = parsed?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+        if (parsed && parsed.id && sessionToken) {
+          return { ...parsed, sessionId: sessionToken };
+        }
       }
     } catch {
       // ignore
@@ -1650,9 +1654,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   }, []);
 
-  const fetchResellerUsers = React.useCallback(async (reseller: Reseller | null) => {
+  const lastFetchedResellerRef = useRef<{ id: string; time: number }>({ id: '', time: 0 });
+
+  const fetchResellerUsers = React.useCallback(async (reseller: Reseller | null, force = false) => {
     if (!reseller || !reseller.id) return;
     const targetResId = reseller.id.trim();
+    const now = Date.now();
+    if (!force && lastFetchedResellerRef.current.id === targetResId && now - lastFetchedResellerRef.current.time < 2000) {
+      return;
+    }
+    lastFetchedResellerRef.current = { id: targetResId, time: now };
+    const resellerSessionId = reseller.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
 
     // Single authoritative API call for this reseller's users
     try {
@@ -1661,6 +1673,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         {
           headers: {
             'x-reseller-id': targetResId,
+            ...(resellerSessionId ? { 'x-reseller-session-id': resellerSessionId } : {}),
           },
         }
       );
@@ -1708,6 +1721,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const sr = data.reseller;
+      const assignedSessionId = data.sessionId || sr.sessionId || '';
+      if (assignedSessionId) {
+        try {
+          localStorage.setItem('flow_reseller_session_id', assignedSessionId);
+        } catch {}
+      }
+
       const baseReseller: Reseller = {
         id: sr.id,
         portalName: sr.portalName || sr.portal_name || 'Reseller Portal',
@@ -1720,6 +1740,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: sr.status || 'active',
         createdAt: sr.createdAt || new Date().toISOString(),
         notes: '',
+        sessionId: assignedSessionId,
       };
       const expiryInfo = calculateResellerExpiry(baseReseller);
       const safeReseller: Reseller = {
@@ -1728,6 +1749,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         expiryDate: expiryInfo.expiryDate,
         expiresAt: expiryInfo.expiresAt,
         status: expiryInfo.status,
+        sessionId: assignedSessionId,
       };
 
       setResellers(prev => {
@@ -1749,6 +1771,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logoutReseller = () => {
+    try {
+      localStorage.removeItem('flow_reseller_session_id');
+    } catch {}
     setCurrentReseller(null);
   };
 
@@ -1974,13 +1999,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { success: false, error: 'This Gmail ID is already registered! Please use a different Gmail.' };
     }
 
-    // Double check Supabase for absolute certainty
-    const supa = await ensureSupabaseClientReady();
-    if (supa) {
-      const { data: supaExists } = await supa.from('users').select('id').eq('email', cleanEmail).maybeSingle();
-      if (supaExists) {
-        return { success: false, error: 'This Gmail ID is already registered! Please use a different Gmail.' };
-      }
+    const resellerSessionId = currentReseller?.sessionId || targetReseller.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    if (!resellerSessionId) {
+      return { success: false, error: 'Reseller session expired. Please sign out and sign in again.' };
     }
 
     const initialPassword = userData.password?.trim() || 'Aass1122';
@@ -2023,6 +2044,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       lastActive: new Date().toISOString(),
     };
 
+    const userBodyPayload = {
+      id: newUser.id,
+      name: newUser.name,
+      email: newUser.email,
+      password: newUser.password,
+      plan: newUser.plan,
+      credits: newUser.credits,
+      maxCredits: newUser.maxCredits,
+      planDaysLeft: newUser.planDaysLeft,
+      planExpiresAt: newUser.planExpiresAt,
+      role: newUser.role,
+      resellerId: targetReseller.id,
+      reseller_id: targetReseller.id,
+      sessionId: resellerSessionId,
+      resellerName: targetReseller.portalName,
+      reseller_name: targetReseller.portalName,
+      createdAt: newUser.createdAt,
+      avatarColor: newUser.avatarColor,
+      status: newUser.status,
+    };
+
+    try {
+      const res = await fetch(apiUrl('/api/users'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-reseller-id': targetReseller.id,
+          'x-reseller-session-id': resellerSessionId,
+        },
+        body: JSON.stringify(userBodyPayload),
+      });
+      const resData = await res.json().catch(() => ({}));
+      if (!res.ok || resData.success === false) {
+        return {
+          success: false,
+          error: resData.error || 'Failed to add member. Please check your reseller session.',
+        };
+      }
+    } catch (err) {
+      console.error('Error saving reseller user to central server:', err);
+      return { success: false, error: 'Failed to connect to server.' };
+    }
+
     const updatedUsersList = [newUser, ...users.filter(u => u.id !== newUser.id)];
     setUsers(updatedUsersList);
 
@@ -2035,51 +2099,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         timestamp: Date.now(),
         data: newUser,
       });
-    }
-
-    // Supabase direct database insert & admin_config_all_users backup
-    if (supa) {
-      safeSupabaseUserUpsert(supa, newUser).catch(err => {
-        console.error('Supabase reseller user insert error:', err);
-      });
-    }
-
-    const userBodyPayload = {
-      id: newUser.id,
-      name: newUser.name,
-      email: newUser.email,
-      password: newUser.password,
-      plan: newUser.plan,
-      credits: newUser.credits,
-      maxCredits: newUser.maxCredits,
-      planDaysLeft: newUser.planDaysLeft,
-      planExpiresAt: newUser.planExpiresAt,
-      role: newUser.role,
-      resellerId: newUser.resellerId,
-      reseller_id: newUser.resellerId,
-      resellerName: targetReseller.portalName,
-      reseller_name: targetReseller.portalName,
-      createdAt: newUser.createdAt,
-      avatarColor: newUser.avatarColor,
-      status: newUser.status,
-    };
-
-    // Send to both /api/users and /api/users/signup for Vercel + Express compatibility
-    try {
-      await Promise.allSettled([
-        fetch(apiUrl('/api/users'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(userBodyPayload),
-        }),
-        fetch(apiUrl('/api/users/signup'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(userBodyPayload),
-        }),
-      ]);
-    } catch (err) {
-      console.error('Error saving reseller user to central server:', err);
     }
 
     return { success: true };
@@ -2098,10 +2117,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(prev => (prev ? { ...prev, password: newPass } : null));
     }
 
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, data: { password: newPass } }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify({
+        userId,
+        email: user.email,
+        ...(resellerId ? { resellerId, sessionId } : {}),
+        data: { password: newPass },
+      }),
     }).catch(() => {});
 
     return { email: user.email, password: newPass };
@@ -2142,18 +2173,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(prev => (prev ? { ...prev, planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt } : null));
     }
 
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, data: { planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt } }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify({
+        userId,
+        email: userEmail,
+        ...(resellerId ? { resellerId, sessionId } : {}),
+        data: { planDaysLeft: newDays, planExpiresAt: calculatedExpiresAt },
+      }),
     }).catch(() => {});
-
-    const supabase = getSupabase();
-    if (supabase) {
-      safeSupabaseUserUpdate(supabase, userId, userEmail, {
-        plan_days_left: newDays,
-      }, user).catch(() => {});
-    }
   };
 
   const reloadResellerUserCredits = (userId: string) => {
@@ -2188,18 +2224,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(prev => (prev ? { ...prev, credits: targetCredits } : null));
     }
 
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId, data: { credits: targetCredits } }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify({
+        userId,
+        email: userEmail,
+        ...(resellerId ? { resellerId, sessionId } : {}),
+        data: { credits: targetCredits },
+      }),
     }).catch(() => {});
-
-    const supabase = getSupabase();
-    if (supabase) {
-      safeSupabaseUserUpdate(supabase, userId, userEmail, {
-        credits: targetCredits,
-      }, user).catch(() => {});
-    }
   };
 
   const login = async (email: string, pass: string, forceLogin = false): Promise<{ success: boolean; isDeviceLocked?: boolean; error?: string }> => {
@@ -2721,12 +2762,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const targetUser = users.find(u => u.id === userId);
     const userEmail = targetUser?.email;
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
 
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
       body: JSON.stringify({
         userId,
+        email: userEmail,
+        ...(resellerId ? { resellerId, sessionId } : {}),
         data: {
           plan: newPlan,
           credits: defaultCredits,
@@ -2736,16 +2785,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         },
       }),
     }).catch(() => {});
-
-    const supabase = getSupabase();
-    if (supabase) {
-      safeSupabaseUserUpdate(supabase, userId, userEmail, {
-        plan: newPlan,
-        credits: defaultCredits,
-        max_credits: defaultCredits,
-        plan_days_left: targetDays,
-      }, targetUser).catch(() => {});
-    }
   };
 
   const updateUserDetails = (
@@ -2842,9 +2881,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+
     const payload = {
       userId,
       email: userToUpdate?.email,
+      ...(resellerId ? { resellerId, sessionId } : {}),
       data: {
         ...data,
         ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
@@ -2853,27 +2896,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
       body: JSON.stringify(payload),
     }).catch(() => {});
-
-    const supabase = getSupabase();
-    if (supabase) {
-      const supaData: any = {};
-      if (data.name !== undefined) supaData.name = data.name;
-      if (data.email !== undefined) supaData.email = data.email;
-      if (data.password !== undefined) supaData.password = data.password;
-      if (data.plan !== undefined) supaData.plan = data.plan;
-      if (data.credits !== undefined) supaData.credits = data.credits;
-      if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
-      if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
-      if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
-      if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
-
-      safeSupabaseUserUpdate(supabase, userId, userToUpdate?.email || userEmail, supaData, userToUpdate).catch(err => {
-        console.error('Failed to sync update to Supabase:', err);
-      });
-    }
   };
 
   const updateUserEmail = async (userId: string, newEmail: string): Promise<{ success: boolean; error?: string }> => {
@@ -2895,17 +2924,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const exists = users.some(u => u.id !== userId && u.email.toLowerCase() === cleanEmail);
     if (exists) {
       return { success: false, error: 'This Gmail ID is already registered!' };
-    }
-
-    // Check Supabase for duplicate
-    const supa = getSupabase();
-    if (supa) {
-      try {
-        const { data: supaExists } = await supa.from('users').select('id').eq('email', cleanEmail).neq('id', userId).maybeSingle();
-        if (supaExists) {
-          return { success: false, error: 'This Gmail ID is already registered!' };
-        }
-      } catch {}
     }
 
     updateUserDetails(userId, { email: cleanEmail });
@@ -2965,25 +2983,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       );
     }
 
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
       body: JSON.stringify({
         userId,
+        email: userEmail,
+        ...(resellerId ? { resellerId, sessionId } : {}),
         data: {
           credits: newCredits,
           maxCredits: newMax !== undefined ? newMax : Math.max(newCredits),
         },
       }),
     }).catch(() => {});
-
-    const supabase = getSupabase();
-    if (supabase) {
-      safeSupabaseUserUpdate(supabase, userId, userEmail, {
-        credits: newCredits,
-        ...(newMax !== undefined ? { max_credits: newMax } : {}),
-      }, userToUpdate).catch(() => {});
-    }
   };
 
   const deleteUser = (userId: string) => {
@@ -2993,16 +3012,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (currentUser?.id === userId) {
       setCurrentUser(null);
     }
-    const supabase = getSupabase();
-    if (supabase) {
-      if (userId && !userId.includes('@')) {
-        supabase.from('users').delete().eq('id', userId).then(() => {});
-      }
-      if (targetEmail) {
-        supabase.from('users').delete().ilike('email', targetEmail).then(() => {});
-      }
-    }
-    fetch(apiUrl(`/api/users?id=${encodeURIComponent(userId)}${targetEmail ? `&email=${encodeURIComponent(targetEmail)}` : ''}`), { method: 'DELETE' }).catch(() => {});
+    const resellerId = currentReseller?.id;
+    const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    const queryParams = new URLSearchParams({ id: userId });
+    if (targetEmail) queryParams.set('email', targetEmail);
+    if (resellerId) queryParams.set('resellerId', resellerId);
+    if (sessionId) queryParams.set('sessionId', sessionId);
+
+    fetch(apiUrl(`/api/users?${queryParams.toString()}`), {
+      method: 'DELETE',
+      headers: {
+        ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
+    }).catch(() => {});
   };
 
   const deductCredits = (amount: number): boolean => {

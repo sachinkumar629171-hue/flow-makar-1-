@@ -3,10 +3,71 @@ import { createClient } from '@supabase/supabase-js';
 
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 
+function createResellerSessionToken(reseller: any, randomSuffix?: string): string {
+  const cleanId = String(reseller.id || '').trim();
+  const cleanEmail = String(reseller.email || '').trim().toLowerCase();
+  const cleanPass = String(reseller.password || '').trim();
+  const sig = Buffer.from(`${cleanId}|${cleanEmail}|${cleanPass}|flw_res_sec`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `rsess_${sig}_${rand}`;
+}
+
+function verifyResellerSessionToken(reseller: any, token: string): boolean {
+  if (!reseller || !token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken) return false;
+  if (reseller.sessionId && String(reseller.sessionId).trim() === cleanToken) return true;
+  if (!cleanToken.startsWith('rsess_')) return false;
+  const parts = cleanToken.split('_');
+  if (parts.length < 3) return false;
+  const expected = createResellerSessionToken(reseller, parts.slice(2).join('_'));
+  return cleanToken === expected;
+}
+
+async function findResellerFromSupabase(supabase: any, resellerId: string): Promise<any | null> {
+  const cleanTarget = String(resellerId || '').trim().toLowerCase();
+  if (!cleanTarget) return null;
+
+  let backupMatch: any = null;
+  try {
+    const { data: resRow } = await supabase.from('users').select('name').eq('id', 'admin_config_resellers').maybeSingle();
+    if (resRow?.name) {
+      const parsed = JSON.parse(resRow.name);
+      if (Array.isArray(parsed)) {
+        backupMatch = parsed.find(
+          (r: any) =>
+            String(r.id || '').trim().toLowerCase() === cleanTarget ||
+            String(r.email || '').trim().toLowerCase() === cleanTarget
+        );
+      }
+    }
+  } catch {}
+
+  let tableMatch: any = null;
+  try {
+    const { data: supaResellers } = await supabase.from('resellers').select('*');
+    if (Array.isArray(supaResellers)) {
+      tableMatch = supaResellers.find(
+        (r: any) =>
+          String(r.id || '').trim().toLowerCase() === cleanTarget ||
+          String(r.email || '').trim().toLowerCase() === cleanTarget
+      );
+    }
+  } catch {}
+
+  if (!backupMatch && !tableMatch) return null;
+  return {
+    ...(backupMatch || {}),
+    ...(tableMatch || {}),
+    password: tableMatch?.password || backupMatch?.password || '',
+    sessionId: backupMatch?.sessionId || tableMatch?.session_token || tableMatch?.session_id || '',
+  };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-api-key, x-admin-key');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-reseller-id, x-reseller-session-id, x-reseller-api-key, x-admin-key');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') {
@@ -38,7 +99,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let callingUser: any = null;
     let isAdmin = apiKey === 'admin_master_key' || ADMIN_EMAILS.has(apiKey.toLowerCase());
 
-    if (token) {
+    if (token && !token.startsWith('rsess_')) {
       let tokenQuery = supabase.from('users').select('*');
       if (token.startsWith('sess-')) {
         tokenQuery = tokenQuery.eq('session_token', token);
@@ -224,13 +285,78 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (req.method === 'POST') {
       const body = req.body || {};
-      const { id, email, name, password, plan, credits, maxCredits, planDaysLeft, planExpiresAt, role, status, resellerId: bodyResId, reseller_id, resellerName: bodyResName, reseller_name, whatsapp, telegram } = body;
+      const {
+        id,
+        email,
+        name,
+        password,
+        plan,
+        credits,
+        maxCredits,
+        planDaysLeft,
+        planExpiresAt,
+        role,
+        status,
+        resellerId: bodyResId,
+        reseller_id,
+        resellerName: bodyResName,
+        reseller_name,
+        whatsapp,
+        telegram,
+      } = body;
+
+      const targetResellerId = (bodyResId || reseller_id || req.headers['x-reseller-id'] || '').toString().trim();
+      const resellerSessionId = (
+        body.sessionId ||
+        req.headers['x-reseller-session-id'] ||
+        req.headers['x-session-token'] ||
+        ''
+      ).toString().trim();
 
       if (!email) {
         return res.status(400).json({ success: false, error: 'Email is required' });
       }
 
+      // If member is being created by a Reseller, verify resellerId + sessionId match
+      if (targetResellerId) {
+        if (!resellerSessionId) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Reseller sessionId is required to add members. Please sign in again.',
+          });
+        }
+        const matchedReseller = await findResellerFromSupabase(supabase, targetResellerId);
+        if (!matchedReseller || !verifyResellerSessionToken(matchedReseller, resellerSessionId)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Invalid reseller ID or session ID. Please sign in again.',
+          });
+        }
+        if (matchedReseller.status === 'suspended') {
+          return res.status(403).json({
+            success: false,
+            error: 'This reseller portal has been suspended by administration.',
+          });
+        }
+      }
+
       const cleanEmail = email.toLowerCase().trim();
+
+      // If created by a reseller, verify email isn't already registered in Supabase
+      if (targetResellerId) {
+        const { data: existingRow } = await supabase
+          .from('users')
+          .select('id')
+          .ilike('email', cleanEmail)
+          .maybeSingle();
+        if (existingRow) {
+          return res.status(400).json({
+            success: false,
+            error: 'This Gmail ID is already registered! Please use a different Gmail.',
+          });
+        }
+      }
+
       const isSysAdmin = ADMIN_EMAILS.has(cleanEmail);
       const userPayload: Record<string, any> = {
         id: id || `usr-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
@@ -247,7 +373,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
       if (password) userPayload.password = password;
       if (planExpiresAt) userPayload.plan_expires_at = planExpiresAt;
-      if (bodyResId || reseller_id) userPayload.reseller_id = bodyResId || reseller_id;
+      if (targetResellerId) userPayload.reseller_id = targetResellerId;
       if (bodyResName || reseller_name) userPayload.reseller_name = bodyResName || reseller_name;
       if (whatsapp) userPayload.whatsapp = whatsapp;
       if (telegram) userPayload.telegram = telegram;
@@ -291,6 +417,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method === 'DELETE') {
       const id = (req.query.id || req.body?.id || '').toString().trim();
       const email = (req.query.email || req.body?.email || '').toString().trim().toLowerCase();
+      const delResellerId = (req.query.resellerId || req.body?.resellerId || req.headers['x-reseller-id'] || '').toString().trim();
+      const delSessionId = (
+        req.query.sessionId ||
+        req.body?.sessionId ||
+        req.headers['x-reseller-session-id'] ||
+        req.headers['x-session-token'] ||
+        ''
+      ).toString().trim();
+
+      if (delResellerId) {
+        const matchedReseller = await findResellerFromSupabase(supabase, delResellerId);
+        if (!matchedReseller || !verifyResellerSessionToken(matchedReseller, delSessionId)) {
+          return res.status(401).json({
+            success: false,
+            error: 'Unauthorized: Invalid reseller ID or session ID.',
+          });
+        }
+      }
+
       if (!id && !email) {
         return res.status(400).json({ success: false, error: 'User ID or email is required' });
       }
