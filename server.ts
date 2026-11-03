@@ -1017,12 +1017,14 @@ app.all('/api/admin/data', async (req, res) => {
 
   if (!isAuthorizedAdmin && supa) {
     try {
-      const { data: callerUser } = await supa
-        .from('users')
-        .select('id, email, role, session_token')
-        .eq('session_token', sessionId)
-        .maybeSingle();
-      if (callerUser) {
+      let query = supa.from('users').select('*');
+      if (sessionId.startsWith('sess-') || sessionId.startsWith('asess_')) {
+        query = query.eq('session_token', sessionId);
+      } else {
+        query = query.or(`session_token.eq.${sessionId},id.eq.${sessionId}`);
+      }
+      const { data: callerUser } = await query.maybeSingle();
+      if (callerUser && !callerUser.id?.startsWith('admin_config_')) {
         const callerEmail = String(callerUser.email || '').trim().toLowerCase();
         if (SYSTEM_ADMIN_EMAILS.has(callerEmail) || callerUser.role === 'admin') {
           isAuthorizedAdmin = true;

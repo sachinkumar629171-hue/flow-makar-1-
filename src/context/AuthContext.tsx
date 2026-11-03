@@ -439,6 +439,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastUpdatedUsersRef = useRef<Map<string, { timestamp: number; data: Partial<User> }>>(new Map());
   const lastUpdatedResellersRef = useRef<Map<string, { timestamp: number; data: Partial<Reseller> }>>(new Map());
   const lastConfigUpdateRef = useRef<number>(0);
+  const lastAdminDataFetchRef = useRef<number>(0);
+  const adminDataInFlightRef = useRef<Promise<boolean> | null>(null);
 
   // Industry-Standard Authenticated Profile Sync: On load/refresh, fetch authoritative plan, credits, validity with Bearer token
   useEffect(() => {
@@ -450,6 +452,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       headers: {
         'Authorization': `Bearer ${token}`,
         'x-session-token': token,
+        'x-admin-session-id': token,
       },
     })
       .then(async res => {
@@ -463,6 +466,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const fresh = {
                 ...(prev || {}),
                 ...data.user,
+                sessionToken: prev?.sessionToken || token,
                 role: (isAdminEmail || data.user.role === 'admin') ? 'admin' : (data.user.role || 'user'),
               };
               try {
@@ -1020,49 +1024,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
 
         // 1. Single Route: All Supabase data in one request (/api/admin/data) - strictly requires admin sessionId
-        if (isUserAdmin && activeToken) {
-          try {
-            const adminDataRes = await fetch(apiUrl('/api/admin/data'), { headers: userHeaders });
-            if (adminDataRes.ok) {
-              const adminData = await adminDataRes.json();
-              if (adminData && adminData.success && isMounted) {
-                if (Array.isArray(adminData.users)) {
-                  const now = Date.now();
-                  const mergedUsers = adminData.users.map((u: User) => {
-                    const pending = lastUpdatedUsersRef.current.get(u.id);
-                    if (pending && now - pending.timestamp < 10000) {
-                      return { ...u, ...pending.data };
-                    }
-                    return u;
-                  });
-                  setUsers(mergedUsers);
-                }
-
-                if (Array.isArray(adminData.resellers)) {
-                  setResellers(adminData.resellers);
-                }
-
-                if (adminData.promptConfig) {
-                  const normalizedPromptCfg = {
-                    ...adminData.promptConfig,
-                    headerEmailOpacity: adminData.promptConfig.headerEmailOpacityCustom
-                      ? (adminData.promptConfig.headerEmailOpacity ?? 0)
-                      : 0,
-                  };
-                  setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(normalizedPromptCfg) ? prev : normalizedPromptCfg));
-                }
-                if (adminData.planExtensions) {
-                  setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(adminData.planExtensions) ? prev : adminData.planExtensions));
-                }
-                if (adminData.tutorialConfig) {
-                  setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(adminData.tutorialConfig) ? prev : adminData.tutorialConfig));
-                }
-                return; // Successfully loaded all Supabase data from single route!
-              }
-            }
-          } catch (e) {
-            console.warn('Single route admin data fetch error, checking individual fallback:', e);
-          }
+        if (isUserAdmin) {
+          if (!activeToken) return;
+          await refreshAdminData();
+          return;
         }
 
         const [usersRes, resellersRes, configRes] = await Promise.all([
@@ -1870,11 +1835,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     }
 
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     try {
       await fetch(apiUrl('/api/resellers'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newReseller),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'x-session-token': adminToken,
+            'x-admin-session-id': adminToken,
+            'Authorization': `Bearer ${adminToken}`,
+          } : {}),
+        },
+        body: JSON.stringify({
+          ...newReseller,
+          ...(adminToken ? { sessionId: adminToken } : {}),
+        }),
       });
     } catch (err) {
       console.error('Error creating reseller on server:', err);
@@ -1940,10 +1916,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }).catch(() => {});
       }
 
+      const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
       fetch(apiUrl('/api/resellers'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedReseller),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'x-session-token': adminToken,
+            'x-admin-session-id': adminToken,
+            'Authorization': `Bearer ${adminToken}`,
+          } : {}),
+        },
+        body: JSON.stringify({
+          ...updatedReseller,
+          ...(adminToken ? { sessionId: adminToken } : {}),
+        }),
       }).catch(() => {});
     }
   };
@@ -1970,8 +1957,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         status: 'active',
       }).catch(() => {});
     }
-    fetch(apiUrl(`/api/resellers?id=${encodeURIComponent(resellerId)}`), { method: 'DELETE' }).catch(() => {});
-    fetch(apiUrl(`/api/resellers/${resellerId}`), { method: 'DELETE' }).catch(() => {});
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+    const adminHeaders: Record<string, string> = adminToken ? {
+      'x-session-token': adminToken,
+      'x-admin-session-id': adminToken,
+      'Authorization': `Bearer ${adminToken}`,
+    } : {};
+    fetch(apiUrl(`/api/resellers?id=${encodeURIComponent(resellerId)}`), { method: 'DELETE', headers: adminHeaders }).catch(() => {});
+    fetch(apiUrl(`/api/resellers/${resellerId}`), { method: 'DELETE', headers: adminHeaders }).catch(() => {});
   };
 
   const addUserByReseller = async (
@@ -2784,6 +2777,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const userEmail = targetUser?.email;
     const resellerId = currentReseller?.id;
     const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
 
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
@@ -2791,11 +2785,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'Content-Type': 'application/json',
         ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
         ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+        ...(adminToken ? {
+          'x-session-token': adminToken,
+          'x-admin-session-id': adminToken,
+          'Authorization': `Bearer ${adminToken}`,
+        } : {}),
       },
       body: JSON.stringify({
         userId,
         email: userEmail,
-        ...(resellerId ? { resellerId, sessionId } : {}),
+        ...(resellerId ? { resellerId, sessionId } : (adminToken ? { sessionId: adminToken } : {})),
         data: {
           plan: newPlan,
           credits: defaultCredits,
@@ -2903,11 +2902,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const resellerId = currentReseller?.id;
     const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
 
     const payload = {
       userId,
       email: userToUpdate?.email,
-      ...(resellerId ? { resellerId, sessionId } : {}),
+      ...(resellerId ? { resellerId, sessionId } : (adminToken ? { sessionId: adminToken } : {})),
       data: {
         ...data,
         ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
@@ -2920,6 +2920,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'Content-Type': 'application/json',
         ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
         ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+        ...(adminToken ? {
+          'x-session-token': adminToken,
+          'x-admin-session-id': adminToken,
+          'Authorization': `Bearer ${adminToken}`,
+        } : {}),
       },
       body: JSON.stringify(payload),
     }).catch(() => {});
@@ -3005,6 +3010,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const resellerId = currentReseller?.id;
     const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
 
     fetch(apiUrl('/api/users/update'), {
       method: 'POST',
@@ -3012,11 +3018,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         'Content-Type': 'application/json',
         ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
         ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+        ...(adminToken ? {
+          'x-session-token': adminToken,
+          'x-admin-session-id': adminToken,
+          'Authorization': `Bearer ${adminToken}`,
+        } : {}),
       },
       body: JSON.stringify({
         userId,
         email: userEmail,
-        ...(resellerId ? { resellerId, sessionId } : {}),
+        ...(resellerId ? { resellerId, sessionId } : (adminToken ? { sessionId: adminToken } : {})),
         data: {
           credits: newCredits,
           maxCredits: newMax !== undefined ? newMax : Math.max(newCredits),
@@ -3034,6 +3045,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     const resellerId = currentReseller?.id;
     const sessionId = currentReseller?.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     const queryParams = new URLSearchParams({ id: userId });
     if (targetEmail) queryParams.set('email', targetEmail);
     if (resellerId) queryParams.set('resellerId', resellerId);
@@ -3044,6 +3056,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       headers: {
         ...(resellerId ? { 'x-reseller-id': resellerId } : {}),
         ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+        ...(adminToken ? {
+          'x-session-token': adminToken,
+          'x-admin-session-id': adminToken,
+          'Authorization': `Bearer ${adminToken}`,
+        } : {}),
       },
     }).catch(() => {});
   };
@@ -3222,27 +3239,66 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refreshAdminData = async () => {
     const token = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     if (!token) return false;
+    if (adminDataInFlightRef.current) {
+      return adminDataInFlightRef.current;
+    }
+    if (Date.now() - lastAdminDataFetchRef.current < 1500) return true;
+    lastAdminDataFetchRef.current = Date.now();
+
+    const promise = (async () => {
+      try {
+        const res = await fetch(apiUrl('/api/admin/data'), {
+          headers: {
+            'x-session-token': token,
+            'x-admin-session-id': token,
+            'Authorization': `Bearer ${token}`,
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.success) {
+            if (Array.isArray(data.users)) {
+              const now = Date.now();
+              const mergedUsers = data.users.map((u: User) => {
+                const pending = lastUpdatedUsersRef.current.get(u.id);
+                if (pending && now - pending.timestamp < 10000) {
+                  return { ...u, ...pending.data };
+                }
+                return u;
+              });
+              setUsers(mergedUsers);
+            }
+            if (Array.isArray(data.resellers)) {
+              setResellers(data.resellers);
+            }
+            if (data.promptConfig) {
+              const normalizedPromptCfg = {
+                ...data.promptConfig,
+                headerEmailOpacity: data.promptConfig.headerEmailOpacityCustom
+                  ? (data.promptConfig.headerEmailOpacity ?? 0)
+                  : 0,
+              };
+              setPromptConfig(prev => (JSON.stringify(prev) === JSON.stringify(normalizedPromptCfg) ? prev : normalizedPromptCfg));
+            }
+            if (data.planExtensions) {
+              setPlanExtensions(prev => (JSON.stringify(prev) === JSON.stringify(data.planExtensions) ? prev : data.planExtensions));
+            }
+            if (data.tutorialConfig) {
+              setTutorialConfig(prev => (JSON.stringify(prev) === JSON.stringify(data.tutorialConfig) ? prev : data.tutorialConfig));
+            }
+            return true;
+          }
+        }
+      } catch {}
+      return false;
+    })();
+
+    adminDataInFlightRef.current = promise;
     try {
-      const res = await fetch(apiUrl('/api/admin/data'), {
-        headers: {
-          'x-session-token': token,
-          'x-admin-session-id': token,
-          'Authorization': `Bearer ${token}`,
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data && data.success) {
-          if (Array.isArray(data.users)) setUsers(data.users);
-          if (Array.isArray(data.resellers)) setResellers(data.resellers);
-          if (data.promptConfig) setPromptConfig(data.promptConfig);
-          if (data.planExtensions) setPlanExtensions(data.planExtensions);
-          if (data.tutorialConfig) setTutorialConfig(data.tutorialConfig);
-          return true;
-        }
-      }
-    } catch {}
-    return false;
+      return await promise;
+    } finally {
+      adminDataInFlightRef.current = null;
+    }
   };
 
   return (

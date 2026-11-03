@@ -1,10 +1,34 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
+const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+function resolveSignedAdminEmail(token: string): string | null {
+  if (!token || typeof token !== 'string') return null;
+  const cleanToken = token.trim();
+  if (!cleanToken.startsWith('asess_')) return null;
+  const parts = cleanToken.split('_');
+  if (parts.length < 3) return null;
+  const suffix = parts.slice(2).join('_');
+  for (const adminEmail of ADMIN_EMAILS) {
+    if (cleanToken === createAdminSessionToken(adminEmail, suffix)) {
+      return adminEmail;
+    }
+  }
+  return null;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-session-token, x-admin-session-id');
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -12,7 +36,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Extract token from Bearer header or x-session-token or query
   const authHeader = (req.headers.authorization || '').toString();
   const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
-  const headerToken = (req.headers['x-session-token'] || '').toString().trim();
+  const headerToken = (req.headers['x-admin-session-id'] || req.headers['x-session-token'] || '').toString().trim();
   const queryToken = (req.query.sessionToken || req.query.token || '').toString().trim();
 
   const token = bearerToken || headerToken || queryToken;
@@ -36,13 +60,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Look up this exact single user by session_token or user id
     let query = supabase.from('users').select('*');
-    if (token.startsWith('sess-')) {
+    if (token.startsWith('sess-') || token.startsWith('asess_')) {
       query = query.eq('session_token', token);
     } else {
       query = query.or(`session_token.eq.${token},id.eq.${token}`);
     }
 
-    const { data: supaUser, error } = await query.maybeSingle();
+    let { data: supaUser, error } = await query.maybeSingle();
+
+    // If token is a valid signed Admin sessionId, fallback to matching admin email in Supabase or default admin profile
+    const signedAdminEmail = resolveSignedAdminEmail(token);
+    if ((!supaUser || error) && signedAdminEmail) {
+      const { data: adminByEmail } = await supabase
+        .from('users')
+        .select('*')
+        .ilike('email', signedAdminEmail)
+        .maybeSingle();
+      supaUser = adminByEmail || {
+        id: 'usr-admin-1',
+        name: 'Sachin Kumar',
+        email: signedAdminEmail,
+        plan: 'ultra',
+        credits: 45000,
+        max_credits: 45000,
+        plan_days_left: 30,
+        role: 'admin',
+        status: 'active',
+      };
+      error = null;
+    }
 
     if (error || !supaUser || supaUser.id?.startsWith('admin_config_')) {
       return res.status(401).json({
@@ -60,7 +106,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const userEmail = (supaUser.email || '').toLowerCase().trim();
-    const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
     const isSystemAdmin = ADMIN_EMAILS.has(userEmail) || supaUser.role === 'admin';
 
     if (isSystemAdmin && supaUser.role !== 'admin') {

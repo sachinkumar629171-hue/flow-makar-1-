@@ -21,6 +21,13 @@ export function createResellerSessionToken(reseller: any, randomSuffix?: string)
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+function createLegacyAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
   const sig = Buffer.from(`adm|${cleanEmail}|${ADMIN_PASSWORD}|flw_adm_sec`).toString('base64url').slice(0, 16);
   const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
   return `asess_${sig}_${rand}`;
@@ -36,21 +43,26 @@ async function verifyAdminSession(supabase: any, token: string): Promise<boolean
     if (parts.length >= 3) {
       const rand = parts.slice(2).join('_');
       for (const adminEmail of ADMIN_EMAILS) {
-        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
+        if (
+          cleanToken === createAdminSessionToken(adminEmail, rand) ||
+          cleanToken === createLegacyAdminSessionToken(adminEmail, rand)
+        ) {
           return true;
         }
       }
     }
   }
 
-  if (supabase && (cleanToken.startsWith('asess_') || cleanToken.startsWith('sess-'))) {
+  if (supabase && !cleanToken.startsWith('rsess_')) {
     try {
-      const { data: callerData } = await supabase
-        .from('users')
-        .select('id, email, role, session_token')
-        .eq('session_token', cleanToken)
-        .maybeSingle();
-      if (callerData) {
+      let query = supabase.from('users').select('*');
+      if (cleanToken.startsWith('asess_') || cleanToken.startsWith('sess-')) {
+        query = query.eq('session_token', cleanToken);
+      } else {
+        query = query.or(`session_token.eq.${cleanToken},id.eq.${cleanToken}`);
+      }
+      const { data: callerData } = await query.maybeSingle();
+      if (callerData && !callerData.id?.startsWith('admin_config_')) {
         const callerEmail = String(callerData.email || '').trim().toLowerCase();
         if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
           return true;
