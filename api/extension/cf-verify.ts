@@ -129,13 +129,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      // 3. Resolve ONLY the requested server prompt if dropdown / server is specified (saves Egress!)
-      const dataType = String(body.dataType || body.datatype || query.dataType || query.datatype || 'Flow ultra lower priority').trim();
-      const dropdown = String(body.dropdown || body.server || body.serverId || query.dropdown || query.server || '').trim();
+      // 3. Resolve server prompt(s) for the requested dataType & dropdown from public.servers
+      const serializeJsonbVal = (rawVal: any): string => {
+        if (rawVal === undefined || rawVal === null || rawVal === '') return '';
+        if (typeof rawVal === 'object') {
+          if (!Array.isArray(rawVal) && Object.keys(rawVal).length === 0) return '';
+          if (Array.isArray(rawVal) && rawVal.length === 0) return '';
+          return JSON.stringify(rawVal);
+        }
+        const s = String(rawVal).trim();
+        if (s === '{}' || s === '[]') return '';
+        return String(rawVal);
+      };
+
+      const dataType = String(
+        body.dataType || body.datatype || body.platform || body.service ||
+        query.dataType || query.datatype || query.platform || query.service ||
+        'Flow ultra lower priority'
+      ).trim();
+      const dropdown = String(
+        body.dropdown || body.server || body.serverId ||
+        query.dropdown || query.server || query.serverId || ''
+      ).trim();
+      const isDefaultFlowType = dataType.toLowerCase() === 'flow ultra lower priority';
 
       let responseServers = servers;
       let selectedPrompt: string | null = null;
       let selectedServerKey: string | null = null;
+      const serverFields: Record<string, string> = {};
 
       if (dropdown) {
         const numMatch = dropdown.match(/(\d+)/);
@@ -153,7 +174,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .maybeSingle();
 
           if (!error && data && (data as any)[colUnderscore] !== undefined) {
-            selectedPrompt = String((data as any)[colUnderscore] || '');
+            selectedPrompt = serializeJsonbVal((data as any)[colUnderscore]);
           } else {
             const { data: spaceData } = await supabase
               .from('servers')
@@ -161,12 +182,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               .ilike('datatype', dataType)
               .maybeSingle();
             if (spaceData && (spaceData as any)[colSpace] !== undefined) {
-              selectedPrompt = String((spaceData as any)[colSpace] || '');
+              selectedPrompt = serializeJsonbVal((spaceData as any)[colSpace]);
             }
           }
         } catch {}
 
-        if (selectedPrompt === null) {
+        if (selectedPrompt === null && isDefaultFlowType) {
           const fallbackSrv = servers.find((s: any, idx: number) =>
             s.id === selectedServerKey ||
             String(s.label || '').toLowerCase() === dropdown.toLowerCase() ||
@@ -175,7 +196,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           selectedPrompt = fallbackSrv?.prompt || '';
         }
 
-        responseServers = [{ id: selectedServerKey, label, prompt: selectedPrompt || '' }];
+        const finalPrompt = selectedPrompt || '';
+        responseServers = [{ id: selectedServerKey, label, prompt: finalPrompt }];
+        serverFields[selectedServerKey] = finalPrompt;
+        serverFields.prompt = finalPrompt;
+      } else {
+        // No dropdown specified: load all 5 servers for the requested dataType from public.servers
+        try {
+          const { data: rowData } = await supabase
+            .from('servers')
+            .select('*')
+            .ilike('datatype', dataType)
+            .maybeSingle();
+
+          if (rowData) {
+            const list: any[] = [];
+            for (let i = 1; i <= 5; i++) {
+              const rawVal = (rowData as any)[`server_${i}`] ?? (rowData as any)[`server ${i}`] ?? (rowData as any)[`server${i}`];
+              const strVal = serializeJsonbVal(rawVal);
+              const key = `server${i}`;
+              list.push({ id: key, label: `Server ${i}`, prompt: strVal });
+              serverFields[key] = strVal;
+            }
+            responseServers = list;
+          } else if (!isDefaultFlowType) {
+            responseServers = [1, 2, 3, 4, 5].map(i => ({ id: `server${i}`, label: `Server ${i}`, prompt: '' }));
+          }
+        } catch {}
       }
 
       return res.status(200).json({
@@ -186,6 +233,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         dataType,
         dropdown: dropdown || undefined,
         selectedServer: selectedServerKey || undefined,
+        ...serverFields,
         servers: responseServers,
         plan,
         isUltra: true,

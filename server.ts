@@ -2046,7 +2046,7 @@ app.get('/api/extension/session', async (req, res) => {
   });
 });
 
-// Helper: Fetch & filter ONLY the requested server prompt (e.g. dropdown: "Server 1", dataType: "Flow ultra lower priority")
+// Helper: Fetch & filter ONLY the requested server prompt (e.g. dropdown: "Server 1", dataType: "Flow ultra lower priority" | "Chatgpt plus" | "Muse AI" | "Super grok")
 async function filterAndResolveRequestedServer(
   supa: SupabaseClient | null,
   reqParams: Record<string, any>,
@@ -2061,30 +2061,77 @@ async function filterAndResolveRequestedServer(
   filteredServers: any[];
   filteredServerFields: Record<string, any>;
 }> {
-  const dataType = String(reqParams?.dataType || reqParams?.datatype || 'Flow ultra lower priority').trim();
+  const serializeJsonbVal = (rawVal: any): string => {
+    if (rawVal === undefined || rawVal === null || rawVal === '') return '';
+    if (typeof rawVal === 'object') {
+      if (!Array.isArray(rawVal) && Object.keys(rawVal).length === 0) return '';
+      if (Array.isArray(rawVal) && rawVal.length === 0) return '';
+      return JSON.stringify(rawVal);
+    }
+    const s = String(rawVal).trim();
+    if (s === '{}' || s === '[]') return '';
+    return String(rawVal);
+  };
+
+  const dataType = String(
+    reqParams?.dataType || reqParams?.datatype || reqParams?.platform || reqParams?.service || 'Flow ultra lower priority'
+  ).trim();
+  const isDefaultFlowType = dataType.toLowerCase() === 'flow ultra lower priority';
   const dropdown = String(reqParams?.dropdown || reqParams?.server || reqParams?.serverId || '').trim();
   const numMatch = dropdown.match(/(\d+)/);
   const serverNum = numMatch ? parseInt(numMatch[1], 10) : null;
 
   if (!serverNum || serverNum < 1 || serverNum > 10) {
+    if (supa) {
+      try {
+        const { data: rowData } = await supa
+          .from('servers')
+          .select('*')
+          .ilike('datatype', dataType)
+          .maybeSingle();
+
+        if (rowData) {
+          const list: any[] = [];
+          const fields: Record<string, any> = { dataType };
+          for (let i = 1; i <= 5; i++) {
+            const rawVal = (rowData as any)[`server_${i}`] ?? (rowData as any)[`server ${i}`] ?? (rowData as any)[`server${i}`];
+            const strVal = serializeJsonbVal(rawVal);
+            list.push({ id: `server${i}`, label: `Server ${i}`, prompt: strVal });
+            fields[`server${i}`] = strVal;
+          }
+          return {
+            isSingleServer: false,
+            serverNum: null,
+            dataType,
+            dropdown,
+            singlePrompt: null,
+            filteredServers: list,
+            filteredServerFields: fields,
+          };
+        }
+      } catch {}
+    }
+
+    const emptyFive = [1, 2, 3, 4, 5].map(i => ({ id: `server${i}`, label: `Server ${i}`, prompt: '' }));
     return {
       isSingleServer: false,
       serverNum: null,
       dataType,
       dropdown,
       singlePrompt: null,
-      filteredServers: allServers,
+      filteredServers: isDefaultFlowType ? allServers : emptyFive,
       filteredServerFields: {
-        server1: allServerMap.server1 || '',
-        server2: allServerMap.server2 || '',
-        server3: allServerMap.server3 || '',
-        server4: allServerMap.server4 || '',
-        server5: allServerMap.server5 || '',
+        dataType,
+        server1: isDefaultFlowType ? (allServerMap.server1 || '') : '',
+        server2: isDefaultFlowType ? (allServerMap.server2 || '') : '',
+        server3: isDefaultFlowType ? (allServerMap.server3 || '') : '',
+        server4: isDefaultFlowType ? (allServerMap.server4 || '') : '',
+        server5: isDefaultFlowType ? (allServerMap.server5 || '') : '',
       },
     };
   }
 
-  let resolvedPrompt: any = allServerMap[`server${serverNum}`] || '';
+  let resolvedPrompt: string | null = null;
 
   // Query ONLY the requested server column from public.servers for the requested datatype
   if (supa) {
@@ -2093,27 +2140,30 @@ async function filterAndResolveRequestedServer(
       const { data, error } = await supa
         .from('servers')
         .select(colUnderscore)
-        .eq('datatype', dataType)
+        .ilike('datatype', dataType)
         .maybeSingle();
 
       if (!error && data && (data as any)[colUnderscore] !== undefined && (data as any)[colUnderscore] !== null) {
-        resolvedPrompt = (data as any)[colUnderscore];
+        resolvedPrompt = serializeJsonbVal((data as any)[colUnderscore]);
       } else {
         // Fallback if column name in Supabase has a space ("server 1")
         const colSpace = `server ${serverNum}`;
         const { data: d2 } = await supa
           .from('servers')
           .select(`"${colSpace}"`)
-          .eq('datatype', dataType)
+          .ilike('datatype', dataType)
           .maybeSingle();
         if (d2 && (d2 as any)[colSpace] !== undefined && (d2 as any)[colSpace] !== null) {
-          resolvedPrompt = (d2 as any)[colSpace];
+          resolvedPrompt = serializeJsonbVal((d2 as any)[colSpace]);
         }
       }
     } catch {}
   }
 
-  const promptStr = typeof resolvedPrompt === 'object' ? JSON.stringify(resolvedPrompt) : String(resolvedPrompt ?? '');
+  if (resolvedPrompt === null) {
+    resolvedPrompt = isDefaultFlowType ? (allServerMap[`server${serverNum}`] || '') : '';
+  }
+
   const singleSrvObj = {
     id: `server${serverNum}`,
     label: `Server ${serverNum}`,
@@ -2131,6 +2181,8 @@ async function filterAndResolveRequestedServer(
       dataType,
       dropdown: dropdown || `Server ${serverNum}`,
       selectedServer: `server${serverNum}`,
+      [`server${serverNum}`]: resolvedPrompt,
+      prompt: resolvedPrompt,
     },
   };
 }
@@ -3212,9 +3264,31 @@ app.post('/api/webhook/prompt', async (req, res) => {
 
     saveStorage();
 
+    const dataType = String(body.dataType || body.datatype || body.platform || 'Flow ultra lower priority').trim();
+    const dropdownMatch = String(body.dropdown || body.server || body.serverId || '').match(/(\d+)/);
+    const targetNum = dropdownMatch ? Math.max(1, Math.min(5, parseInt(dropdownMatch[1], 10))) : (Number(body.serverId) || (body.server2 ? 2 : 1));
+
     const supa = getServerSupabase();
     if (supa) {
-      safeSaveSupabasePromptConfig(supa, db.promptConfig).catch(() => {});
+      const underscoreRow: Record<string, any> = { datatype: dataType };
+      const parseVal = (raw: any) => {
+        const str = String(raw || '').trim();
+        if (!str) return {};
+        try { return JSON.parse(str); } catch { return str; }
+      };
+      if (incomingPrompt && !body.server1 && !body.server2) {
+        underscoreRow[`server_${targetNum}`] = parseVal(incomingPrompt);
+      } else {
+        for (let i = 1; i <= 5; i++) {
+          if (body[`server${i}`] !== undefined) {
+            underscoreRow[`server_${i}`] = parseVal(body[`server${i}`]);
+          }
+        }
+      }
+      supa.from('servers').upsert(underscoreRow, { onConflict: 'datatype' }).then(() => {});
+      if (dataType.toLowerCase() === 'flow ultra lower priority') {
+        safeSaveSupabasePromptConfig(supa, db.promptConfig).catch(() => {});
+      }
     }
 
     const s1 = db.promptConfig.servers.find(s => s.id === 'server1')?.prompt || '';
@@ -3222,7 +3296,9 @@ app.post('/api/webhook/prompt', async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Prompt updated successfully and saved permanently in portal server!',
+      dataType,
+      dropdown: `Server ${targetNum}`,
+      message: `Prompt updated successfully in public.servers (${dataType} -> Server ${targetNum})!`,
       server1: s1,
       server2: s2,
       servers: db.promptConfig.servers,

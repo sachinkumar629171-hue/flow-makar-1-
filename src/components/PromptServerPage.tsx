@@ -32,7 +32,14 @@ import { useAuth } from '../context/AuthContext';
 import { ServerPromptConfig, TelegramAlertConfig } from '../types';
 import { calculateServerTimeStatus } from '../lib/promptTimer';
 import { formatISTDateTime, sendTelegramNotification, generateTestAlertMessage, generateRecoveryMessage } from '../lib/telegramNotifier';
-import { getSupabase, syncPromptServersToSupabaseTable } from '../lib/supabase';
+import { getSupabase, syncPromptServersToSupabaseTable, serializeServerColumnValue } from '../lib/supabase';
+
+const DEFAULT_DATATYPES = [
+  { id: 'Flow ultra lower priority', label: 'Flow Ultra (Lower Priority)', badge: 'Default • Flow' },
+  { id: 'Chatgpt plus', label: 'ChatGPT Plus', badge: 'OpenAI' },
+  { id: 'Muse AI', label: 'Muse AI', badge: 'Muse' },
+  { id: 'Super grok', label: 'Super Grok', badge: 'xAI Grok' },
+];
 
 interface PromptServerPageProps {
   onBack: () => void;
@@ -110,6 +117,12 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
   const [telegramTestResult, setTelegramTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [showManualPrompts, setShowManualPrompts] = useState<boolean>(false);
 
+  const [selectedDataType, setSelectedDataType] = useState<string>('Flow ultra lower priority');
+  const [availableDataTypes, setAvailableDataTypes] = useState<string[]>(
+    DEFAULT_DATATYPES.map(d => d.id)
+  );
+  const [isLoadingDataType, setIsLoadingDataType] = useState<boolean>(false);
+
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [savedServerId, setSavedServerId] = useState<string | null>(null);
@@ -124,42 +137,91 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
     return () => clearInterval(timer);
   }, []);
 
-  // Load initial prompts from Supabase public.servers ('Flow ultra lower priority') once on mount
+  // Discover any extra datatype rows from Supabase public.servers once on mount
   useEffect(() => {
     const supa = getSupabase();
     if (!supa) return;
     supa
       .from('servers')
+      .select('datatype')
+      .then(({ data }) => {
+        if (!Array.isArray(data)) return;
+        const dbTypes = data
+          .map((r: any) => String(r?.datatype || '').trim())
+          .filter(Boolean);
+        if (dbTypes.length > 0) {
+          setAvailableDataTypes(prev => {
+            const merged = [...prev];
+            for (const dt of dbTypes) {
+              if (!merged.some(existing => existing.toLowerCase() === dt.toLowerCase())) {
+                merged.push(dt);
+              }
+            }
+            return merged;
+          });
+        }
+      }, () => {});
+  }, []);
+
+  // Load prompts from Supabase public.servers whenever selectedDataType changes
+  useEffect(() => {
+    const supa = getSupabase();
+    if (!supa) return;
+    let isCancelled = false;
+    setIsLoadingDataType(true);
+    dirtyServersRef.current.clear();
+
+    supa
+      .from('servers')
       .select('*')
-      .eq('datatype', 'Flow ultra lower priority')
+      .ilike('datatype', selectedDataType)
       .maybeSingle()
       .then(({ data }) => {
-        if (!data) return;
+        if (isCancelled) return;
+        setIsLoadingDataType(false);
+        if (!data) {
+          // If row doesn't exist yet or is empty, show 5 blank servers
+          setLocalServers(prev =>
+            ensureFiveServers(prev).map((srv, idx) => ({
+              ...srv,
+              id: `server${idx + 1}`,
+              label: `Server ${idx + 1}`,
+              prompt: '',
+            }))
+          );
+          return;
+        }
         setLocalServers(prev => {
           const base = ensureFiveServers(prev);
           return base.map((srv, idx) => {
             if (dirtyServersRef.current.has(srv.id)) return srv;
             const num = idx + 1;
             const rawVal = data[`server_${num}`] ?? data[`server ${num}`] ?? data[`server${num}`];
-            if (rawVal !== undefined && rawVal !== null && rawVal !== '') {
-              const strVal = typeof rawVal === 'object'
-                ? (Object.keys(rawVal).length === 0 ? '' : JSON.stringify(rawVal))
-                : String(rawVal);
-              if (strVal) {
-                return { ...srv, prompt: strVal };
-              }
-            }
-            return srv;
+            const strVal = serializeServerColumnValue(rawVal);
+            return {
+              ...srv,
+              id: `server${num}`,
+              label: `Server ${num}`,
+              prompt: strVal,
+            };
           });
         });
-      }, () => {});
-  }, []);
+      }, () => {
+        if (!isCancelled) setIsLoadingDataType(false);
+      });
 
-  // Sync state if promptConfig loads or changes from another source, without overwriting active edits!
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedDataType]);
+
+  // Sync state if promptConfig loads or changes from another source, without overwriting active edits or non-Flow datatypes!
   useEffect(() => {
-    if (promptConfig?.servers && promptConfig.servers.length > 0) {
+    if (selectedDataType === 'Flow ultra lower priority' && promptConfig?.servers && promptConfig.servers.length > 0) {
       setLocalServers(prev => {
-        return promptConfig.servers.map(remoteSrv => {
+        const hasLoadedAnyPrompt = prev.some(p => Boolean(p.prompt));
+        if (hasLoadedAnyPrompt) return prev;
+        return ensureFiveServers(promptConfig.servers).map(remoteSrv => {
           if (dirtyServersRef.current.has(remoteSrv.id)) {
             const local = prev.find(l => l.id === remoteSrv.id);
             return local || remoteSrv;
@@ -313,6 +375,7 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
       if (cloudflareUrl.trim()) {
         try {
           const cfPayload: Record<string, any> = {
+            dataType: selectedDataType,
             servers: normalizedServers,
             updatedAt: nowIso
           };
@@ -330,22 +393,24 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
         }
       }
 
-      // Direct sync of all 5 servers to Supabase public.servers ('Flow ultra lower priority')
-      await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, 'Flow ultra lower priority');
+      // Direct sync of all 5 servers to Supabase public.servers for the active datatype
+      await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, selectedDataType);
 
-      await updatePromptConfig({
-        servers: normalizedServers,
-        costs: {
-          image: Number(imageCost) || 20,
-          video: Number(videoCost) || 30,
-        },
-        promptReminderMinutes: Number(reminderMinutes) || 120,
-        cloudflareEnabled,
-        cloudflareUrl: cloudflareUrl.trim(),
-        telegramAlerts: tgAlertConfig,
-        server1Prompt: normalizedServers[0]?.prompt || '',
-        server2Prompt: normalizedServers[1]?.prompt || '',
-      });
+      if (selectedDataType === 'Flow ultra lower priority') {
+        await updatePromptConfig({
+          servers: normalizedServers,
+          costs: {
+            image: Number(imageCost) || 20,
+            video: Number(videoCost) || 30,
+          },
+          promptReminderMinutes: Number(reminderMinutes) || 120,
+          cloudflareEnabled,
+          cloudflareUrl: cloudflareUrl.trim(),
+          telegramAlerts: tgAlertConfig,
+          server1Prompt: normalizedServers[0]?.prompt || '',
+          server2Prompt: normalizedServers[1]?.prompt || '',
+        });
+      }
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3500);
     } catch (err) {
@@ -418,7 +483,7 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
           const cfPayload = {
             action: 'update_prompt',
             secret: 'flow_admin_2026',
-            dataType: 'Flow ultra lower priority',
+            dataType: selectedDataType,
             dropdown: `Server ${singleServerNum}`,
             prompt: targetSrvObj?.prompt || '',
           };
@@ -432,20 +497,22 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
         }
       }
 
-      // Sync ONLY the updated server column to Supabase public.servers ('Flow ultra lower priority')
-      await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, 'Flow ultra lower priority', singleServerNum);
+      // Sync ONLY the updated server column to Supabase public.servers for the active datatype
+      await syncPromptServersToSupabaseTable(getSupabase(), normalizedServers, selectedDataType, singleServerNum);
 
-      await updatePromptConfig({
-        servers: normalizedServers,
-        costs: {
-          image: Number(imageCost) || 20,
-          video: Number(videoCost) || 30,
-        },
-        promptReminderMinutes: Number(reminderMinutes) || 120,
-        telegramAlerts: tgAlertConfig,
-        server1Prompt: normalizedServers[0]?.prompt || '',
-        server2Prompt: normalizedServers[1]?.prompt || '',
-      });
+      if (selectedDataType === 'Flow ultra lower priority') {
+        await updatePromptConfig({
+          servers: normalizedServers,
+          costs: {
+            image: Number(imageCost) || 20,
+            video: Number(videoCost) || 30,
+          },
+          promptReminderMinutes: Number(reminderMinutes) || 120,
+          telegramAlerts: tgAlertConfig,
+          server1Prompt: normalizedServers[0]?.prompt || '',
+          server2Prompt: normalizedServers[1]?.prompt || '',
+        });
+      }
       setTimeout(() => setSavedServerId(null), 3000);
     } catch (err) {
       console.error('Error saving server:', err);
@@ -975,6 +1042,53 @@ export const PromptServerPage: React.FC<PromptServerPageProps> = ({ onBack }) =>
                 </div>
               </div>
             )}
+          </div>
+        </div>
+
+        {/* DATATYPE / PLATFORM SELECTOR FOR SUPABASE public.servers */}
+        <div className="bg-[#121318] border border-purple-500/40 rounded-2xl p-4 sm:p-5 shadow-xl space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <Server className="w-4 h-4 text-purple-400" />
+                <span>Select Platform / DataType (`public.servers`)</span>
+                {isLoadingDataType && (
+                  <span className="text-[10px] text-purple-300 font-mono animate-pulse">Loading...</span>
+                )}
+              </h3>
+              <p className="text-xs text-neutral-400 mt-0.5">
+                Jis DataType ko select karoge, uske <b>Server 1 se Server 5</b> yahan dikhenge aur save karne par usi DataType row me update honge.
+              </p>
+            </div>
+            <span className="px-2.5 py-1 rounded-lg bg-purple-950/80 border border-purple-500/40 text-[11px] font-mono text-purple-200 self-start sm:self-auto">
+              datatype: "{selectedDataType}"
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 pt-1">
+            {availableDataTypes.map((dt) => {
+              const preset = DEFAULT_DATATYPES.find(d => d.id.toLowerCase() === dt.toLowerCase());
+              const isSelected = selectedDataType.toLowerCase() === dt.toLowerCase();
+              return (
+                <button
+                  key={dt}
+                  type="button"
+                  onClick={() => setSelectedDataType(dt)}
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 border ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-purple-400 shadow-lg shadow-purple-900/40'
+                      : 'bg-neutral-900/90 text-neutral-300 hover:text-white hover:bg-neutral-800 border-neutral-800'
+                  }`}
+                >
+                  <span>{preset ? preset.label : dt}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                    isSelected ? 'bg-black/30 text-purple-100' : 'bg-black/40 text-neutral-400'
+                  }`}>
+                    {dt}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 

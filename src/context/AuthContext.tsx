@@ -702,34 +702,80 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [currentUser]);
 
-  // Reply to extension sync requests on demand
+  // Reply to extension sync & multi-datatype server requests on demand
   useEffect(() => {
-    const handleMsg = (e: MessageEvent) => {
-      if (e.data && (e.data.type === 'FLOW_REQUEST_USER_SYNC' || e.data.type === 'GET_PORTAL_USER')) {
-        if (currentUser) {
-          const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
-          const bridgeData = {
-            id: currentUser.id,
-            userId: currentUser.id,
-            email: currentUser.email,
-            name: currentUser.name,
-            plan: currentUser.plan,
-            planName: currentUser.plan === 'ultra' ? 'Ultra VIP Plan' : currentUser.plan === 'unlimited' ? 'Unlimited VIP Plan' : 'Basic Plan',
-            credits: currentUser.credits,
-            creditsLeft: currentUser.credits,
-            maxCredits: currentUser.maxCredits,
-            totalCredits: currentUser.maxCredits,
-            sessionToken: sessionToken,
-            token: sessionToken,
-            planDaysLeft: currentUser.planDaysLeft,
-            status: currentUser.status,
-            extensionAccess: currentUser.extensionAccess !== false,
-            canAccessPrompts: (currentUser.plan === 'ultra' || currentUser.plan === 'unlimited') && currentUser.status !== 'suspended',
-            portalUrl: window.location.origin,
-            lastSynced: new Date().toISOString()
-          };
-          window.postMessage({ type: 'FLOW_PORTAL_USER_SYNC', data: bridgeData }, '*');
+    const handleMsg = async (e: MessageEvent) => {
+      if (!e.data || typeof e.data !== 'object') return;
+      const msgType = e.data.type;
+
+      if (
+        msgType === 'FLOW_REQUEST_USER_SYNC' ||
+        msgType === 'GET_PORTAL_USER' ||
+        msgType === 'FLOW_REQUEST_SERVER_DATA' ||
+        msgType === 'GET_SERVER_DATA'
+      ) {
+        if (!currentUser) return;
+        const sessionToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+        const canAccess = (currentUser.plan === 'ultra' || currentUser.plan === 'unlimited' || currentUser.role === 'admin') && currentUser.status !== 'suspended';
+        const bridgeData: Record<string, any> = {
+          id: currentUser.id,
+          userId: currentUser.id,
+          email: currentUser.email,
+          name: currentUser.name,
+          plan: currentUser.plan,
+          planName: currentUser.plan === 'ultra' ? 'Ultra VIP Plan' : currentUser.plan === 'unlimited' ? 'Unlimited VIP Plan' : 'Basic Plan',
+          credits: currentUser.credits,
+          creditsLeft: currentUser.credits,
+          maxCredits: currentUser.maxCredits,
+          totalCredits: currentUser.maxCredits,
+          sessionToken: sessionToken,
+          token: sessionToken,
+          planDaysLeft: currentUser.planDaysLeft,
+          status: currentUser.status,
+          extensionAccess: currentUser.extensionAccess !== false,
+          canAccessPrompts: canAccess,
+          portalUrl: window.location.origin,
+          lastSynced: new Date().toISOString()
+        };
+
+        const reqDataType = e.data.dataType || e.data.datatype || e.data.platform || e.data.service;
+        const reqDropdown = e.data.dropdown || e.data.server || e.data.serverId;
+
+        if (canAccess && (msgType === 'FLOW_REQUEST_SERVER_DATA' || msgType === 'GET_SERVER_DATA' || reqDataType || reqDropdown)) {
+          const targetDataType = String(reqDataType || 'Flow ultra lower priority').trim();
+          const targetDropdown = String(reqDropdown || '').trim();
+          try {
+            const resp = await fetch(apiUrl('/api/extension/cf-verify'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                email: currentUser.email,
+                sessionToken,
+                dataType: targetDataType,
+                dropdown: targetDropdown || undefined,
+              }),
+            });
+            if (resp.ok) {
+              const srvData = await resp.json();
+              window.postMessage({
+                type: 'FLOW_PORTAL_SERVER_DATA',
+                success: true,
+                dataType: targetDataType,
+                dropdown: targetDropdown || undefined,
+                selectedServer: srvData.selectedServer,
+                prompt: srvData.prompt,
+                servers: srvData.servers || [],
+                user: bridgeData,
+              }, '*');
+              bridgeData.dataType = targetDataType;
+              bridgeData.dropdown = targetDropdown || undefined;
+              bridgeData.servers = srvData.servers || [];
+              if (srvData.prompt !== undefined) bridgeData.prompt = srvData.prompt;
+            }
+          } catch {}
         }
+
+        window.postMessage({ type: 'FLOW_PORTAL_USER_SYNC', data: bridgeData }, '*');
       }
     };
     window.addEventListener('message', handleMsg);

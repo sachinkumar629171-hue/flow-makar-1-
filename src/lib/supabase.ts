@@ -408,12 +408,24 @@ export async function safeSupabaseUserUpdate(
 
 function parsePromptForJsonColumn(rawPrompt: string): any {
   const trimmed = (rawPrompt || '').trim();
-  if (!trimmed) return '';
+  if (!trimmed) return {};
   try {
     return JSON.parse(trimmed);
   } catch {
     return rawPrompt;
   }
+}
+
+export function serializeServerColumnValue(rawVal: any): string {
+  if (rawVal === undefined || rawVal === null || rawVal === '') return '';
+  if (typeof rawVal === 'object') {
+    if (!Array.isArray(rawVal) && Object.keys(rawVal).length === 0) return '';
+    if (Array.isArray(rawVal) && rawVal.length === 0) return '';
+    return JSON.stringify(rawVal);
+  }
+  const str = String(rawVal).trim();
+  if (str === '{}' || str === '[]') return '';
+  return String(rawVal);
 }
 
 /**
@@ -429,8 +441,9 @@ export async function syncPromptServersToSupabaseTable(
 ): Promise<boolean> {
   if (!supabase || !Array.isArray(servers)) return false;
 
-  const underscorePayload: Record<string, any> = { datatype: dataType };
-  const spacePayload: Record<string, any> = { datatype: dataType };
+  const targetDataType = (dataType || 'Flow ultra lower priority').trim();
+  const underscorePayload: Record<string, any> = { datatype: targetDataType };
+  const spacePayload: Record<string, any> = { datatype: targetDataType };
 
   servers.slice(0, 5).forEach((s, idx) => {
     const num = idx + 1;

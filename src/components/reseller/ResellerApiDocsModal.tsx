@@ -462,6 +462,8 @@ export default {
     const email = (body.email || '').trim().toLowerCase();
     const sessionToken = (body.token || body.sessionToken || '').trim();
     const version = body.version || '';
+    const dataType = (body.dataType || body.datatype || body.platform || 'Flow ultra lower priority').trim();
+    const dropdown = (body.dropdown || body.server || body.serverId || '').trim();
 
     if (!email || !sessionToken) {
       return new Response(JSON.stringify({
@@ -474,7 +476,7 @@ export default {
     }
 
     // 1-Minute Cache Check
-    const cacheKey = \`\${email}::\${sessionToken}\`;
+    const cacheKey = \`\${email}::\${sessionToken}::\${dataType}::\${dropdown}\`;
     const now = Date.now();
     const cachedEntry = AUTH_CACHE.get(cacheKey);
     let authData = null;
@@ -487,7 +489,7 @@ export default {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           redirect: 'follow',
-          body: JSON.stringify({ email, sessionToken, version })
+          body: JSON.stringify({ email, sessionToken, version, dataType, dropdown })
         });
         const text = (await resp.text()).trim();
         if (text.startsWith('{') || text.startsWith('[')) {
