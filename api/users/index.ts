@@ -214,47 +214,91 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const now = Date.now();
-      const validUsers = (allUsers || [])
-        .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
+      const rawFiltered = (allUsers || []).filter(
+        (u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local')
+      );
+
+      // Enforce 1 Gmail = 1 Account = 1 Single Plan (basic / ultra / unlimited)
+      const planRank = (p: string) => (p === 'unlimited' ? 3 : p === 'ultra' ? 2 : 1);
+      const byEmail = new Map<string, any>();
+      const duplicateIdsToDelete: string[] = [];
+
+      for (const u of rawFiltered) {
+        const emailKey = String(u.email || u.id || '').trim().toLowerCase();
+        if (!emailKey) continue;
+        const existing = byEmail.get(emailKey);
+        if (!existing) {
+          byEmail.set(emailKey, u);
+        } else {
+          const rankDiff = planRank(u.plan) - planRank(existing.plan);
+          const uBetter =
+            rankDiff > 0 ||
+            (rankDiff === 0 && (Number(u.credits) || 0) > (Number(existing.credits) || 0)) ||
+            (rankDiff === 0 && (Number(u.plan_days_left) || 0) > (Number(existing.plan_days_left) || 0));
+          if (uBetter) {
+            if (existing.id) duplicateIdsToDelete.push(existing.id);
+            byEmail.set(emailKey, u);
+          } else {
+            if (u.id) duplicateIdsToDelete.push(u.id);
+          }
+        }
+      }
+
+      if (duplicateIdsToDelete.length > 0) {
+        supabase.from('users').delete().in('id', duplicateIdsToDelete).then(() => {}, () => {});
+      }
+
+      const validUsers = Array.from(byEmail.values())
         .map((u: any) => {
           const userEmail = (u.email || '').toLowerCase().trim();
           const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
           const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
           const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
 
-          let calculatedDaysLeft = Number(u.plan_days_left) ?? 30;
+          let calculatedDaysLeft = Math.min(30, Math.max(0, Number(u.plan_days_left ?? 30)));
           let calculatedPlan = isSysAdmin ? 'ultra' : (u.plan || 'basic');
           let calculatedCredits = isSysAdmin ? 45000 : (Number(u.credits) ?? 100);
           let calculatedMaxCredits = isSysAdmin ? 45000 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100));
           let planExpiresAt = u.plan_expires_at;
           let needsUpdate = false;
 
+          const rawCreatedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at;
           if (!isSysAdmin) {
             let expiryMs = 0;
             if (planExpiresAt) {
               const parsed = new Date(planExpiresAt).getTime();
               if (!isNaN(parsed)) expiryMs = parsed;
             }
-            if (!expiryMs && u.created_at) {
-              const createdMs = new Date(u.created_at).getTime();
+            if (!expiryMs && rawCreatedAt) {
+              const createdMs = new Date(rawCreatedAt).getTime();
+              const totalAllocated = Math.min(30, Math.max(1, Number(u.plan_total_days ?? calculatedDaysLeft)));
               if (!isNaN(createdMs)) {
-                expiryMs = createdMs + Math.max(1, calculatedDaysLeft) * 86400000;
+                expiryMs = createdMs + totalAllocated * 86400000;
+                if (expiryMs <= now && calculatedDaysLeft > 0) {
+                  expiryMs = now + calculatedDaysLeft * 86400000;
+                }
                 planExpiresAt = new Date(expiryMs).toISOString();
                 needsUpdate = true;
               }
             }
             if (expiryMs > 0) {
               const diffMs = expiryMs - now;
-              calculatedDaysLeft = Math.max(0, Math.ceil(diffMs / 86400000));
-              if (Number(u.plan_days_left) !== calculatedDaysLeft) {
+              const remainingDays = Math.min(30, Math.max(0, Math.ceil(diffMs / 86400000)));
+              if (remainingDays <= 0 && calculatedDaysLeft > 2) {
+                planExpiresAt = new Date(now + calculatedDaysLeft * 86400000).toISOString();
                 needsUpdate = true;
-              }
-              if (diffMs <= 0 && (calculatedPlan === 'ultra' || calculatedPlan === 'unlimited')) {
-                calculatedPlan = 'basic';
-                calculatedCredits = Math.min(calculatedCredits, 100);
-                calculatedMaxCredits = 100;
-                calculatedDaysLeft = 0;
-                needsUpdate = true;
+              } else {
+                calculatedDaysLeft = remainingDays;
+                if (Number(u.plan_days_left) !== calculatedDaysLeft) {
+                  needsUpdate = true;
+                }
+                if (diffMs <= 0 && (calculatedPlan === 'ultra' || calculatedPlan === 'unlimited')) {
+                  calculatedPlan = 'basic';
+                  calculatedCredits = Math.min(calculatedCredits, 100);
+                  calculatedMaxCredits = 100;
+                  calculatedDaysLeft = 0;
+                  needsUpdate = true;
+                }
               }
             }
 
@@ -280,7 +324,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             maxCredits: calculatedMaxCredits,
             planDaysLeft: calculatedDaysLeft,
             planExpiresAt,
-            planStartedAt: u.plan_started_at || u.created_at || new Date().toISOString(),
+            planStartedAt: rawCreatedAt || new Date().toISOString(),
             role: isSysAdmin ? 'admin' : (u.role || 'user'),
             resellerId: u.reseller_id,
             resellerName: u.reseller_name,
@@ -289,12 +333,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             canEditPrompts: u.can_edit_prompts === true,
             isOnline: isLive,
             lastActive: u.last_active || '',
-            createdAt: u.created_at || new Date().toISOString(),
+            createdAt: rawCreatedAt || new Date().toISOString(),
             avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
           };
         });
 
-      // 1. Reseller Portal gets ONLY their assigned users and ONLY the 10 allowed fields
+      // 1. Reseller Portal gets ONLY their assigned users and ONLY the 10 allowed fields (sorted by newest access first)
       if (resellerId || resellerKey || resellerNameParam) {
         const cleanTargetId = resellerId.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
         const matchingUsers = validUsers
@@ -304,6 +348,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (cleanTargetId && cleanUserResId && cleanTargetId === cleanUserResId) return true;
             if (resellerNameParam && u.resellerName && String(u.resellerName).trim().toLowerCase() === resellerNameParam) return true;
             return false;
+          })
+          .sort((a, b) => {
+            const aStart = new Date(a.planStartedAt || a.createdAt || a.planExpiresAt || 0).getTime() || 0;
+            const bStart = new Date(b.planStartedAt || b.createdAt || b.planExpiresAt || 0).getTime() || 0;
+            if (bStart !== aStart) return bStart - aStart;
+            const aExp = new Date(a.planExpiresAt || 0).getTime() || 0;
+            const bExp = new Date(b.planExpiresAt || 0).getTime() || 0;
+            return bExp - aExp;
           })
           .map(u => ({
             name: u.name || 'User',
@@ -429,21 +481,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const cleanEmail = email.toLowerCase().trim();
 
-      if (targetResellerId || isAdmin) {
-        const { data: existingRow } = await supabase
-          .from('users')
-          .select('id')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-        if (existingRow) {
-          return res.status(400).json({
-            success: false,
-            error: 'This Gmail ID is already registered! Please use a different Gmail.',
-          });
-        }
+      // Strictly enforce 1 Gmail = 1 Account across the entire database
+      const { data: existingRows } = await supabase
+        .from('users')
+        .select('id, email, plan')
+        .ilike('email', cleanEmail);
+      if (Array.isArray(existingRows) && existingRows.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'This Gmail ID is already registered! Please use a different Gmail.',
+        });
       }
 
       const isSysAdmin = ADMIN_EMAILS.has(cleanEmail);
+      const nowIso = new Date().toISOString();
+      const allocatedDays = Math.min(30, Math.max(0, planDaysLeft !== undefined ? Number(planDaysLeft) : 30));
+      const resolvedExpiresAt = planExpiresAt || new Date(Date.now() + Math.max(1, allocatedDays) * 86400000).toISOString();
       const userPayload: Record<string, any> = {
         id: id || `usr-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
         name: name || cleanEmail.split('@')[0],
@@ -451,14 +504,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         plan: isSysAdmin ? 'ultra' : (plan || 'basic'),
         credits: isSysAdmin ? 45000 : (credits !== undefined ? Number(credits) : 100),
         max_credits: isSysAdmin ? 45000 : (maxCredits !== undefined ? Number(maxCredits) : 100),
-        plan_days_left: planDaysLeft !== undefined ? Number(planDaysLeft) : 30,
+        plan_days_left: allocatedDays,
+        plan_total_days: Math.ceil(allocatedDays),
+        plan_started_at: nowIso,
+        plan_expires_at: resolvedExpiresAt,
         role: isSysAdmin ? 'admin' : (role || 'user'),
         status: status || 'active',
         is_online: false,
-        last_active: new Date().toISOString(),
+        last_active: nowIso,
       };
       if (password) userPayload.password = password;
-      if (planExpiresAt) userPayload.plan_expires_at = planExpiresAt;
       if (targetResellerId) userPayload.reseller_id = targetResellerId;
       if (bodyResName || reseller_name) userPayload.reseller_name = bodyResName || reseller_name;
       if (whatsapp) userPayload.whatsapp = whatsapp;

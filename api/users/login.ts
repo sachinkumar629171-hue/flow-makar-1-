@@ -52,16 +52,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const supabase = createClient(supaUrl, supaKey);
 
-    // 1. Fetch user from Supabase
+    // 1. Fetch user(s) from Supabase by email (handle any legacy duplicate rows for the same Gmail)
     let supaUser: any = null;
-    const { data, error } = await supabase
+    const { data: matchingRows, error } = await supabase
       .from('users')
       .select('*')
-      .ilike('email', cleanEmail)
-      .maybeSingle();
+      .ilike('email', cleanEmail);
 
-    if (!error && data && !data.id?.startsWith('admin_config_')) {
-      supaUser = data;
+    if (!error && Array.isArray(matchingRows) && matchingRows.length > 0) {
+      const validRows = matchingRows.filter((r: any) => r.id && !String(r.id).startsWith('admin_config_') && !String(r.id).startsWith('sys_config_'));
+      if (validRows.length > 0) {
+        const planRank = (p: string) => (p === 'unlimited' ? 3 : p === 'ultra' ? 2 : 1);
+        validRows.sort((a: any, b: any) => {
+          const rankDiff = planRank(b.plan) - planRank(a.plan);
+          if (rankDiff !== 0) return rankDiff;
+          const credDiff = (Number(b.credits) || 0) - (Number(a.credits) || 0);
+          if (credDiff !== 0) return credDiff;
+          const daysDiff = (Number(b.plan_days_left) || 0) - (Number(a.plan_days_left) || 0);
+          return daysDiff;
+        });
+        supaUser = validRows[0];
+
+        // If duplicate rows existed for the same Gmail, remove the extras so 1 Gmail = 1 Account = 1 Plan
+        if (validRows.length > 1) {
+          const duplicateIds = validRows.slice(1).map((r: any) => r.id).filter(Boolean);
+          if (duplicateIds.length > 0) {
+            supabase.from('users').delete().in('id', duplicateIds).then(() => {});
+          }
+        }
+      }
     }
 
     // 2. Admin fallback if not in DB
@@ -153,29 +172,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       : 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
     const nowIso = new Date().toISOString();
 
-    // Update session token and online status in database
+    // Update session token and online status on the canonical user row
     try {
       await supabase.from('users').update({
         session_token: newSessionToken,
         is_online: true,
         last_active: nowIso,
-      }).ilike('email', cleanEmail);
+      }).eq('id', supaUser.id);
     } catch (updateErr) {
       console.error('Supabase login token update error:', updateErr);
     }
 
     if (isSystemAdmin && supaUser.role !== 'admin') {
-      supabase.from('users').update({ role: 'admin' }).ilike('email', cleanEmail).then(() => {});
+      supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
     }
 
+    const rawStartedAt = supaUser.plan_started_at || supaUser['created_at TIMESTAMPTZ'] || supaUser.created_at || nowIso;
     const safeUser = {
       id: supaUser.id,
       name: supaUser.name || 'User',
       email: supaUser.email,
       plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
       credits: isSystemAdmin ? 45000 : (Number(supaUser.credits) ?? 100),
-      maxCredits: isSystemAdmin ? 45000 : (Number(supaUser.max_credits) ?? 100),
+      maxCredits: isSystemAdmin ? 45000 : (Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100)),
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+      planExpiresAt: supaUser.plan_expires_at || undefined,
+      planStartedAt: rawStartedAt,
       role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
       status: supaUser.status || 'active',
       isOnline: true,

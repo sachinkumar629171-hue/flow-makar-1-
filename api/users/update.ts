@@ -212,8 +212,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (data.plan !== undefined) supaData.plan = data.plan;
       if (data.credits !== undefined) supaData.credits = data.credits;
       if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
-      if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
-      if (data.planExpiresAt !== undefined) supaData.plan_expires_at = data.planExpiresAt;
+      if (data.planDaysLeft !== undefined) {
+        const cappedDays = Math.min(30, Math.max(0, Number(data.planDaysLeft)));
+        supaData.plan_days_left = cappedDays;
+        supaData.plan_total_days = Math.ceil(cappedDays);
+        supaData.plan_started_at = new Date().toISOString();
+        supaData.plan_expires_at = data.planExpiresAt || new Date(Date.now() + cappedDays * 86400000).toISOString();
+      } else if (data.planExpiresAt !== undefined) {
+        supaData.plan_expires_at = data.planExpiresAt;
+      }
       if (data.status !== undefined) supaData.status = data.status;
       if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
       if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;

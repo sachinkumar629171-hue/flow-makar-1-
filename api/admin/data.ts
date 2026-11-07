@@ -154,78 +154,117 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       const { data: allUsers } = await supabase.from('users').select('*').not('id', 'like', 'admin_config_%');
       if (allUsers && Array.isArray(allUsers)) {
-        usersList = allUsers
-          .filter((u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local'))
-          .map((u: any) => {
-            const userEmail = (u.email || '').toLowerCase().trim();
-            const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
-            const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
-            // Strict 2-minute (120,000 ms) heartbeat window
-            const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+        const rawFiltered = allUsers.filter(
+          (u: any) => u.id && !u.id.startsWith('admin_config_') && !u.id.startsWith('sys_config_') && !u.email?.includes('@system.local')
+        );
 
-            // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
-            const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
-            let planDaysLeft = Number(u.plan_days_left) ?? 30;
-            let planExpiresAt = u.plan_expires_at;
+        // Enforce 1 Gmail = 1 Account = 1 Single Plan (basic / ultra / unlimited)
+        const planRank = (p: string) => (p === 'unlimited' ? 3 : p === 'ultra' ? 2 : 1);
+        const byEmail = new Map<string, any>();
+        const duplicateIdsToDelete: string[] = [];
 
-            if (!planExpiresAt) {
-              const startMs = new Date(planStartedAt).getTime();
-              const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
-              planExpiresAt = new Date(computedExpMs).toISOString();
-              supabase.from('users').update({
-                plan_started_at: planStartedAt,
-                plan_expires_at: planExpiresAt
-              }).eq('id', u.id).then(() => {}, () => {});
-            } else if (!isSysAdmin) {
-              const expMs = new Date(planExpiresAt).getTime();
-              if (!isNaN(expMs)) {
-                planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+        for (const u of rawFiltered) {
+          const emailKey = String(u.email || u.id || '').trim().toLowerCase();
+          if (!emailKey) continue;
+          const existing = byEmail.get(emailKey);
+          if (!existing) {
+            byEmail.set(emailKey, u);
+          } else {
+            const rankDiff = planRank(u.plan) - planRank(existing.plan);
+            const uBetter =
+              rankDiff > 0 ||
+              (rankDiff === 0 && (Number(u.credits) || 0) > (Number(existing.credits) || 0)) ||
+              (rankDiff === 0 && (Number(u.plan_days_left) || 0) > (Number(existing.plan_days_left) || 0));
+            if (uBetter) {
+              if (existing.id) duplicateIdsToDelete.push(existing.id);
+              byEmail.set(emailKey, u);
+            } else {
+              if (u.id) duplicateIdsToDelete.push(u.id);
+            }
+          }
+        }
+
+        if (duplicateIdsToDelete.length > 0) {
+          supabase.from('users').delete().in('id', duplicateIdsToDelete).then(() => {}, () => {});
+        }
+
+        const uniqueUsers = Array.from(byEmail.values());
+
+        usersList = uniqueUsers.map((u: any) => {
+          const userEmail = (u.email || '').toLowerCase().trim();
+          const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
+          const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
+          // Strict 2-minute (120,000 ms) heartbeat window
+          const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
+
+          const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
+          let planDaysLeft = Math.min(30, Math.max(0, Number(u.plan_days_left ?? 30)));
+          let planExpiresAt = u.plan_expires_at;
+
+          if (!planExpiresAt) {
+            const startMs = new Date(planStartedAt).getTime();
+            const safeDays = Math.max(1, planDaysLeft || 30);
+            let computedExpMs = (isNaN(startMs) ? now : startMs) + safeDays * 86400000;
+            if (computedExpMs <= now && planDaysLeft > 0) {
+              computedExpMs = now + safeDays * 86400000;
+            }
+            planExpiresAt = new Date(computedExpMs).toISOString();
+            supabase.from('users').update({
+              plan_started_at: planStartedAt,
+              plan_expires_at: planExpiresAt,
+            }).eq('id', u.id).then(() => {}, () => {});
+          } else if (!isSysAdmin) {
+            const expMs = new Date(planExpiresAt).getTime();
+            if (!isNaN(expMs)) {
+              const remainingDays = Math.min(30, Math.max(0, Math.ceil((expMs - now) / 86400000)));
+              // If plan_days_left was freshly set in DB (e.g. > 2 days) while plan_expires_at had an old expired timestamp, sync plan_expires_at forward instead of falsely downgrading to basic!
+              if (remainingDays <= 0 && planDaysLeft > 2) {
+                planExpiresAt = new Date(now + planDaysLeft * 86400000).toISOString();
+                supabase.from('users').update({
+                  plan_started_at: new Date().toISOString(),
+                  plan_expires_at: planExpiresAt,
+                }).eq('id', u.id).then(() => {}, () => {});
+              } else {
+                planDaysLeft = remainingDays;
                 if (Number(u.plan_days_left) !== planDaysLeft) {
                   supabase.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
                 }
               }
             }
-
-            const isExpired = !isSysAdmin && planDaysLeft <= 0;
-
-            return {
-              id: u.id,
-              name: u.name || 'User',
-              email: u.email || '',
-              plan: isSysAdmin ? 'ultra' : (isExpired ? 'basic' : (u.plan || 'basic')),
-              credits: isSysAdmin ? 45000 : (isExpired ? Math.min(Number(u.credits) ?? 100, 100) : (Number(u.credits) ?? 100)),
-              maxCredits: isSysAdmin ? 45000 : (isExpired ? 100 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100))),
-              planDaysLeft: isSysAdmin ? 30 : planDaysLeft,
-              planExpiresAt,
-              planStartedAt,
-              role: isSysAdmin ? 'admin' : (u.role || 'user'),
-              resellerId: u.reseller_id,
-              resellerName: u.reseller_name,
-              status: u.status || 'active',
-              extensionAccess: u.extension_access !== false,
-              canEditPrompts: u.can_edit_prompts === true,
-              isOnline: isLive, // Strictly from heartbeat within 2 minutes!
-              lastActive: u.last_active || '', // Never fake lastActive
-              createdAt: u.created_at || new Date().toISOString(),
-              avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
-            };
-          });
-
-        // Zero-Quota Guard: Only update Supabase if an Ultra/Unlimited user actually expired (no unnecessary writes!)
-        for (const u of allUsers) {
-          if (!u.id || u.id.startsWith('admin_config_')) continue;
-          if (u.plan_expires_at && (u.plan === 'ultra' || u.plan === 'unlimited')) {
-            const expMs = new Date(u.plan_expires_at).getTime();
-            if (!isNaN(expMs) && expMs <= now) {
-              supabase.from('users').update({
-                plan: 'basic',
-                plan_days_left: 0,
-                max_credits: 100,
-                credits: Math.min(Number(u.credits) ?? 100, 100),
-              }).eq('id', u.id).then(() => {});
-            }
           }
-        }
+
+          const isExpired = !isSysAdmin && planDaysLeft <= 0;
+          if (isExpired && (u.plan === 'ultra' || u.plan === 'unlimited')) {
+            supabase.from('users').update({
+              plan: 'basic',
+              plan_days_left: 0,
+              max_credits: 100,
+              credits: Math.min(Number(u.credits) ?? 100, 100),
+            }).eq('id', u.id).then(() => {}, () => {});
+          }
+
+          return {
+            id: u.id,
+            name: u.name || 'User',
+            email: u.email || '',
+            plan: isSysAdmin ? 'ultra' : (isExpired ? 'basic' : (u.plan || 'basic')),
+            credits: isSysAdmin ? 45000 : (isExpired ? Math.min(Number(u.credits) ?? 100, 100) : (Number(u.credits) ?? 100)),
+            maxCredits: isSysAdmin ? 45000 : (isExpired ? 100 : (Number(u.max_credits) ?? (u.plan === 'ultra' ? 45000 : 100))),
+            planDaysLeft: isSysAdmin ? 30 : planDaysLeft,
+            planExpiresAt,
+            planStartedAt,
+            role: isSysAdmin ? 'admin' : (u.role || 'user'),
+            resellerId: u.reseller_id,
+            resellerName: u.reseller_name,
+            status: u.status || 'active',
+            extensionAccess: u.extension_access !== false,
+            canEditPrompts: u.can_edit_prompts === true,
+            isOnline: isLive,
+            lastActive: u.last_active || '',
+            createdAt: planStartedAt,
+            avatarColor: u.avatar_color || (isSysAdmin ? 'from-purple-600 to-indigo-600' : 'from-blue-600 to-cyan-600'),
+          };
+        });
       }
     } catch (e) {
       console.error('Error fetching users in /api/admin/data:', e);

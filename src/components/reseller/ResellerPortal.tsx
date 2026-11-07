@@ -220,10 +220,19 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     if ((u as any).resellerEmail && currentEmail && (u as any).resellerEmail.trim().toLowerCase() === currentEmail) return true;
     return false;
   });
-  const filteredUsers = resellerUsers.filter(u => 
-    u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    u.email.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredUsers = resellerUsers
+    .filter(u => 
+      u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      u.email.toLowerCase().includes(searchTerm.toLowerCase())
+    )
+    .sort((a, b) => {
+      const aStart = new Date(a.planStartedAt || a.createdAt || a.planExpiresAt || 0).getTime() || 0;
+      const bStart = new Date(b.planStartedAt || b.createdAt || b.planExpiresAt || 0).getTime() || 0;
+      if (bStart !== aStart) return bStart - aStart;
+      const aExp = new Date(a.planExpiresAt || 0).getTime() || 0;
+      const bExp = new Date(b.planExpiresAt || 0).getTime() || 0;
+      return bExp - aExp;
+    });
 
   // Metrics (Accurate Real-Time Online & Credit Calculations)
   const totalCreated = resellerUsers.length;
@@ -535,20 +544,15 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
 
                             return (
                               <div className="flex flex-col gap-1 select-text">
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedUserForCustomTime(user);
-                                  }}
-                                  title="Click to adjust custom validity (Max 30 days)"
-                                  className={`text-[11px] font-mono px-2.5 py-1 rounded-lg border transition-colors cursor-pointer whitespace-nowrap ${
+                                <span
+                                  className={`inline-block text-center text-[11px] font-mono px-2.5 py-1 rounded-lg border whitespace-nowrap select-text ${
                                     validity.isExpired 
                                       ? 'text-red-400 bg-red-950/40 border-red-800/40' 
-                                      : 'text-emerald-400 font-semibold bg-emerald-950/40 border-emerald-800/40 hover:bg-emerald-950/70'
+                                      : 'text-emerald-400 font-semibold bg-emerald-950/40 border-emerald-800/40'
                                   }`}
                                 >
                                   {validity.displayText} ⏱
-                                </button>
+                                </span>
                                 {(startDisplay || expiryDisplay) && (
                                   <div className="text-[10px] text-neutral-400 font-mono flex items-center gap-1 select-text">
                                     {startDisplay && <span>Start: {startDisplay}</span>}

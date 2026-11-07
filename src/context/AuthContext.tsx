@@ -262,6 +262,30 @@ const PURGED_MOCK_IDS = new Set([
   'reseller-sachin-5', 'reseller-alpha-1'
 ]);
 
+function dedupeUsersByEmail(list: User[]): User[] {
+  const planRank = (p?: string) => (p === 'unlimited' ? 3 : p === 'ultra' ? 2 : 1);
+  const byEmail = new Map<string, User>();
+  for (const u of list) {
+    if (!u) continue;
+    const key = String(u.email || u.id || '').trim().toLowerCase();
+    if (!key) continue;
+    const existing = byEmail.get(key);
+    if (!existing) {
+      byEmail.set(key, u);
+    } else {
+      const rankDiff = planRank(u.plan) - planRank(existing.plan);
+      const uBetter =
+        rankDiff > 0 ||
+        (rankDiff === 0 && (Number(u.credits) || 0) > (Number(existing.credits) || 0)) ||
+        (rankDiff === 0 && (Number(u.planDaysLeft) || 0) > (Number(existing.planDaysLeft) || 0));
+      if (uBetter) {
+        byEmail.set(key, u);
+      }
+    }
+  }
+  return Array.from(byEmail.values());
+}
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<User[]>(() => {
     try {
@@ -269,10 +293,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const cleaned = parsed.filter(u => !PURGED_MOCK_IDS.has(u.id));
+          const cleaned = dedupeUsersByEmail(parsed.filter(u => !PURGED_MOCK_IDS.has(u.id)));
           const hasAdmin = cleaned.some(u => u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
           if (!hasAdmin) {
-            return [...INITIAL_USERS, ...cleaned];
+            return dedupeUsersByEmail([...INITIAL_USERS, ...cleaned]);
           }
           return cleaned.length > 0 ? cleaned : INITIAL_USERS;
         }
@@ -1243,43 +1267,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return changed ? next : prev;
       });
 
-      // 2. User plan auto-conversion (Ultra -> Basic when 0 Day 0 Hour reached)
+      // 2. User plan auto-conversion in UI only (never overwrite Supabase plan from browser timer)
       setUsers(prevUsers => {
         let usersChanged = false;
-        const supaClient = getSupabase();
         const nextUsers = prevUsers.map(u => {
           const { user: downgradedUser, changed } = checkAndDowngradeExpiredUser(u);
           if (changed) {
             usersChanged = true;
-            if (supaClient) {
-              safeSupabaseUserUpdate(supaClient, downgradedUser.id, downgradedUser.email, {
-                plan: 'basic',
-                credits: downgradedUser.credits,
-                max_credits: 100,
-                plan_days_left: 0,
-              }).catch(() => {});
-            }
             return downgradedUser;
           }
           return u;
         });
-        return usersChanged ? nextUsers : prevUsers;
+        return usersChanged ? dedupeUsersByEmail(nextUsers) : prevUsers;
       });
 
-      // 3. Current logged in user auto-downgrade check
+      // 3. Current logged in user UI check (authoritative plan is managed by server)
       setCurrentUser(prevUser => {
         if (!prevUser) return null;
         const { user: downgraded, changed } = checkAndDowngradeExpiredUser(prevUser);
         if (changed) {
-          const supaClient = getSupabase();
-          if (supaClient) {
-            safeSupabaseUserUpdate(supaClient, downgraded.id, downgraded.email, {
-              plan: 'basic',
-              credits: downgraded.credits,
-              max_credits: 100,
-              plan_days_left: 0,
-            }).catch(() => {});
-          }
           return downgraded;
         }
         return prevUser;

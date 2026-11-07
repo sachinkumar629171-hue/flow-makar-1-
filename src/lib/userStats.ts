@@ -60,14 +60,15 @@ export function getOrInitUserExpiryMs(user: User): number {
   if (user.planExpiresAt) {
     const parsedExp = new Date(user.planExpiresAt).getTime();
     if (!isNaN(parsedExp)) {
-      userExpiryCache.set(user.id, { daysLeft, expiryMs: parsedExp, setAt: now });
-      return parsedExp;
+      const effectiveExp = (parsedExp <= now && daysLeft > 2) ? (now + daysLeft * 86400000) : parsedExp;
+      userExpiryCache.set(user.id, { daysLeft, expiryMs: effectiveExp, setAt: now });
+      return effectiveExp;
     }
   }
 
   // 2. Check memory cache
   const cached = userExpiryCache.get(user.id);
-  if (cached && (cached.daysLeft === daysLeft || cached.expiryMs > now)) {
+  if (cached && cached.daysLeft === daysLeft && cached.expiryMs > now) {
     return cached.expiryMs;
   }
 
@@ -77,7 +78,7 @@ export function getOrInitUserExpiryMs(user: User): number {
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (parsed && typeof parsed.expiryMs === 'number' && parsed.expiryMs > now) {
+      if (parsed && parsed.daysLeft === daysLeft && typeof parsed.expiryMs === 'number' && parsed.expiryMs > now) {
         userExpiryCache.set(user.id, { daysLeft, expiryMs: parsed.expiryMs, setAt: parsed.setAt || now });
         return parsed.expiryMs;
       }
@@ -86,17 +87,16 @@ export function getOrInitUserExpiryMs(user: User): number {
     // Ignore storage parse errors
   }
 
-  // 4. Derive from createdAt timestamp if present and valid
-  let calculatedExpiryMs: number;
+  // 4. Derive from createdAt timestamp if present and in the future window, otherwise from now
+  let calculatedExpiryMs = now + (daysLeft * 86400000);
   if (user.createdAt) {
     const createdMs = new Date(user.createdAt).getTime();
     if (!isNaN(createdMs)) {
-      calculatedExpiryMs = createdMs + (daysLeft * 86400000);
-    } else {
-      calculatedExpiryMs = now + (daysLeft * 86400000);
+      const candidate = createdMs + (daysLeft * 86400000);
+      if (candidate > now) {
+        calculatedExpiryMs = candidate;
+      }
     }
-  } else {
-    calculatedExpiryMs = now + (daysLeft * 86400000);
   }
 
   // Save to memory cache & localStorage
@@ -268,11 +268,11 @@ export function checkAndDowngradeExpiredUser(user: User): { user: User; changed:
     return { user, changed: false };
   }
 
-  const validity = getUserValidityTime(user);
-  const isDaysExpired = (Number(user.planDaysLeft) ?? 0) <= 0;
-  const isTimeExpired = user.planExpiresAt ? (new Date(user.planExpiresAt).getTime() <= Date.now()) : false;
+  const daysLeft = Number(user.planDaysLeft ?? 30);
+  const isDaysExpired = daysLeft <= 0;
+  const isTimeExpired = user.planExpiresAt ? (new Date(user.planExpiresAt).getTime() <= Date.now() && daysLeft <= 2) : false;
 
-  if (validity.isExpired || isDaysExpired || isTimeExpired) {
+  if (isDaysExpired || isTimeExpired) {
     const updatedUser: User = {
       ...user,
       plan: 'basic',

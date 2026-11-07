@@ -66,16 +66,43 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       query = query.or(`session_token.eq.${token},id.eq.${token}`);
     }
 
-    let { data: supaUser, error } = await query.maybeSingle();
+    let { data: matchedRows, error } = await query;
+    let supaUser: any = Array.isArray(matchedRows) && matchedRows.length > 0 ? matchedRows[0] : null;
+
+    // If user found, check if duplicate rows exist with the same email and consolidate to 1 row
+    if (supaUser && supaUser.email && !supaUser.id?.startsWith('admin_config_')) {
+      const cleanUserEmail = String(supaUser.email).trim().toLowerCase();
+      const { data: emailRows } = await supabase.from('users').select('*').ilike('email', cleanUserEmail);
+      if (Array.isArray(emailRows) && emailRows.length > 1) {
+        const validEmailRows = emailRows.filter((r: any) => r.id && !String(r.id).startsWith('admin_config_') && !String(r.id).startsWith('sys_config_'));
+        if (validEmailRows.length > 1) {
+          const planRank = (p: string) => (p === 'unlimited' ? 3 : p === 'ultra' ? 2 : 1);
+          validEmailRows.sort((a: any, b: any) => {
+            const rankDiff = planRank(b.plan) - planRank(a.plan);
+            if (rankDiff !== 0) return rankDiff;
+            return (Number(b.credits) || 0) - (Number(a.credits) || 0);
+          });
+          const bestRow = validEmailRows[0];
+          const duplicateIds = validEmailRows.slice(1).map((r: any) => r.id).filter(Boolean);
+          if (bestRow.id !== supaUser.id) {
+            await supabase.from('users').update({ session_token: token, is_online: true }).eq('id', bestRow.id);
+            supaUser = bestRow;
+          }
+          if (duplicateIds.length > 0) {
+            supabase.from('users').delete().in('id', duplicateIds).then(() => {});
+          }
+        }
+      }
+    }
 
     // If token is a valid signed Admin sessionId, fallback to matching admin email in Supabase or default admin profile
     const signedAdminEmail = resolveSignedAdminEmail(token);
     if ((!supaUser || error) && signedAdminEmail) {
-      const { data: adminByEmail } = await supabase
+      const { data: adminRows } = await supabase
         .from('users')
         .select('*')
-        .ilike('email', signedAdminEmail)
-        .maybeSingle();
+        .ilike('email', signedAdminEmail);
+      const adminByEmail = Array.isArray(adminRows) && adminRows.length > 0 ? adminRows[0] : null;
       supaUser = adminByEmail || {
         id: 'usr-admin-1',
         name: 'Sachin Kumar',
@@ -153,7 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } catch {}
 
-    // Return ONLY essential fields requested by user (No internal IDs, session tokens, reseller or online status)
+    // Return ONLY essential fields requested by user (plus planExpiresAt so validity never falsely resets)
     const safeUser: Record<string, any> = {
       name: supaUser.name || 'User',
       email: supaUser.email || '',
@@ -161,6 +188,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       credits: Number(supaUser.credits) ?? (isSystemAdmin ? 45000 : 100),
       maxCredits: Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' || isSystemAdmin ? 45000 : 100),
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
+      ...(supaUser.plan_expires_at ? { planExpiresAt: supaUser.plan_expires_at } : {}),
       role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
     };
 
