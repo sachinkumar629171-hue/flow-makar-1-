@@ -4584,9 +4584,7 @@ app.get('/sitemap.xml', (_req, res) => {
   <url><loc>https://www.flowmakerai.site/signup</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://www.flowmakerai.site/register</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
   <url><loc>https://www.flowmakerai.site/reseller</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://www.flowmakerai.site/extension</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
-  <url><loc>https://www.flowmakerai.site/ultra</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
-  <url><loc>https://www.flowmakerai.site/pricing</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://www.flowmakerai.site/pricing</loc><lastmod>${today}</lastmod><changefreq>weekly</changefreq><priority>0.85</priority></url>
   <url><loc>https://www.flowmakerai.site/dashboard</loc><lastmod>${today}</lastmod><changefreq>daily</changefreq><priority>0.8</priority></url>
 </urlset>`);
 });
@@ -4604,8 +4602,6 @@ Allow: /login
 Allow: /signup
 Allow: /register
 Allow: /reseller
-Allow: /extension
-Allow: /ultra
 Allow: /pricing
 Allow: /dashboard
 Disallow: /api/

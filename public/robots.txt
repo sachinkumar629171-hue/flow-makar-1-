@@ -4,8 +4,6 @@ Allow: /login
 Allow: /signup
 Allow: /register
 Allow: /reseller
-Allow: /extension
-Allow: /ultra
 Allow: /pricing
 Allow: /dashboard
 Disallow: /api/

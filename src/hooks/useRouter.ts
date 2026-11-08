@@ -46,7 +46,7 @@ function getPathForRoute(route: AppRoute): string {
     case 'landing':
     default: {
       const p = window.location.pathname.toLowerCase().replace(/\/+$/, '');
-      if (p === '/pricing' || p === '/extension' || p === '/ultra') return p;
+      if (p === '/pricing') return p;
       return '/';
     }
   }
@@ -63,64 +63,50 @@ function getSeoMetaForPath(route: AppRoute, rawPathname: string): RouteSeoMeta {
 
   if (route === 'login' || cleanPath === '/login') {
     return {
-      title: 'Member Login — FlowMaker AI | Flow Extension Basic & Ultra VIP Portal',
-      description: 'Sign in to your FlowMaker AI account (flowmakerai.site) to access Flow Basic & Flow Ultra VIP Chrome Extension, Veo 3, Nano Banana 2, and live server prompts.',
+      title: 'Google Flow Login — Member Sign In | FlowMaker AI (Flow Ultra, ChatGPT Plus, Super Grok & Muse AI)',
+      description: 'Sign in to FlowMaker AI (flowmakerai.site) to access Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI via our extension-based platform.',
       canonicalPath: '/login',
     };
   }
   if (cleanPath === '/register') {
     return {
-      title: 'Register Account — FlowMaker AI | Flow Extension Basic & Ultra VIP',
-      description: 'Register your FlowMaker AI account for Flow Extension Basic & Ultra VIP. Create 4K AI videos with Google Flow, Nano Banana 2, ChatGPT Plus & Super Grok.',
+      title: 'Register Account — FlowMaker AI | Google Flow Ultra, ChatGPT Plus, Super Grok & Muse AI',
+      description: 'Create your FlowMaker AI account for extension-based access to Google Flow Ultra (AI video generator), ChatGPT Plus, Super Grok, and Muse AI.',
       canonicalPath: '/register',
     };
   }
   if (route === 'signup' || cleanPath === '/signup') {
     return {
-      title: 'Sign Up — FlowMaker AI | Create Flow Basic & Ultra VIP Account',
-      description: 'Create a new account on FlowMaker AI (flowmakerai.site) for Flow Extension Basic & Ultra VIP AI video creation and multi-server prompt access.',
+      title: 'Sign Up — FlowMaker AI | Google Flow Maker Free & Ultra Extension Platform',
+      description: 'Join FlowMaker AI (flowmakerai.site) to use Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI with our Chrome Extension.',
       canonicalPath: '/signup',
     };
   }
   if (route === 'reseller' || cleanPath === '/reseller') {
     return {
-      title: 'Reseller Portal Login — FlowMaker AI | Official Flow Ultra VIP Reseller Panel',
-      description: 'Official FlowMaker AI Reseller Portal. Log in to create and manage Flow Ultra VIP member accounts, 45,000 credits, and 30-day plan validity.',
+      title: 'Reseller Portal Login — FlowMaker AI | Official Flow Ultra Reseller Panel',
+      description: 'Official FlowMaker AI Reseller Portal. Log in to create and manage member accounts for Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI.',
       canonicalPath: '/reseller',
-    };
-  }
-  if (cleanPath === '/extension') {
-    return {
-      title: 'Flow Chrome Extension Download — Flow Basic & Flow Ultra VIP Extension',
-      description: 'Download the official FlowMaker AI Chrome Extension (Flow Basic v1.8 & Flow Ultra VIP v3.2) with real-time 5-server prompt sync for Google Flow, ChatGPT Plus & Grok.',
-      canonicalPath: '/extension',
-    };
-  }
-  if (cleanPath === '/ultra') {
-    return {
-      title: 'Flow Ultra VIP Studio — Google Flow Veo 3, Nano Banana 2, ChatGPT Plus & Super Grok',
-      description: 'Experience Flow Ultra VIP on FlowMaker AI with 45,000 credits, 5 high-speed servers, Google Flow Veo 3, Nano Banana 2, ChatGPT Plus, Muse AI, and Super Grok.',
-      canonicalPath: '/ultra',
     };
   }
   if (cleanPath === '/pricing') {
     return {
-      title: 'Plans & Pricing — Flow Extension Basic vs Flow Ultra VIP | FlowMaker AI',
-      description: 'Compare Flow Basic Plan, Flow Ultra VIP Plan (45,000 credits), and Unlimited VIP Plan on FlowMaker AI (flowmakerai.site).',
+      title: 'Pricing & Plans — FlowMaker AI | Google Flow Ultra, ChatGPT Plus, Super Grok & Muse AI',
+      description: 'Explore FlowMaker AI membership plans and pricing for extension-based access to Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI.',
       canonicalPath: '/pricing',
     };
   }
   if (route === 'dashboard') {
     return {
-      title: 'Studio Dashboard — FlowMaker AI | Flow Basic & Ultra VIP',
-      description: 'FlowMaker AI Studio Dashboard for AI video creation, Chrome Extension sync, and multi-platform AI suites.',
+      title: 'Member Dashboard — FlowMaker AI | Google Flow Ultra, ChatGPT Plus, Super Grok & Muse AI',
+      description: 'FlowMaker AI Member Dashboard to launch Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI extension tools.',
       canonicalPath: '/dashboard',
     };
   }
   if (route === 'settings') {
     return {
       title: 'Account Settings — FlowMaker AI',
-      description: 'Manage your FlowMaker AI profile, plan validity, and Chrome Extension session settings.',
+      description: 'Manage your FlowMaker AI account, plan validity, and extension session settings.',
       canonicalPath: '/settings',
     };
   }
@@ -140,8 +126,8 @@ function getSeoMetaForPath(route: AppRoute, rawPathname: string): RouteSeoMeta {
   }
 
   return {
-    title: 'Flow - AI Video Creation & Storytelling Platform | FlowMaker AI Basic & Ultra Extension',
-    description: 'FlowMaker AI (flowmakerai.site) — Official Flow Extension Basic & Ultra VIP AI Video Creation Platform with Nano Banana 2, Veo 3, Member Login, Register & Reseller Portal.',
+    title: 'Flow - AI Video Creation & Storytelling Platform | Google Flow Ultra, ChatGPT Plus, Super Grok & Muse AI Extension',
+    description: 'FlowMaker AI (flowmakerai.site) — Extension-based AI platform where members access Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI. Google Flow login, Google Flow AI video generator, Google flow maker free online & pricing plans.',
     canonicalPath: '/',
   };
 }

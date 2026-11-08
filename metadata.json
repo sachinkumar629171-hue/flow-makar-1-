@@ -1,6 +1,6 @@
 {
   "name": "Flow - AI Video Creation & Storytelling Platform",
-  "description": "FlowMaker AI (flowmakerai.site) — Official Flow Extension Basic & Ultra VIP AI Video Creation Platform with Nano Banana 2, Veo 3, Member Login, Register & Reseller Portal.",
+  "description": "FlowMaker AI (flowmakerai.site) — Extension-based AI platform where members access Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI. Google Flow login, Google Flow AI video generator, Google flow maker free online & pricing plans.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

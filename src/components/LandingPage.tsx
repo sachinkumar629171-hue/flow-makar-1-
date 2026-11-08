@@ -8,10 +8,9 @@ interface LandingPageProps {
   onOpenResellerLogin?: () => void;
 }
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPricing, onOpenResellerLogin }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPricing }) => {
   return (
-    <div className="w-full bg-[#08090b] text-white">
-      <div className="relative min-h-screen w-full bg-[#08090b] text-white overflow-hidden select-none flex flex-col justify-between">
+    <div className="relative min-h-screen w-full bg-[#08090b] text-white overflow-hidden select-none flex flex-col justify-between">
       {/* Top Navigation */}
       <header className="relative z-30 flex items-center justify-between px-6 sm:px-10 py-6">
         <div className="flex items-center gap-2 cursor-pointer" onClick={() => onOpenAuth('login')}>
@@ -206,10 +205,25 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPric
             Create with Flow
           </motion.button>
         </motion.div>
+
+        {/* Search Engine Crawler Only (Invisible on UI) */}
+        <div className="sr-only">
+          <h2>Google Flow AI Video Generator — Flow Ultra, ChatGPT Plus, Super Grok &amp; Muse AI Extension Platform</h2>
+          <p>
+            FlowMaker AI (flowmakerai.site) is an extension-based AI platform where members get access to Google Flow Ultra, ChatGPT Plus, Super Grok, and Muse AI. Popular searches: Google flow maker free, Google Flow login, Google Flow AI, Google Flow video generator, Google Flow AI free, Google flow maker app, Google flow maker online, Google flow maker download, Flow extension base ultra.
+          </p>
+          <nav aria-label="Site Navigation">
+            <a href="/login">Google Flow Login</a>
+            <a href="/register">Register Account</a>
+            <a href="/signup">Sign Up</a>
+            <a href="/reseller">Reseller Portal</a>
+            <a href="/pricing">Pricing &amp; Plans</a>
+          </nav>
+        </div>
       </main>
 
-      {/* Subtle Bottom Scroll / Down Indicator + Crawlable SEO Sitelinks */}
-      <footer className="relative z-20 pb-6 px-4 flex flex-col items-center justify-center gap-3">
+      {/* Subtle Bottom Scroll / Down Indicator */}
+      <footer className="relative z-20 pb-8 flex flex-col items-center justify-center">
         <button
           onClick={() => onOpenAuth('login')}
           className="text-neutral-400 hover:text-white transition-colors flex flex-col items-center gap-1 cursor-pointer animate-bounce"
@@ -217,161 +231,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPric
         >
           <ChevronDown className="w-5 h-5" />
         </button>
-        <nav aria-label="FlowMaker AI Quick Links" className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-neutral-400/80">
-          <a
-            href="/login"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
-            className="hover:text-white transition-colors"
-          >
-            Member Login
-          </a>
-          <span>•</span>
-          <a
-            href="/register"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('signup'); }}
-            className="hover:text-white transition-colors"
-          >
-            Register / Sign Up
-          </a>
-          <span>•</span>
-          <a
-            href="/reseller"
-            onClick={(e) => {
-              e.preventDefault();
-              if (onOpenResellerLogin) onOpenResellerLogin();
-            }}
-            className="hover:text-white transition-colors"
-          >
-            Reseller Portal
-          </a>
-          <span>•</span>
-          <a
-            href="/extension"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
-            className="hover:text-white transition-colors"
-          >
-            Flow Extension Basic &amp; Ultra
-          </a>
-          <span>•</span>
-          <a
-            href="/pricing"
-            onClick={(e) => {
-              e.preventDefault();
-              if (onOpenPricing) onOpenPricing();
-            }}
-            className="hover:text-white transition-colors"
-          >
-            Ultra VIP Plans
-          </a>
-        </nav>
       </footer>
-      </div>
-
-      {/* Below-the-Fold Crawlable SEO Content, Sitelinks & FAQ for Google Search Ranking */}
-      <section
-        aria-label="FlowMaker AI — Flow Extension Ultra, Google Flow AI & Video Generator Overview"
-        className="relative z-20 bg-[#08090b] border-t border-neutral-900/80 py-14 px-6 sm:px-10 max-w-6xl mx-auto space-y-10"
-      >
-        <div className="text-center max-w-3xl mx-auto space-y-3">
-          <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight font-display">
-            FlowMaker AI — Official Flow Extension Ultra &amp; Google Flow AI Video Generator
-          </h2>
-          <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed">
-            Welcome to <strong>FlowMaker AI (flowmakerai.site)</strong>, the complete AI creative studio and Chrome Extension platform for <strong>Flow Extension Ultra</strong>, <strong>Flow Extension Basic</strong>, <strong>Google Flow AI</strong>, <strong>Google Flow Maker Online</strong>, <strong>Nano Banana 2</strong>, <strong>Google Veo 3</strong>, <strong>ChatGPT Plus</strong>, <strong>Super Grok</strong>, and <strong>Muse AI</strong>.
-          </p>
-        </div>
-
-        {/* Direct Sitelinks Grid (Helps Google Index /login, /register, /reseller, /extension, /ultra, /pricing) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          <a
-            href="/login"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
-            className="p-5 rounded-2xl bg-[#0e1015] border border-neutral-800/80 hover:border-purple-500/50 transition-all block space-y-1.5"
-          >
-            <h3 className="text-sm font-bold text-white">Google Flow Login — Member Portal</h3>
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              Sign in with your registered Gmail ID to access FlowMaker AI Studio, Flow Basic &amp; Flow Ultra VIP Chrome Extension, and live 5-server prompt sync.
-            </p>
-          </a>
-
-          <a
-            href="/register"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('signup'); }}
-            className="p-5 rounded-2xl bg-[#0e1015] border border-neutral-800/80 hover:border-purple-500/50 transition-all block space-y-1.5"
-          >
-            <h3 className="text-sm font-bold text-white">Register / Sign Up — FlowMaker AI Free &amp; VIP</h3>
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              Create your FlowMaker AI account online. Start with Flow Basic or upgrade to Flow Ultra VIP with 45,000 credits for 4K AI video generation.
-            </p>
-          </a>
-
-          <a
-            href="/reseller"
-            onClick={(e) => {
-              e.preventDefault();
-              if (onOpenResellerLogin) onOpenResellerLogin();
-            }}
-            className="p-5 rounded-2xl bg-[#0e1015] border border-neutral-800/80 hover:border-purple-500/50 transition-all block space-y-1.5"
-          >
-            <h3 className="text-sm font-bold text-white">Official Flow Reseller Portal</h3>
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              Dedicated Reseller Login to create and manage Flow Ultra VIP member accounts, assign 30-day validity, and monitor live user credits.
-            </p>
-          </a>
-
-          <a
-            href="/extension"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
-            className="p-5 rounded-2xl bg-[#0e1015] border border-neutral-800/80 hover:border-purple-500/50 transition-all block space-y-1.5"
-          >
-            <h3 className="text-sm font-bold text-white">Flow Extension Basic &amp; Ultra Download</h3>
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              Download the Google Flow Maker Chrome Extension (Basic &amp; Ultra VIP) with instant Server 1 to Server 5 dynamic session &amp; prompt relay.
-            </p>
-          </a>
-
-          <a
-            href="/ultra"
-            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
-            className="p-5 rounded-2xl bg-[#0e1015] border border-neutral-800/80 hover:border-purple-500/50 transition-all block space-y-1.5"
-          >
-            <h3 className="text-sm font-bold text-white">Flow AI Ultra Video Generator</h3>
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              Generate high-definition cinematic AI videos online with Google Flow Ultra, Nano Banana 2, ChatGPT Plus, Super Grok 3, and Muse AI.
-            </p>
-          </a>
-
-          <a
-            href="/pricing"
-            onClick={(e) => {
-              e.preventDefault();
-              if (onOpenPricing) onOpenPricing();
-            }}
-            className="p-5 rounded-2xl bg-[#0e1015] border border-neutral-800/80 hover:border-purple-500/50 transition-all block space-y-1.5"
-          >
-            <h3 className="text-sm font-bold text-white">Flow Basic vs Ultra VIP Plans</h3>
-            <p className="text-xs text-neutral-400 leading-relaxed">
-              Explore Flow Extension Basic, Flow Ultra VIP (45,000 credits), and Unlimited VIP membership tiers for creators and agencies.
-            </p>
-          </a>
-        </div>
-
-        {/* Popular Search Topics & FAQ */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-neutral-900">
-          <div className="p-4 rounded-xl bg-[#0b0c10] border border-neutral-900 space-y-1">
-            <h4 className="text-xs font-bold text-neutral-200">What is Flow Extension Ultra &amp; Flow Basic?</h4>
-            <p className="text-[11px] text-neutral-400 leading-relaxed">
-              Flow Extension Ultra (v3.2) and Flow Basic (v1.8) on FlowMaker AI connect your browser directly to 5 high-speed AI servers for Google Flow video generation, ChatGPT Plus, Super Grok, and Muse AI.
-            </p>
-          </div>
-          <div className="p-4 rounded-xl bg-[#0b0c10] border border-neutral-900 space-y-1">
-            <h4 className="text-xs font-bold text-neutral-200">How to use Google Flow Maker Online &amp; Download App?</h4>
-            <p className="text-[11px] text-neutral-400 leading-relaxed">
-              Sign in at flowmakerai.site/login or register at flowmakerai.site/register to use the Google Flow AI video generator online and download the official Flow Maker Chrome Extension.
-            </p>
-          </div>
-        </div>
-      </section>
     </div>
   );
 };
