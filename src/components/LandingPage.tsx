@@ -8,7 +8,7 @@ interface LandingPageProps {
   onOpenResellerLogin?: () => void;
 }
 
-export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPricing }) => {
+export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPricing, onOpenResellerLogin }) => {
   return (
     <div className="relative min-h-screen w-full bg-[#08090b] text-white overflow-hidden select-none flex flex-col justify-between">
       {/* Top Navigation */}
@@ -207,8 +207,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPric
         </motion.div>
       </main>
 
-      {/* Subtle Bottom Scroll / Down Indicator */}
-      <footer className="relative z-20 pb-8 flex flex-col items-center justify-center">
+      {/* Subtle Bottom Scroll / Down Indicator + Crawlable SEO Sitelinks */}
+      <footer className="relative z-20 pb-6 px-4 flex flex-col items-center justify-center gap-3">
         <button
           onClick={() => onOpenAuth('login')}
           className="text-neutral-400 hover:text-white transition-colors flex flex-col items-center gap-1 cursor-pointer animate-bounce"
@@ -216,6 +216,53 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onOpenAuth, onOpenPric
         >
           <ChevronDown className="w-5 h-5" />
         </button>
+        <nav aria-label="FlowMaker AI Quick Links" className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[11px] text-neutral-400/80">
+          <a
+            href="/login"
+            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
+            className="hover:text-white transition-colors"
+          >
+            Member Login
+          </a>
+          <span>•</span>
+          <a
+            href="/register"
+            onClick={(e) => { e.preventDefault(); onOpenAuth('signup'); }}
+            className="hover:text-white transition-colors"
+          >
+            Register / Sign Up
+          </a>
+          <span>•</span>
+          <a
+            href="/reseller"
+            onClick={(e) => {
+              e.preventDefault();
+              if (onOpenResellerLogin) onOpenResellerLogin();
+            }}
+            className="hover:text-white transition-colors"
+          >
+            Reseller Portal
+          </a>
+          <span>•</span>
+          <a
+            href="/extension"
+            onClick={(e) => { e.preventDefault(); onOpenAuth('login'); }}
+            className="hover:text-white transition-colors"
+          >
+            Flow Extension Basic &amp; Ultra
+          </a>
+          <span>•</span>
+          <a
+            href="/pricing"
+            onClick={(e) => {
+              e.preventDefault();
+              if (onOpenPricing) onOpenPricing();
+            }}
+            className="hover:text-white transition-colors"
+          >
+            Ultra VIP Plans
+          </a>
+        </nav>
       </footer>
     </div>
   );

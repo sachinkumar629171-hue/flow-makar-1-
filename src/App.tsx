@@ -20,7 +20,9 @@ function AppContent() {
   const { currentUser, currentReseller, isAdmin, promptConfig, users, sessionTerminatedNotice, dismissSessionTerminatedNotice } = useAuth();
   const { currentRoute, navigate } = useRouter();
   const [showResellerLoginModal, setShowResellerLoginModal] = useState(false);
-  const [pricingOpen, setPricingOpen] = useState(false);
+  const [pricingOpen, setPricingOpen] = useState(() =>
+    typeof window !== 'undefined' && window.location.pathname.toLowerCase().startsWith('/pricing')
+  );
 
   // Sync Favicon and Tab Title dynamically from promptConfig or default
   useEffect(() => {
@@ -37,10 +39,11 @@ function AppContent() {
       link.href = faviconUrl;
       document.head.appendChild(link);
     }
-    if (promptConfig?.websiteTitle?.trim()) {
+    const cleanPath = window.location.pathname.replace(/\/+$/, '') || '/';
+    if (promptConfig?.websiteTitle?.trim() && currentRoute === 'landing' && cleanPath === '/') {
       document.title = promptConfig.websiteTitle.trim();
     }
-  }, [promptConfig?.websiteFaviconUrl, promptConfig?.websiteTitle]);
+  }, [promptConfig?.websiteFaviconUrl, promptConfig?.websiteTitle, currentRoute]);
 
   // Sync user data for browser extensions
   useEffect(() => {
