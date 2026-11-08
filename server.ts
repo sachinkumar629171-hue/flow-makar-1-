@@ -4624,6 +4624,13 @@ async function startServer() {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
+      const cleanReqPath = req.path.toLowerCase().replace(/^\/+|\/+$/g, '');
+      if (cleanReqPath) {
+        const prerenderedPath = path.join(distPath, cleanReqPath, 'index.html');
+        if (fs.existsSync(prerenderedPath)) {
+          return res.sendFile(prerenderedPath);
+        }
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

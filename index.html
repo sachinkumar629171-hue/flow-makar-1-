@@ -13,6 +13,19 @@
     <meta name="application-name" content="FlowMaker AI" />
     <link rel="canonical" href="https://www.flowmakerai.site/" />
     <link rel="sitemap" type="application/xml" title="Sitemap" href="https://www.flowmakerai.site/sitemap.xml" />
+    <script>
+      (function () {
+        try {
+          var p = window.location.pathname.toLowerCase().replace(/\/+$/, '') || '/';
+          var valid = ['/login', '/register', '/signup', '/reseller', '/pricing', '/dashboard'];
+          if (valid.indexOf(p) !== -1) {
+            var url = 'https://www.flowmakerai.site' + p;
+            var can = document.querySelector('link[rel="canonical"]');
+            if (can) can.setAttribute('href', url);
+          }
+        } catch (e) {}
+      })();
+    </script>
 
     <!-- OpenGraph Social & Search Metadata -->
     <meta property="og:type" content="website" />
