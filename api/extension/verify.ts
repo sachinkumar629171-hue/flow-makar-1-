@@ -111,9 +111,60 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           } catch {}
         }
 
-        const isUltra = supaUser.plan === 'ultra' || supaUser.plan === 'unlimited';
+        const isUltra = supaUser.plan === 'ultra' || supaUser.plan === 'unlimited' || supaUser.role === 'admin';
         const sessionToken = supaUser.session_token || supaUser.sessionToken || '';
-        const canAccessPrompts = isUltra && supaUser.status === 'active';
+        const canAccessPrompts = isUltra && supaUser.status !== 'suspended' && planDaysLeft > 0;
+        const reqNumMatch = dropdown.match(/(\d+)/);
+        const reqServerLabel = reqNumMatch ? `Server ${reqNumMatch[1]}` : (dropdown || 'All Servers (1-5)');
+
+        try {
+          let existingLogs: any[] = [];
+          try {
+            const { data: cfg } = await supabase.from('app_config').select('value').eq('key', 'admin_config_server_logs').maybeSingle();
+            if (cfg?.value && Array.isArray(cfg.value)) existingLogs = cfg.value;
+          } catch {}
+          if (existingLogs.length === 0) {
+            try {
+              const { data: uRow } = await supabase.from('users').select('name').eq('id', 'admin_config_server_logs').maybeSingle();
+              if (uRow?.name) {
+                const parsed = JSON.parse(uRow.name);
+                if (Array.isArray(parsed)) existingLogs = parsed;
+              }
+            } catch {}
+          }
+          const newEntry = {
+            id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            email: supaUser.email || email,
+            name: supaUser.name || 'User',
+            plan: (supaUser.plan || 'basic').toLowerCase(),
+            dataType,
+            serverRequested: reqServerLabel,
+            status: canAccessPrompts ? 'granted' : 'denied',
+            reason: canAccessPrompts ? `${reqServerLabel} delivered` : (!isUltra ? 'Basic plan (Blocked)' : 'Expired or suspended'),
+            endpoint: 'verify',
+          };
+          const updatedLogs = [newEntry, ...existingLogs].slice(0, 200);
+          await Promise.allSettled([
+            supabase.from('app_config').upsert({
+              key: 'admin_config_server_logs',
+              value: updatedLogs,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'key' }),
+            supabase.from('users').upsert({
+              id: 'admin_config_server_logs',
+              name: JSON.stringify(updatedLogs),
+              email: 'admin_config_server_logs@system.local',
+              password: 'config_no_login_123',
+              plan: 'basic',
+              credits: 0,
+              max_credits: 0,
+              plan_days_left: 0,
+              session_token: 'sys_logs',
+              is_online: false,
+            }, { onConflict: 'id' }),
+          ]);
+        } catch {}
 
         return res.status(200).json({
           success: true,

@@ -79,9 +79,89 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
+      const reqDataType = String(
+        body.dataType || body.datatype || body.platform || body.service ||
+        query.dataType || query.datatype || query.platform || query.service ||
+        'Flow ultra lower priority'
+      ).trim();
+      const reqDropdown = String(
+        body.dropdown || body.server || body.serverId ||
+        query.dropdown || query.server || query.serverId || ''
+      ).trim();
+      const reqNumMatch = reqDropdown.match(/(\d+)/);
+      const reqServerLabel = reqNumMatch ? `Server ${reqNumMatch[1]}` : (reqDropdown || 'All Servers (1-5)');
+
+      const appendServerRequestLog = async (entry: {
+        email: string;
+        name: string;
+        plan: string;
+        dataType: string;
+        serverRequested: string;
+        status: 'granted' | 'denied';
+        reason?: string;
+      }) => {
+        try {
+          let existingLogs: any[] = [];
+          try {
+            const { data: cfg } = await supabase.from('app_config').select('value').eq('key', 'admin_config_server_logs').maybeSingle();
+            if (cfg?.value && Array.isArray(cfg.value)) existingLogs = cfg.value;
+          } catch {}
+          if (existingLogs.length === 0) {
+            try {
+              const { data: uRow } = await supabase.from('users').select('name').eq('id', 'admin_config_server_logs').maybeSingle();
+              if (uRow?.name) {
+                const parsed = JSON.parse(uRow.name);
+                if (Array.isArray(parsed)) existingLogs = parsed;
+              }
+            } catch {}
+          }
+          const newEntry = {
+            id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            timestamp: new Date().toISOString(),
+            email: entry.email,
+            name: entry.name,
+            plan: entry.plan,
+            dataType: entry.dataType,
+            serverRequested: entry.serverRequested,
+            status: entry.status,
+            reason: entry.reason,
+            endpoint: 'cf-verify',
+          };
+          const updatedLogs = [newEntry, ...existingLogs].slice(0, 200);
+          await Promise.allSettled([
+            supabase.from('app_config').upsert({
+              key: 'admin_config_server_logs',
+              value: updatedLogs,
+              updated_at: new Date().toISOString(),
+            }, { onConflict: 'key' }),
+            supabase.from('users').upsert({
+              id: 'admin_config_server_logs',
+              name: JSON.stringify(updatedLogs),
+              email: 'admin_config_server_logs@system.local',
+              password: 'config_no_login_123',
+              plan: 'basic',
+              credits: 0,
+              max_credits: 0,
+              plan_days_left: 0,
+              session_token: 'sys_logs',
+              is_online: false,
+            }, { onConflict: 'id' }),
+          ]);
+        } catch {}
+      };
+
       const { data: supaUser } = await supabase.from('users').select('*').ilike('email', email).maybeSingle();
 
       if (!supaUser || supaUser.id?.startsWith('admin_config_')) {
+        await appendServerRequestLog({
+          email,
+          name: 'Unknown User',
+          plan: 'none',
+          dataType: reqDataType,
+          serverRequested: reqServerLabel,
+          status: 'denied',
+          reason: 'User not registered',
+        });
         return res.status(404).json({
           success: false,
           allowed: false,
@@ -93,6 +173,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Verify Session Token / Session ID
       const dbToken = supaUser.session_token || supaUser.sessionToken || '';
       if (dbToken && token && dbToken !== token) {
+        await appendServerRequestLog({
+          email: supaUser.email || email,
+          name: supaUser.name || 'User',
+          plan: (supaUser.plan || 'basic').toLowerCase(),
+          dataType: reqDataType,
+          serverRequested: reqServerLabel,
+          status: 'denied',
+          reason: 'Invalid/expired session token',
+        });
         return res.status(401).json({
           success: false,
           allowed: false,
@@ -111,6 +200,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const planDaysLeft = rawDaysLeft;
 
       if (status === 'suspended') {
+        await appendServerRequestLog({
+          email: supaUser.email || email,
+          name: supaUser.name || 'User',
+          plan,
+          dataType: reqDataType,
+          serverRequested: reqServerLabel,
+          status: 'denied',
+          reason: 'Account suspended',
+        });
         return res.status(403).json({
           success: false,
           allowed: false,
@@ -121,6 +219,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const isUltraOrAdmin = (plan === 'ultra' || plan === 'unlimited' || role === 'admin') && plan !== 'basic';
       if (!isUltraOrAdmin || planDaysLeft <= 0 || plan === 'basic') {
+        await appendServerRequestLog({
+          email: supaUser.email || email,
+          name: supaUser.name || 'User',
+          plan,
+          dataType: reqDataType,
+          serverRequested: reqServerLabel,
+          status: 'denied',
+          reason: planDaysLeft <= 0 ? 'Plan expired' : 'Basic plan (Ultra required)',
+        });
         return res.status(403).json({
           success: false,
           allowed: false,
@@ -142,15 +249,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return String(rawVal);
       };
 
-      const dataType = String(
-        body.dataType || body.datatype || body.platform || body.service ||
-        query.dataType || query.datatype || query.platform || query.service ||
-        'Flow ultra lower priority'
-      ).trim();
-      const dropdown = String(
-        body.dropdown || body.server || body.serverId ||
-        query.dropdown || query.server || query.serverId || ''
-      ).trim();
+      const dataType = reqDataType;
+      const dropdown = reqDropdown;
       const isDefaultFlowType = dataType.toLowerCase() === 'flow ultra lower priority';
 
       let responseServers = servers;
@@ -224,6 +324,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         } catch {}
       }
+
+      await appendServerRequestLog({
+        email: supaUser.email || email,
+        name: supaUser.name || 'User',
+        plan,
+        dataType,
+        serverRequested: reqServerLabel,
+        status: 'granted',
+        reason: `${reqServerLabel} delivered`,
+      });
 
       return res.status(200).json({
         success: true,

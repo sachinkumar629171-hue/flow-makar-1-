@@ -1086,6 +1086,32 @@ app.all('/api/admin/data', async (req, res) => {
     });
   }
 
+  if (req.method === 'POST' && req.body?.action === 'clear_server_logs') {
+    serverRequestLogsMemory = [];
+    if (supa) {
+      await Promise.allSettled([
+        supa.from('app_config').upsert({
+          key: 'admin_config_server_logs',
+          value: [],
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' }),
+        supa.from('users').upsert({
+          id: 'admin_config_server_logs',
+          name: '[]',
+          email: 'admin_config_server_logs@system.local',
+          password: 'config_no_login_123',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          session_token: 'sys_logs',
+          is_online: false,
+        }, { onConflict: 'id' }),
+      ]);
+    }
+    return res.json({ success: true, serverRequestLogs: [] });
+  }
+
   const now = Date.now();
   // Synchronize local database users state with continuous plan expiration and 2-min heartbeat window
   for (const u of db.users) {
@@ -1243,6 +1269,33 @@ app.all('/api/admin/data', async (req, res) => {
         });
       }
     } catch {}
+
+    try {
+      const { data: cfg } = await supa.from('app_config').select('value').eq('key', 'admin_config_server_logs').maybeSingle();
+      if (cfg?.value && Array.isArray(cfg.value) && cfg.value.length > 0) {
+        const mergedMap = new Map<string, any>();
+        for (const l of [...serverRequestLogsMemory, ...cfg.value]) {
+          if (l && l.id) mergedMap.set(l.id, l);
+        }
+        serverRequestLogsMemory = Array.from(mergedMap.values())
+          .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
+          .slice(0, 200);
+      } else {
+        const { data: uRow } = await supa.from('users').select('name').eq('id', 'admin_config_server_logs').maybeSingle();
+        if (uRow?.name) {
+          const parsed = JSON.parse(uRow.name);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const mergedMap = new Map<string, any>();
+            for (const l of [...serverRequestLogsMemory, ...parsed]) {
+              if (l && l.id) mergedMap.set(l.id, l);
+            }
+            serverRequestLogsMemory = Array.from(mergedMap.values())
+              .sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime())
+              .slice(0, 200);
+          }
+        }
+      }
+    } catch {}
   }
 
   res.json({
@@ -1252,6 +1305,7 @@ app.all('/api/admin/data', async (req, res) => {
     promptConfig: db.promptConfig,
     planExtensions: db.planExtensions,
     tutorialConfig: db.tutorialConfig,
+    serverRequestLogs: serverRequestLogsMemory.slice(0, 200),
     serverTimestamp: new Date().toISOString(),
   });
 });
@@ -2154,6 +2208,68 @@ app.get('/api/extension/session', async (req, res) => {
   });
 });
 
+let serverRequestLogsMemory: any[] = [];
+
+async function recordServerRequestLog(
+  supa: SupabaseClient | null,
+  entry: {
+    email: string;
+    name: string;
+    plan: string;
+    dataType: string;
+    serverRequested: string;
+    status: 'granted' | 'denied';
+    reason?: string;
+    endpoint?: string;
+  }
+) {
+  try {
+    const newEntry = {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      timestamp: new Date().toISOString(),
+      email: entry.email || 'unknown',
+      name: entry.name || 'User',
+      plan: (entry.plan || 'basic').toLowerCase(),
+      dataType: entry.dataType || 'Flow ultra lower priority',
+      serverRequested: entry.serverRequested || 'All Servers (1-5)',
+      status: entry.status,
+      reason: entry.reason,
+      endpoint: entry.endpoint || 'server',
+    };
+
+    if (supa && serverRequestLogsMemory.length === 0) {
+      try {
+        const { data: cfg } = await supa.from('app_config').select('value').eq('key', 'admin_config_server_logs').maybeSingle();
+        if (cfg?.value && Array.isArray(cfg.value)) serverRequestLogsMemory = cfg.value;
+      } catch {}
+    }
+
+    serverRequestLogsMemory = [newEntry, ...serverRequestLogsMemory].slice(0, 200);
+
+    if (supa) {
+      Promise.allSettled([
+        supa.from('app_config').upsert({
+          key: 'admin_config_server_logs',
+          value: serverRequestLogsMemory,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' }),
+        supa.from('users').upsert({
+          id: 'admin_config_server_logs',
+          name: JSON.stringify(serverRequestLogsMemory),
+          email: 'admin_config_server_logs@system.local',
+          password: 'config_no_login_123',
+          plan: 'basic',
+          credits: 0,
+          max_credits: 0,
+          plan_days_left: 0,
+          session_token: 'sys_logs',
+          is_online: false,
+        }, { onConflict: 'id' }),
+      ]).catch(() => {});
+    }
+  } catch {}
+}
+
 // Helper: Fetch & filter ONLY the requested server prompt (e.g. dropdown: "Server 1", dataType: "Flow ultra lower priority" | "Chatgpt plus" | "Muse AI" | "Super grok")
 async function filterAndResolveRequestedServer(
   supa: SupabaseClient | null,
@@ -2486,6 +2602,17 @@ app.post('/api/extension/prompts', async (req, res) => {
   }
 
   const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
+  const srvLabelPrompts = targetSrv.serverNum ? `Server ${targetSrv.serverNum}` : (targetSrv.dropdown || 'All Servers (1-5)');
+  recordServerRequestLog(supa, {
+    email: user.email || email,
+    name: user.name || 'User',
+    plan: user.plan || 'ultra',
+    dataType: targetSrv.dataType,
+    serverRequested: srvLabelPrompts,
+    status: 'granted',
+    reason: `${srvLabelPrompts} delivered`,
+    endpoint: 'prompts',
+  });
 
   return res.json({ 
     success: true, 
@@ -2593,9 +2720,21 @@ app.get('/api/extension/verify', async (req, res) => {
 
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
-  const isUltraUser = user.plan === 'ultra';
+  const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
   const verifyToken = user.sessionToken || '';
-  const canAccessPromptsVerify = isUltraUser && user.status === 'active';
+  const canAccessPromptsVerify = isUltraUser && user.status === 'active' && planDaysLeft > 0;
+  const targetSrvGet = await filterAndResolveRequestedServer(supa, req.query || {}, servers, serverMap);
+  const srvLabelGet = targetSrvGet.serverNum ? `Server ${targetSrvGet.serverNum}` : (targetSrvGet.dropdown || 'All Servers (1-5)');
+  recordServerRequestLog(supa, {
+    email: user.email || email,
+    name: user.name || 'User',
+    plan: user.plan || 'basic',
+    dataType: targetSrvGet.dataType,
+    serverRequested: srvLabelGet,
+    status: canAccessPromptsVerify ? 'granted' : 'denied',
+    reason: canAccessPromptsVerify ? `${srvLabelGet} delivered` : 'Basic / Expired plan',
+    endpoint: 'verify-get',
+  });
 
   res.json({
     success: true,
@@ -2738,6 +2877,17 @@ app.post('/api/extension/cf-verify', async (req, res) => {
 
   const { servers, serverMap } = await resolveActiveServers();
   const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
+  const srvLabelCf = targetSrv.serverNum ? `Server ${targetSrv.serverNum}` : (targetSrv.dropdown || 'All Servers (1-5)');
+  recordServerRequestLog(supa, {
+    email: supaUser.email || email,
+    name: supaUser.name || 'User',
+    plan: supaUser.plan || 'ultra',
+    dataType: targetSrv.dataType,
+    serverRequested: srvLabelCf,
+    status: 'granted',
+    reason: `${srvLabelCf} delivered`,
+    endpoint: 'cf-verify',
+  });
 
   return res.json({
     allowed: true,
@@ -2839,9 +2989,21 @@ app.post('/api/extension/verify', async (req, res) => {
   const { servers, serverMap, source, cloudflareOnline } = await resolveActiveServers();
   const costs = db.promptConfig?.costs || { image: 20, video: 30 };
 
-  const isUltraUser = user.plan === 'ultra';
+  const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
   const verifyToken = user.sessionToken || '';
-  const canAccessPromptsVerify = isUltraUser && user.status === 'active';
+  const canAccessPromptsVerify = isUltraUser && user.status === 'active' && planDaysLeft > 0;
+  const targetSrvPost = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
+  const srvLabelPost = targetSrvPost.serverNum ? `Server ${targetSrvPost.serverNum}` : (targetSrvPost.dropdown || 'All Servers (1-5)');
+  recordServerRequestLog(supa, {
+    email: user.email || email,
+    name: user.name || 'User',
+    plan: user.plan || 'basic',
+    dataType: targetSrvPost.dataType,
+    serverRequested: srvLabelPost,
+    status: canAccessPromptsVerify ? 'granted' : 'denied',
+    reason: canAccessPromptsVerify ? `${srvLabelPost} delivered` : 'Basic / Expired plan',
+    endpoint: 'verify',
+  });
 
   res.json({
     success: true,
@@ -3019,6 +3181,17 @@ app.post('/api/extension/servers', async (req, res) => {
 
   const isUltraUser = user.plan === 'ultra' || user.plan === 'unlimited' || user.role === 'admin';
   const targetSrv = await filterAndResolveRequestedServer(supa, req.body || {}, servers, serverMap);
+  const srvLabelServers = targetSrv.serverNum ? `Server ${targetSrv.serverNum}` : (targetSrv.dropdown || 'All Servers (1-5)');
+  recordServerRequestLog(supa, {
+    email: user.email || email,
+    name: user.name || 'User',
+    plan: user.plan || 'basic',
+    dataType: targetSrv.dataType,
+    serverRequested: srvLabelServers,
+    status: isUltraUser ? 'granted' : 'denied',
+    reason: isUltraUser ? `${srvLabelServers} delivered` : 'Basic plan (Blocked)',
+    endpoint: 'servers',
+  });
 
   res.json({
     success: true,
