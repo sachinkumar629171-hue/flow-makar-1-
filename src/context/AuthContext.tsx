@@ -586,11 +586,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [resellers]);
 
-  // Sync current reseller to localStorage
+  // Sync current reseller to localStorage (never store password or apiKey)
   useEffect(() => {
     try {
       if (currentReseller) {
-        localStorage.setItem(CURRENT_RESELLER_KEY, JSON.stringify(currentReseller));
+        const { password: _p, apiKey: _k, ...safeResellerForStorage } = currentReseller;
+        localStorage.setItem(CURRENT_RESELLER_KEY, JSON.stringify({ ...safeResellerForStorage, password: '' }));
       } else {
         localStorage.removeItem(CURRENT_RESELLER_KEY);
       }
@@ -1847,7 +1848,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginAsReseller = (reseller: Reseller) => {
-    setCurrentReseller(reseller);
+    const { password: _p, apiKey: _k, ...safeReseller } = reseller;
+    setCurrentReseller({ ...safeReseller, password: '' });
   };
 
   const logoutReseller = () => {

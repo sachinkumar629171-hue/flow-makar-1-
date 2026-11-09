@@ -23,13 +23,11 @@ import { useAuth } from '../../context/AuthContext';
 import { User } from '../../types';
 import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime, setUserExpiryMs, getOrInitUserExpiryMs, getUserMaxExpiryMs, getUserMaxRemainingDays } from '../../lib/userStats';
 import { calculateResellerExpiry } from '../../lib/resellerUtils';
-import { getSupabase } from '../../lib/supabase';
 import { ResellerNewUserModal } from './ResellerNewUserModal';
 import { ResellerEditUserModal } from './ResellerEditUserModal';
 import { ResellerPasswordModal } from './ResellerPasswordModal';
 import { ResellerEmailModal } from './ResellerEmailModal';
 import { CustomTimeModal } from '../modals/CustomTimeModal';
-import { ResellerApiDocsModal } from './ResellerApiDocsModal';
 
 interface ResellerPortalProps {
   onBackToApp?: () => void;
@@ -40,7 +38,6 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     currentUser,
     currentReseller, 
     resellers,
-    updateReseller,
     logoutReseller, 
     resellerLogin,
     users, 
@@ -59,7 +56,6 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
   const [selectedUserForPassword, setSelectedUserForPassword] = useState<User | null>(null);
   const [selectedUserForEmail, setSelectedUserForEmail] = useState<User | null>(null);
   const [selectedUserForCustomTime, setSelectedUserForCustomTime] = useState<User | null>(null);
-  const [showApiDocs, setShowApiDocs] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
   const [liveBilling, setLiveBilling] = useState<{
@@ -152,53 +148,28 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
 
   const totalCreated = resellerUsers.length;
 
-  // Sync reseller payment fields and total_users_created directly with Supabase public.resellers
+  // Fetch safe reseller stats (rate, pending, paid, totalUsersCreated — NO password) from backend API
   React.useEffect(() => {
     if (!currentReseller?.id) return;
-    const supa = getSupabase();
-    if (!supa) return;
-
     let cancelled = false;
-    (async () => {
-      try {
-        const { data: rRow } = await supa
-          .from('resellers')
-          .select('*')
-          .eq('id', currentReseller.id)
-          .maybeSingle();
-
-        if (cancelled) return;
-        if (rRow) {
-          const rate = Number(rRow.per_user_rate ?? rRow.perUserRate ?? currentReseller.perUserRate ?? 0) || 0;
-          const currency = (rRow.rate_currency || rRow.rateCurrency || currentReseller.rateCurrency || 'INR') as 'INR' | 'USD';
-          const paid = Number(rRow.paid_payment ?? rRow.paidPayment ?? currentReseller.paidPayment ?? 0) || 0;
-          const pending = rate > 0
-            ? Math.max(0, totalCreated * rate - paid)
-            : (Number(rRow.pending_payment ?? rRow.pendingPayment ?? currentReseller.pendingPayment ?? 0) || 0);
-
-          setLiveBilling({
-            perUserRate: rate,
-            rateCurrency: currency,
-            pendingPayment: pending,
-            paidPayment: paid,
-          });
-
-          if (
-            Number(rRow.total_users_created) !== totalCreated ||
-            (rate > 0 && Number(rRow.pending_payment) !== pending)
-          ) {
-            await supa
-              .from('resellers')
-              .update({
-                total_users_created: totalCreated,
-                ...(rate > 0 ? { pending_payment: pending } : {}),
-              })
-              .eq('id', currentReseller.id);
-          }
-        }
-      } catch {}
-    })();
-
+    const sessionId = currentReseller.sessionId || localStorage.getItem('flow_reseller_session_id') || '';
+    fetch(`/api/users?resellerId=${encodeURIComponent(currentReseller.id)}`, {
+      headers: {
+        'x-reseller-id': currentReseller.id,
+        ...(sessionId ? { 'x-reseller-session-id': sessionId } : {}),
+      },
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (cancelled || !data?.resellerStats) return;
+        setLiveBilling({
+          perUserRate: data.resellerStats.perUserRate,
+          rateCurrency: data.resellerStats.rateCurrency,
+          pendingPayment: data.resellerStats.pendingPayment,
+          paidPayment: data.resellerStats.paidPayment,
+        });
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -387,15 +358,6 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={() => setShowApiDocs(true)}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-purple-900/60 to-indigo-900/60 hover:from-purple-800/80 hover:to-indigo-800/80 border border-purple-500/40 text-purple-200 hover:text-white rounded-xl text-xs font-semibold transition-all cursor-pointer shadow-sm active:scale-95"
-              title="Automated API and Webhooks to grant/revoke access from external website"
-            >
-              <Key className="w-3.5 h-3.5 text-purple-400" />
-              <span>API & Webhooks</span>
-            </button>
-
             {onBackToApp && (
               <button
                 onClick={onBackToApp}
@@ -877,15 +839,6 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
             </div>
           </div>
         </div>
-      )}
-
-      {/* API & Webhooks Docs Modal */}
-      {showApiDocs && currentReseller && (
-        <ResellerApiDocsModal
-          reseller={currentReseller}
-          onClose={() => setShowApiDocs(false)}
-          showToast={showToast}
-        />
       )}
     </div>
   );

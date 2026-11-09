@@ -20,9 +20,9 @@ export function isBlockedSupabaseRequest(urlStr: string): boolean {
       return true;
     }
     
-    // 2. resellers: allow filtered lookups (email, id, api_key) and direct reseller portal queries
+    // 2. resellers: block direct client-side GET queries so reseller passwords/keys are never exposed in browser Network tab
     if (path.includes('/rest/v1/resellers')) {
-      return false;
+      return true;
     }
     
     // 3. users?select=* (bulk select of users table without any filter)
