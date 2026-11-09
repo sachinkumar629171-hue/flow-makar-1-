@@ -1783,6 +1783,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const data = await res.json().catch(() => ({}));
 
+      if (res.status === 429) {
+        return {
+          success: false,
+          error: 'Too many login attempts',
+        };
+      }
+
       if (!res.ok || !data.success || !data.reseller) {
         return {
           success: false,
@@ -2378,6 +2385,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
       const serverData = await serverRes.json().catch(() => ({}));
       if (!serverRes.ok) {
+        if (serverRes.status === 429) {
+          return {
+            success: false,
+            error: 'Too many login attempts',
+          };
+        }
         if (serverRes.status === 403) {
           return {
             success: false,
@@ -2387,6 +2400,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         if (serverRes.status === 401) {
           return { success: false, error: serverData.error || 'Incorrect password. Please try again.' };
+        }
+        if (serverRes.status === 404) {
+          return { success: false, error: serverData.error || 'Account not found. Please sign up first.' };
         }
       } else if (serverData.success && serverData.user) {
         const sUser: User = serverData.user;
@@ -2569,6 +2585,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       } else {
         const errData = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          return { success: false, error: 'Too many login attempts' };
+        }
         if (res.status === 401) {
           return { success: false, error: errData.error || 'Incorrect password. Please try again.' };
         }

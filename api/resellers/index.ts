@@ -232,6 +232,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         }
 
+        const xff = req.headers['x-forwarded-for'];
+        const clientIp = String(Array.isArray(xff) ? xff[0] : (xff || req.socket?.remoteAddress || 'unknown')).split(',')[0].trim() || 'unknown';
+        const nowAttempt = Date.now();
+        const attemptKeys = [`ip:${clientIp}`, `email:${cleanEmail}`];
+        const gMap: Map<string, number[]> = (globalThis as any).__flwResellerLoginAttempts || ((globalThis as any).__flwResellerLoginAttempts = new Map<string, number[]>());
+
+        for (const k of attemptKeys) {
+          const list = (gMap.get(k) || []).filter(t => nowAttempt - t < 2 * 60 * 1000);
+          if (list.length > 0) gMap.set(k, list);
+          else gMap.delete(k);
+          if (list.length >= 5) {
+            return res.status(429).json({
+              success: false,
+              error: 'Too many login attempts',
+            });
+          }
+        }
+
+        const recordFailed = () => {
+          const ts = Date.now();
+          for (const k of attemptKeys) {
+            const list = (gMap.get(k) || []).filter(t => ts - t < 2 * 60 * 1000);
+            list.push(ts);
+            gMap.set(k, list);
+          }
+        };
+
         const allResellers = await loadAllResellersFromSupabase();
         const matched = allResellers.find(
           (r: any) =>
@@ -240,6 +267,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
 
         if (!matched) {
+          recordFailed();
           return res.status(404).json({
             success: false,
             error: 'No reseller portal found with this email. Contact main administrator.',
@@ -247,11 +275,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         if (String(matched.password || '').trim() !== cleanPass) {
+          recordFailed();
           return res.status(401).json({
             success: false,
             error: 'Incorrect portal password.',
           });
         }
+
+        for (const k of attemptKeys) gMap.delete(k);
 
         if (matched.status === 'suspended') {
           return res.status(403).json({

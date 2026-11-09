@@ -4,6 +4,48 @@ import { createClient } from '@supabase/supabase-js';
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 const ADMIN_PASSWORD = '147258';
 
+const LOGIN_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+const MAX_FAILED_ATTEMPTS = 5;
+const failedLoginMap = new Map<string, number[]>();
+
+function getClientIp(req: VercelRequest): string {
+  const xff = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(xff) ? xff[0] : (xff || req.socket?.remoteAddress || 'unknown');
+  return String(raw).split(',')[0].trim() || 'unknown';
+}
+
+function isLoginRateLimited(ip: string, email: string): boolean {
+  const now = Date.now();
+  const keys = [`ip:${ip}`, ...(email ? [`email:${email}`] : [])];
+  for (const key of keys) {
+    const timestamps = (failedLoginMap.get(key) || []).filter(t => now - t < LOGIN_WINDOW_MS);
+    if (timestamps.length > 0) {
+      failedLoginMap.set(key, timestamps);
+    } else {
+      failedLoginMap.delete(key);
+    }
+    if (timestamps.length >= MAX_FAILED_ATTEMPTS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function recordFailedLogin(ip: string, email: string): void {
+  const now = Date.now();
+  const keys = [`ip:${ip}`, ...(email ? [`email:${email}`] : [])];
+  for (const key of keys) {
+    const timestamps = (failedLoginMap.get(key) || []).filter(t => now - t < LOGIN_WINDOW_MS);
+    timestamps.push(now);
+    failedLoginMap.set(key, timestamps);
+  }
+}
+
+function clearFailedLogin(ip: string, email: string): void {
+  failedLoginMap.delete(`ip:${ip}`);
+  if (email) failedLoginMap.delete(`email:${email}`);
+}
+
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
   const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
@@ -44,6 +86,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const cleanEmail = emailRaw.toLowerCase().trim();
+  const clientIp = getClientIp(req);
+
+  if (isLoginRateLimited(clientIp, cleanEmail)) {
+    return res.status(429).json({
+      success: false,
+      error: 'Too many login attempts',
+    });
+  }
+
   const isSystemAdmin = ADMIN_EMAILS.has(cleanEmail);
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
@@ -86,8 +137,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 2. Admin fallback if not in DB
     if (!supaUser && isSystemAdmin) {
       if (passwordRaw && passwordRaw !== ADMIN_PASSWORD) {
+        recordFailedLogin(clientIp, cleanEmail);
         return res.status(401).json({ success: false, error: 'Incorrect password.' });
       }
+      clearFailedLogin(clientIp, cleanEmail);
       const newSessionToken = createAdminSessionToken(cleanEmail);
       const adminUserData = {
         id: 'usr-admin-1',
@@ -129,6 +182,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (!supaUser) {
+      recordFailedLogin(clientIp, cleanEmail);
       return res.status(404).json({
         success: false,
         error: 'Account not found. Please sign up or contact administrator.'
@@ -137,8 +191,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 3. Password Verification
     if (passwordRaw && supaUser.password && supaUser.password !== passwordRaw) {
+      recordFailedLogin(clientIp, cleanEmail);
       return res.status(401).json({ success: false, error: 'Incorrect password.' });
     }
+
+    clearFailedLogin(clientIp, cleanEmail);
 
     // 4. Status Check
     if (supaUser.status === 'suspended') {

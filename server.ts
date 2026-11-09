@@ -1430,6 +1430,46 @@ app.post('/api/users/sync-all', (req, res) => {
   res.json({ success: true, count: db.users.length });
 });
 
+// Login rate limiting: max 5 failed login attempts within 2 minutes (User, Reseller, Admin)
+const LOGIN_ATTEMPT_WINDOW_MS = 2 * 60 * 1000;
+const LOGIN_MAX_FAILED_ATTEMPTS = 5;
+const serverFailedLoginAttempts = new Map<string, number[]>();
+
+function getRequestClientIp(req: any): string {
+  const xff = req.headers?.['x-forwarded-for'];
+  const raw = Array.isArray(xff) ? xff[0] : (xff || req.ip || req.socket?.remoteAddress || 'unknown');
+  return String(raw).split(',')[0].trim() || 'unknown';
+}
+
+function isServerLoginRateLimited(ip: string, email: string): boolean {
+  const now = Date.now();
+  const keys = [`ip:${ip}`, ...(email ? [`email:${email}`] : [])];
+  for (const key of keys) {
+    const list = (serverFailedLoginAttempts.get(key) || []).filter(t => now - t < LOGIN_ATTEMPT_WINDOW_MS);
+    if (list.length > 0) serverFailedLoginAttempts.set(key, list);
+    else serverFailedLoginAttempts.delete(key);
+    if (list.length >= LOGIN_MAX_FAILED_ATTEMPTS) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function recordServerFailedLogin(ip: string, email: string): void {
+  const now = Date.now();
+  const keys = [`ip:${ip}`, ...(email ? [`email:${email}`] : [])];
+  for (const key of keys) {
+    const list = (serverFailedLoginAttempts.get(key) || []).filter(t => now - t < LOGIN_ATTEMPT_WINDOW_MS);
+    list.push(now);
+    serverFailedLoginAttempts.set(key, list);
+  }
+}
+
+function clearServerFailedLogin(ip: string, email: string): void {
+  serverFailedLoginAttempts.delete(`ip:${ip}`);
+  if (email) serverFailedLoginAttempts.delete(`email:${email}`);
+}
+
 // GET / POST login
 app.all('/api/users/login', async (req, res) => {
   const body = req.body || {};
@@ -1451,6 +1491,15 @@ app.all('/api/users/login', async (req, res) => {
   }
 
   const cleanEmail = cleanEmailString(email);
+  const clientIp = getRequestClientIp(req);
+
+  if (isServerLoginRateLimited(clientIp, cleanEmail)) {
+    return res.status(429).json({
+      success: false,
+      error: 'Too many login attempts'
+    });
+  }
+
   const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
 
   // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
@@ -1502,12 +1551,16 @@ app.all('/api/users/login', async (req, res) => {
   let user = db.users.find(u => u.email && cleanEmailString(u.email) === cleanEmail);
 
   if (!user) {
+    recordServerFailedLogin(clientIp, cleanEmail);
     return res.status(404).json({ success: false, error: 'Account not found. Please sign up first.' });
   }
 
   if (password && user.password && user.password !== password) {
+    recordServerFailedLogin(clientIp, cleanEmail);
     return res.status(401).json({ success: false, error: 'Incorrect password.' });
   }
+
+  clearServerFailedLogin(clientIp, cleanEmail);
 
   if (user.status === 'suspended') {
     return res.status(403).json({ success: false, error: 'This account has been suspended by administration.' });
@@ -3748,6 +3801,14 @@ app.post('/api/resellers', async (req, res) => {
       });
     }
 
+    const clientIp = getRequestClientIp(req);
+    if (isServerLoginRateLimited(clientIp, cleanEmail)) {
+      return res.status(429).json({
+        success: false,
+        error: 'Too many login attempts',
+      });
+    }
+
     await syncResellersFromSupabase();
 
     const matched = db.resellers.find(
@@ -3757,6 +3818,7 @@ app.post('/api/resellers', async (req, res) => {
     );
 
     if (!matched) {
+      recordServerFailedLogin(clientIp, cleanEmail);
       return res.status(404).json({
         success: false,
         error: 'No reseller portal found with this email. Contact main administrator.',
@@ -3764,11 +3826,14 @@ app.post('/api/resellers', async (req, res) => {
     }
 
     if (String(matched.password || '').trim() !== cleanPass) {
+      recordServerFailedLogin(clientIp, cleanEmail);
       return res.status(401).json({
         success: false,
         error: 'Incorrect portal password.',
       });
     }
+
+    clearServerFailedLogin(clientIp, cleanEmail);
 
     if (matched.status === 'suspended') {
       return res.status(403).json({
