@@ -1,8 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '147258';
 const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 const LOGIN_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
@@ -54,6 +52,22 @@ function createAdminSessionToken(email: string, randomSuffix?: string): string {
   return `asess_${sig}_${rand}`;
 }
 
+async function findAdminFromDatabase(supabase: any, cleanEmail: string): Promise<{ row: any; tableName: string } | null> {
+  for (const tableName of ['admin_data', 'admin data']) {
+    try {
+      const { data: rows, error } = await supabase
+        .from(tableName)
+        .select('*')
+        .ilike('email', cleanEmail);
+      if (!error && Array.isArray(rows) && rows.length > 0) {
+        const match = rows.find((r: any) => !r.role || String(r.role).toLowerCase() === 'admin') || rows[0];
+        if (match) return { row: match, tableName };
+      }
+    } catch {}
+  }
+  return null;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS Headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -65,7 +79,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).end();
   }
 
-  // Extract parameters from either POST body or GET query params
   const body = req.body || {};
   const query = req.query || {};
 
@@ -102,15 +115,74 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ success: false, error: 'Password is required.' });
   }
 
-  const isSystemAdmin = ADMIN_EMAILS.has(cleanEmail);
-
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
   const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
   try {
     const supabase = createClient(supaUrl, supaKey);
+    const nowIso = new Date().toISOString();
 
-    // 1. Fetch user(s) from Supabase by email (handle any legacy duplicate rows for the same Gmail)
+    // 1. Check dedicated admin_data table in Supabase first
+    const adminLookup = await findAdminFromDatabase(supabase, cleanEmail);
+    if (adminLookup) {
+      const { row: adminRow, tableName } = adminLookup;
+      const expectedAdminPass = String(adminRow.password || '').trim();
+      const adminRole = String(adminRow.role || 'admin').trim().toLowerCase();
+
+      if (adminRole !== 'admin' || !expectedAdminPass || expectedAdminPass !== passwordRaw) {
+        recordFailedLogin(clientIp, cleanEmail);
+        return res.status(401).json({ success: false, error: 'Incorrect password.' });
+      }
+
+      clearFailedLogin(clientIp, cleanEmail);
+      const newSessionToken = createAdminSessionToken(cleanEmail);
+      const adminId = String(adminRow.id || 'usr-admin-1');
+      const adminName = String(adminRow.name || cleanEmail.split('@')[0] || 'Admin');
+
+      // Update session_token in admin_data table
+      try {
+        if (adminRow.id) {
+          await supabase.from(tableName).update({ session_token: newSessionToken }).eq('id', adminRow.id);
+        } else {
+          await supabase.from(tableName).update({ session_token: newSessionToken }).ilike('email', cleanEmail);
+        }
+      } catch {}
+
+      // Also sync session_token into users table if the admin has a row in users
+      try {
+        const { data: existingAdminUsers } = await supabase.from('users').select('id').ilike('email', cleanEmail);
+        if (Array.isArray(existingAdminUsers) && existingAdminUsers.length > 0) {
+          await supabase.from('users').update({
+            role: 'admin',
+            session_token: newSessionToken,
+            is_online: true,
+            last_active: nowIso,
+          }).eq('id', existingAdminUsers[0].id);
+        }
+      } catch {}
+
+      const adminUserData = {
+        id: adminId,
+        name: adminName,
+        email: cleanEmail,
+        plan: 'ultra',
+        credits: 45000,
+        maxCredits: 45000,
+        planDaysLeft: 30,
+        role: 'admin',
+        status: 'active',
+        isOnline: true,
+        lastActive: nowIso,
+      };
+
+      return res.status(200).json({
+        success: true,
+        sessionId: newSessionToken,
+        user: adminUserData,
+      });
+    }
+
+    // 2. Fetch user(s) from Supabase users table by email
     let supaUser: any = null;
     const { data: matchingRows, error } = await supabase
       .from('users')
@@ -131,7 +203,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
         supaUser = validRows[0];
 
-        // If duplicate rows existed for the same Gmail, remove the extras so 1 Gmail = 1 Account = 1 Plan
         if (validRows.length > 1) {
           const duplicateIds = validRows.slice(1).map((r: any) => r.id).filter(Boolean);
           if (duplicateIds.length > 0) {
@@ -139,53 +210,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
       }
-    }
-
-    // 2. Admin fallback if not in DB
-    if (!supaUser && isSystemAdmin) {
-      if (passwordRaw !== ADMIN_PASSWORD) {
-        recordFailedLogin(clientIp, cleanEmail);
-        return res.status(401).json({ success: false, error: 'Incorrect password.' });
-      }
-      clearFailedLogin(clientIp, cleanEmail);
-      const newSessionToken = createAdminSessionToken(cleanEmail);
-      const adminUserData = {
-        id: 'usr-admin-1',
-        name: 'Sachin Kumar',
-        email: cleanEmail,
-        plan: 'ultra',
-        credits: 45000,
-        maxCredits: 45000,
-        planDaysLeft: 30,
-        role: 'admin',
-        status: 'active',
-        isOnline: true,
-        lastActive: new Date().toISOString(),
-      };
-
-      try {
-        await supabase.from('users').upsert({
-          id: 'usr-admin-1',
-          name: 'Sachin Kumar',
-          email: cleanEmail,
-          password: ADMIN_PASSWORD,
-          plan: 'ultra',
-          credits: 45000,
-          max_credits: 45000,
-          plan_days_left: 30,
-          role: 'admin',
-          status: 'active',
-          is_online: true,
-          session_token: newSessionToken,
-          last_active: adminUserData.lastActive
-        }, { onConflict: 'id' });
-      } catch {}
-
-      return res.status(200).json({
-        success: true,
-        sessionId: newSessionToken,
-        user: adminUserData,
-      });
     }
 
     if (!supaUser) {
@@ -197,7 +221,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // 3. Strict Password Verification (never allow empty or mismatched password)
-    const expectedPassword = String(supaUser.password || (isSystemAdmin ? ADMIN_PASSWORD : '')).trim();
+    const expectedPassword = String(supaUser.password || '').trim();
     if (!expectedPassword || expectedPassword !== passwordRaw) {
       recordFailedLogin(clientIp, cleanEmail);
       return res.status(401).json({ success: false, error: 'Incorrect password.' });
@@ -213,13 +237,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
+    const isUserAdmin = String(supaUser.role || '').toLowerCase() === 'admin';
+
     // 5. Single Device Check (Skip for admin or if forceLogin is true)
     const activeSessionToken = supaUser.session_token || '';
     const isOnline = Boolean(supaUser.is_online);
     const lastActiveTime = supaUser.last_active ? new Date(supaUser.last_active).getTime() : 0;
     const isRecentlyActive = (Date.now() - lastActiveTime) < 3 * 60 * 1000;
 
-    if (!isSystemAdmin && !forceLogin && isOnline && activeSessionToken && isRecentlyActive) {
+    if (!isUserAdmin && !forceLogin && isOnline && activeSessionToken && isRecentlyActive) {
       const isSameDevice = clientSessionToken && clientSessionToken === activeSessionToken;
       if (!isSameDevice) {
         return res.status(403).json({
@@ -231,13 +257,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // 6. Generate brand new session token (asess_... for admin, sess-... for regular user)
-    const isUserAdmin = isSystemAdmin || supaUser.role === 'admin';
     const newSessionToken = isUserAdmin
       ? createAdminSessionToken(cleanEmail)
       : 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
-    const nowIso = new Date().toISOString();
 
-    // Update session token and online status on the canonical user row
     try {
       await supabase.from('users').update({
         session_token: newSessionToken,
@@ -248,22 +271,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Supabase login token update error:', updateErr);
     }
 
-    if (isSystemAdmin && supaUser.role !== 'admin') {
-      supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
-    }
-
     const rawStartedAt = supaUser.plan_started_at || supaUser['created_at TIMESTAMPTZ'] || supaUser.created_at || nowIso;
     const safeUser = {
       id: supaUser.id,
       name: supaUser.name || 'User',
       email: supaUser.email,
-      plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
-      credits: isSystemAdmin ? 45000 : (Number(supaUser.credits) ?? 100),
-      maxCredits: isSystemAdmin ? 45000 : (Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100)),
+      plan: isUserAdmin ? 'ultra' : (supaUser.plan || 'basic'),
+      credits: isUserAdmin ? 45000 : (Number(supaUser.credits) ?? 100),
+      maxCredits: isUserAdmin ? 45000 : (Number(supaUser.max_credits) ?? (supaUser.plan === 'ultra' ? 45000 : 100)),
       planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
       planExpiresAt: supaUser.plan_expires_at || undefined,
       planStartedAt: rawStartedAt,
-      role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
+      role: isUserAdmin ? 'admin' : (supaUser.role || 'user'),
       status: supaUser.status || 'active',
       isOnline: true,
       lastActive: nowIso,

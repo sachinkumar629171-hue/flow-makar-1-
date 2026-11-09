@@ -53,7 +53,6 @@ import { ResellerEmailModal } from './reseller/ResellerEmailModal';
 import { SupabaseSettingsModal } from './modals/SupabaseSettingsModal';
 import { SignupTelegramModal } from './modals/SignupTelegramModal';
 import { DashboardAnnouncementModal } from './modals/DashboardAnnouncementModal';
-import { ADMIN_EMAIL } from '../data/initialData';
 import { apiUrl } from '../config/api';
 
 interface AdminPanelProps {
@@ -335,7 +334,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
         <div className="flex items-center gap-2.5">
           <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-purple-950/60 border border-purple-800/50 text-purple-300 text-xs font-mono">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="max-w-[160px] sm:max-w-none truncate">Admin: {currentUser?.email || ADMIN_EMAIL}</span>
+            <span className="max-w-[160px] sm:max-w-none truncate">Admin: {currentUser?.email || 'Admin'}</span>
           </div>
         </div>
       </header>
@@ -943,7 +942,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
                   </tr>
                 ) : (
                   filteredUsers.map(user => {
-                    const isUserAdmin = user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase() || user.role === 'admin';
+                    const isUserAdmin = user.role === 'admin';
                     const isUltra = user.plan === 'ultra';
                     const daysLeft = user.planDaysLeft ?? 30;
                     const isOnlineLive = isUserLive(user, currentUser?.id, currentUser?.email);

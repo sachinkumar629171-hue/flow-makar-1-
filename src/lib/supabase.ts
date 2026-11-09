@@ -15,8 +15,8 @@ export function isBlockedSupabaseRequest(urlStr: string): boolean {
     const path = parsed.pathname.toLowerCase();
     const query = parsed.search.toLowerCase();
     
-    // 1. app_config?select=*
-    if (path.includes('/rest/v1/app_config')) {
+    // 1. app_config?select=* or admin_data
+    if (path.includes('/rest/v1/app_config') || path.includes('/rest/v1/admin_data') || path.includes('/rest/v1/admin%20data')) {
       return true;
     }
     

@@ -43,13 +43,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       const supabase = createClient(supaUrl, supaKey);
 
-      // Check session token mismatch if provided (exempt system admins)
-      const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
-      const isSystemAdmin = ADMIN_EMAILS.has(email) || userId === 'usr-admin-1' || userId === 'usr-admin-2';
+      // Check session token mismatch if provided (exempt admins)
+      const isSystemAdmin = sessionToken.startsWith('asess_') || userId === 'usr-admin-1' || userId === 'usr-admin-2';
 
       if (!isSystemAdmin && sessionToken && email) {
-        const { data: supaUser } = await supabase.from('users').select('id, session_token').ilike('email', email).maybeSingle();
-        if (supaUser && supaUser.session_token && supaUser.session_token !== sessionToken) {
+        const { data: supaUser } = await supabase.from('users').select('id, role, session_token').ilike('email', email).maybeSingle();
+        if (supaUser && supaUser.role !== 'admin' && supaUser.session_token && supaUser.session_token !== sessionToken) {
           return res.status(200).json({
             success: false,
             sessionMismatch: true,

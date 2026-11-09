@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function createResellerSessionToken(reseller: any, randomSuffix?: string): string {
@@ -38,19 +37,30 @@ async function verifyAdminSession(supabase: any, token: string): Promise<boolean
   if (!cleanToken || cleanToken.startsWith('rsess_')) return false;
   if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return false;
 
-  if (cleanToken.startsWith('asess_')) {
-    const parts = cleanToken.split('_');
-    if (parts.length >= 3) {
-      const rand = parts.slice(2).join('_');
-      for (const adminEmail of ADMIN_EMAILS) {
-        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
-          return true;
-        }
-      }
-    }
-  }
-
   if (supabase) {
+    for (const tableName of ['admin_data', 'admin data']) {
+      try {
+        const { data: rows, error } = await supabase.from(tableName).select('*');
+        if (!error && Array.isArray(rows) && rows.length > 0) {
+          for (const r of rows) {
+            if (r.role && String(r.role).toLowerCase() !== 'admin') continue;
+            if (r.session_token && String(r.session_token).trim() === cleanToken) {
+              return true;
+            }
+            if (cleanToken.startsWith('asess_') && r.email) {
+              const parts = cleanToken.split('_');
+              if (parts.length >= 3) {
+                const rand = parts.slice(2).join('_');
+                if (cleanToken === createAdminSessionToken(r.email, rand)) {
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
     try {
       const { data: callerData } = await supabase
         .from('users')
@@ -58,8 +68,7 @@ async function verifyAdminSession(supabase: any, token: string): Promise<boolean
         .eq('session_token', cleanToken)
         .maybeSingle();
       if (callerData && !callerData.id?.startsWith('admin_config_') && callerData.status !== 'suspended') {
-        const callerEmail = String(callerData.email || '').trim().toLowerCase();
-        if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
+        if (String(callerData.role || '').toLowerCase() === 'admin') {
           return true;
         }
       }
@@ -164,8 +173,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { data: callerData } = await tokenQuery.maybeSingle();
       if (callerData) {
         callingUser = callerData;
-        const callerEmail = (callingUser.email || '').toLowerCase().trim();
-        if (ADMIN_EMAILS.has(callerEmail) || callingUser.role === 'admin') {
+        if (callingUser.role === 'admin') {
           isAdmin = true;
         }
       }
@@ -239,8 +247,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const validUsers = Array.from(byEmail.values())
         .map((u: any) => {
-          const userEmail = (u.email || '').toLowerCase().trim();
-          const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
+          const isSysAdmin = u.role === 'admin';
           const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
           const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -60000);
 
@@ -414,39 +421,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(200).json({ users: matchingUsers, ...(resellerStats ? { resellerStats } : {}) });
       }
 
-      // Ensure both default admins exist in the list for admin view
-      const ensureAdmins = [
-        { email: 'sachinxexplore@gmail.com', name: 'Sachin Kumar', ref: 'FLOWADMIN' },
-        { email: 'sachinkumar629171@gmail.com', name: 'Sachin Kumar (Alt)', ref: 'FLOWADMIN2' },
-      ];
-      for (const adm of ensureAdmins) {
-        if (!validUsers.some(u => u.email.toLowerCase() === adm.email.toLowerCase())) {
-          validUsers.unshift({
-            id: `usr-admin-${adm.ref}`,
-            name: adm.name,
-            email: adm.email,
-            whatsapp: '',
-            telegram: '',
-            plan: 'ultra',
-            credits: 45000,
-            maxCredits: 45000,
-            planDaysLeft: 30,
-            planExpiresAt: undefined,
-            planStartedAt: '2025-01-10T10:00:00Z',
-            role: 'admin',
-            resellerId: undefined,
-            resellerName: undefined,
-            status: 'active',
-            extensionAccess: true,
-            canEditPrompts: true,
-            isOnline: true,
-            lastActive: new Date().toISOString(),
-            createdAt: '2025-01-10T10:00:00Z',
-            avatarColor: 'from-purple-600 to-indigo-600',
-          });
-        }
-      }
-
       // 2. Admin gets all users
       if (isAdmin) {
         return res.status(200).json({ users: validUsers });
@@ -535,7 +509,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      const isSysAdmin = ADMIN_EMAILS.has(cleanEmail);
+      const isSysAdmin = role === 'admin' && isAdmin;
       const nowIso = new Date().toISOString();
       const allocatedDays = Math.min(30, Math.max(0, planDaysLeft !== undefined ? Number(planDaysLeft) : 30));
       const resolvedExpiresAt = planExpiresAt || new Date(Date.now() + Math.max(1, allocatedDays) * 86400000).toISOString();
@@ -550,7 +524,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         plan_total_days: Math.ceil(allocatedDays),
         plan_started_at: nowIso,
         plan_expires_at: resolvedExpiresAt,
-        role: isSysAdmin ? 'admin' : (role || 'user'),
+        role: isSysAdmin ? 'admin' : 'user',
         status: status || 'active',
         is_online: false,
         last_active: nowIso,

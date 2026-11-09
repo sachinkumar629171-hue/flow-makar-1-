@@ -368,49 +368,10 @@ async function safeSaveSupabasePromptConfig(supa: SupabaseClient | null, promptC
   }
 }
 
-const ADMIN_EMAIL = 'sachinxexplore@gmail.com';
-const ADMIN_PASSWORD = '147258';
+const ADMIN_EMAIL = '';
+const ADMIN_PASSWORD = '';
 
-const DEFAULT_USERS = [
-  {
-    id: 'usr-admin-1',
-    name: 'Sachin Kumar',
-    email: 'sachinxexplore@gmail.com',
-    password: ADMIN_PASSWORD,
-    whatsapp: '+91 9876543210',
-    telegram: '@sachinkumar_admin',
-    referralCode: 'FLOWADMIN',
-    plan: 'ultra',
-    credits: 45000,
-    maxCredits: 45000,
-    planDaysLeft: 30,
-    role: 'admin',
-    createdAt: '2025-01-10T10:00:00Z',
-    avatarColor: 'from-purple-600 to-indigo-600',
-    status: 'active',
-    isOnline: false,
-    lastActive: '',
-  },
-  {
-    id: 'usr-admin-2',
-    name: 'Sachin Kumar (Alt)',
-    email: 'sachinkumar629171@gmail.com',
-    password: ADMIN_PASSWORD,
-    whatsapp: '+91 9876543210',
-    telegram: '@sachinkumar_admin',
-    referralCode: 'FLOWADMIN2',
-    plan: 'ultra',
-    credits: 45000,
-    maxCredits: 45000,
-    planDaysLeft: 30,
-    role: 'admin',
-    createdAt: '2025-01-10T10:00:00Z',
-    avatarColor: 'from-purple-600 to-indigo-600',
-    status: 'active',
-    isOnline: false,
-    lastActive: '',
-  },
-];
+const DEFAULT_USERS: any[] = [];
 
 const DEFAULT_RESELLERS: any[] = [];
 
@@ -509,17 +470,6 @@ function initStorage() {
         };
       }
 
-      // Ensure admins exist
-      const adminEmails = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'];
-      for (const admEmail of adminEmails) {
-        const adminExists = db.users.some(u => u.email && u.email.toLowerCase() === admEmail.toLowerCase());
-        if (!adminExists) {
-          const matchDefault = DEFAULT_USERS.find(d => d.email.toLowerCase() === admEmail.toLowerCase());
-          if (matchDefault) {
-            db.users.unshift(matchDefault);
-          }
-        }
-      }
       let changed = false;
       const now = Date.now();
       for (const u of db.users) {
@@ -558,7 +508,7 @@ function saveStorage() {
 }
 
 function checkAndConvertToBasic(u: any): boolean {
-  if (!u || u.role === 'admin' || (u.email && u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()) || (u.email && u.email.toLowerCase() === 'sachinkumar629171@gmail.com')) {
+  if (!u || u.role === 'admin') {
     return false;
   }
   let changed = false;
@@ -749,7 +699,7 @@ function markUserOnline(emailOrId?: string, sessionToken?: string): void {
 
 // ======================== API ROUTES ========================
 
-const SYSTEM_ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const SYSTEM_ADMIN_EMAILS = new Set<string>();
 const SERVER_ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
@@ -773,7 +723,43 @@ function verifySignedAdminSessionToken(token: string): boolean {
       return true;
     }
   }
+  for (const u of db.users) {
+    if (u.role === 'admin' && u.email && cleanToken === createAdminSessionToken(u.email, suffix)) {
+      return true;
+    }
+  }
   return false;
+}
+
+async function verifyServerAdminSessionFromSupabase(supa: any, token: string): Promise<any | null> {
+  if (!supa || !token || typeof token !== 'string') return null;
+  const cleanToken = token.trim();
+  if (!cleanToken || cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return null;
+
+  for (const tableName of ['admin_data', 'admin data']) {
+    try {
+      const { data: rows, error } = await supa.from(tableName).select('*');
+      if (!error && Array.isArray(rows) && rows.length > 0) {
+        for (const r of rows) {
+          if (r.role && String(r.role).toLowerCase() !== 'admin') continue;
+          if (r.email) SYSTEM_ADMIN_EMAILS.add(String(r.email).trim().toLowerCase());
+          if (r.session_token && String(r.session_token).trim() === cleanToken) {
+            return r;
+          }
+          if (cleanToken.startsWith('asess_') && r.email) {
+            const parts = cleanToken.split('_');
+            if (parts.length >= 3) {
+              const rand = parts.slice(2).join('_');
+              if (cleanToken === createAdminSessionToken(r.email, rand)) {
+                return r;
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+  return null;
 }
 
 function isRequestAdminUser(req: any): boolean {
@@ -818,8 +804,29 @@ async function getCallingUser(req: any): Promise<any | null> {
   const supa = getServerSupabase();
   if (supa) {
     try {
+      const dbAdmin = await verifyServerAdminSessionFromSupabase(supa, token);
+      if (dbAdmin) {
+        const admEmail = String(dbAdmin.email || '').trim().toLowerCase();
+        return {
+          id: dbAdmin.id || 'usr-admin-1',
+          name: dbAdmin.name || admEmail.split('@')[0] || 'Admin',
+          email: admEmail,
+          sessionToken: token,
+          plan: 'ultra',
+          credits: 45000,
+          maxCredits: 45000,
+          planDaysLeft: 30,
+          role: 'admin',
+          status: 'active',
+          extensionAccess: true,
+          canEditPrompts: true,
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+        };
+      }
+
       let supaQuery = supa.from('users').select('*');
-      if (token.startsWith('sess-')) {
+      if (token.startsWith('sess-') || token.startsWith('asess_')) {
         supaQuery = supaQuery.eq('session_token', token);
       } else {
         supaQuery = supaQuery.or(`session_token.eq.${token},id.eq.${token}`);
@@ -827,8 +834,7 @@ async function getCallingUser(req: any): Promise<any | null> {
       const { data: supaUser } = await supaQuery.maybeSingle();
 
       if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
-        const userEmailLower = (supaUser.email || '').toLowerCase().trim();
-        const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(userEmailLower);
+        const isSysAdmin = supaUser.role === 'admin';
         const mapped = {
           id: supaUser.id,
           name: supaUser.name || 'User',
@@ -1064,6 +1070,13 @@ app.all('/api/admin/data', async (req, res) => {
   }
 
   if (!isAuthorizedAdmin && supa) {
+    const dbAdm = await verifyServerAdminSessionFromSupabase(supa, sessionId);
+    if (dbAdm) {
+      isAuthorizedAdmin = true;
+    }
+  }
+
+  if (!isAuthorizedAdmin && supa) {
     try {
       let query = supa.from('users').select('*');
       if (sessionId.startsWith('sess-') || sessionId.startsWith('asess_')) {
@@ -1073,8 +1086,7 @@ app.all('/api/admin/data', async (req, res) => {
       }
       const { data: callerUser } = await query.maybeSingle();
       if (callerUser && !callerUser.id?.startsWith('admin_config_')) {
-        const callerEmail = String(callerUser.email || '').trim().toLowerCase();
-        if (SYSTEM_ADMIN_EMAILS.has(callerEmail) || callerUser.role === 'admin') {
+        if (callerUser.role === 'admin') {
           isAuthorizedAdmin = true;
         }
       }
@@ -1391,7 +1403,7 @@ app.post(['/api/users', '/api/users/signup'], async (req, res) => {
     credits: userCredits,
     maxCredits: userMaxCredits,
     planDaysLeft: userDaysLeft,
-    role: req.body.role || (email.toLowerCase() === ADMIN_EMAIL.toLowerCase() ? 'admin' : 'user'),
+    role: req.body.role === 'admin' ? 'user' : (req.body.role || 'user'),
     resellerId: targetResellerId || undefined,
     resellerName: req.body.resellerName || req.body.reseller_name || undefined,
     createdAt: req.body.createdAt || new Date().toISOString(),
@@ -1507,16 +1519,79 @@ app.all('/api/users/login', async (req, res) => {
     return res.status(401).json({ success: false, error: 'Password is required.' });
   }
 
-  const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
-
-  // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
-  let supaUser: any = null;
   const supa = getServerSupabase();
+  if (supa) {
+    for (const tableName of ['admin_data', 'admin data']) {
+      try {
+        const { data: admRows, error: admErr } = await supa
+          .from(tableName)
+          .select('*')
+          .ilike('email', cleanEmail);
+        if (!admErr && Array.isArray(admRows) && admRows.length > 0) {
+          const adminRow = admRows.find((r: any) => !r.role || String(r.role).toLowerCase() === 'admin') || admRows[0];
+          if (adminRow) {
+            const expectedAdminPass = String(adminRow.password || '').trim();
+            const adminRole = String(adminRow.role || 'admin').trim().toLowerCase();
+            if (adminRole !== 'admin' || !expectedAdminPass || expectedAdminPass !== String(password).trim()) {
+              recordServerFailedLogin(clientIp, cleanEmail);
+              return res.status(401).json({ success: false, error: 'Incorrect password.' });
+            }
+            clearServerFailedLogin(clientIp, cleanEmail);
+            SYSTEM_ADMIN_EMAILS.add(cleanEmail);
+            const newSessionToken = createAdminSessionToken(cleanEmail);
+            const nowIso = new Date().toISOString();
+            try {
+              if (adminRow.id) {
+                await supa.from(tableName).update({ session_token: newSessionToken }).eq('id', adminRow.id);
+              } else {
+                await supa.from(tableName).update({ session_token: newSessionToken }).ilike('email', cleanEmail);
+              }
+            } catch {}
+            const adminUserObj: any = {
+              id: String(adminRow.id || 'usr-admin-1'),
+              name: String(adminRow.name || cleanEmail.split('@')[0] || 'Admin'),
+              email: cleanEmail,
+              password: expectedAdminPass,
+              plan: 'ultra',
+              credits: 45000,
+              maxCredits: 45000,
+              planDaysLeft: 30,
+              role: 'admin',
+              status: 'active',
+              isOnline: true,
+              sessionToken: newSessionToken,
+              lastActive: nowIso,
+              createdAt: adminRow.created_at || nowIso,
+            };
+            const existingIdx = db.users.findIndex(u => u.email && cleanEmailString(u.email) === cleanEmail);
+            if (existingIdx >= 0) db.users[existingIdx] = adminUserObj;
+            else db.users.unshift(adminUserObj);
+            saveStorage();
+
+            const safeAdminData = sanitizeSafeUser(adminUserObj);
+            delete safeAdminData.sessionToken;
+            delete safeAdminData.sessionId;
+            delete safeAdminData.session_id;
+            delete safeAdminData.session_token;
+            return res.json({
+              success: true,
+              sessionId: newSessionToken,
+              user: safeAdminData,
+            });
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 1. Check live in Supabase users table
+  let supaUser: any = null;
   if (supa) {
     try {
       const { data } = await supa.from('users').select('*').ilike('email', cleanEmail).maybeSingle();
       if (data && !data.id?.startsWith('admin_config_')) {
         supaUser = data;
+        const isSysAdmin = supaUser.role === 'admin';
         const freshUser = {
           id: supaUser.id,
           name: supaUser.name,
@@ -1526,11 +1601,11 @@ app.all('/api/users/login', async (req, res) => {
           telegram: supaUser.telegram || '',
           referralCode: supaUser.referral_code || '',
           referredBy: supaUser.referred_by || '',
-          plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),
-          credits: isSystemAdmin ? 45000 : (Number(supaUser.credits) ?? 0),
-          maxCredits: isSystemAdmin ? 45000 : (Number(supaUser.max_credits) || 100),
+          plan: isSysAdmin ? 'ultra' : (supaUser.plan || 'basic'),
+          credits: isSysAdmin ? 45000 : (Number(supaUser.credits) ?? 0),
+          maxCredits: isSysAdmin ? 45000 : (Number(supaUser.max_credits) || 100),
           planDaysLeft: Number(supaUser.plan_days_left) ?? 30,
-          role: isSystemAdmin ? 'admin' : (supaUser.role || 'user'),
+          role: isSysAdmin ? 'admin' : (supaUser.role || 'user'),
           resellerId: supaUser.reseller_id,
           resellerName: supaUser.reseller_name,
           status: supaUser.status || 'active',
@@ -1574,6 +1649,8 @@ app.all('/api/users/login', async (req, res) => {
     return res.status(403).json({ success: false, error: 'This account has been suspended by administration.' });
   }
 
+  const isUserAdmin = user.role === 'admin';
+
   // Strict Single-Device Lock: Check if already actively logged in on another device
   const activeSessionToken = (supaUser && supaUser.session_token) || user.sessionToken;
   const isOnline = supaUser ? Boolean(supaUser.is_online) : Boolean(user.isOnline);
@@ -1581,7 +1658,7 @@ app.all('/api/users/login', async (req, res) => {
   const lastActiveTime = lastActiveTimestamp ? new Date(lastActiveTimestamp).getTime() : 0;
   const isRecentlyActive = (Date.now() - lastActiveTime) < 3 * 60 * 1000; // 3 minutes window
 
-  if (!isSystemAdmin && !forceLogin && isOnline && activeSessionToken && isRecentlyActive) {
+  if (!isUserAdmin && !forceLogin && isOnline && activeSessionToken && isRecentlyActive) {
     // If incoming client already holds this same session token, it's the same device refresh
     const isSameDevice = clientSessionToken && clientSessionToken === activeSessionToken;
     if (!isSameDevice) {
@@ -1593,7 +1670,6 @@ app.all('/api/users/login', async (req, res) => {
     }
   }
 
-  const isUserAdmin = isSystemAdmin || user.role === 'admin';
   const newSessionToken = isUserAdmin
     ? createAdminSessionToken(cleanEmail)
     : 'sess-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
@@ -4690,15 +4766,17 @@ app.post('/api/config', async (req, res) => {
     ).toString().trim();
     const supa = getServerSupabase();
     if (supa && token && !token.startsWith('asess_YWRtaW58') && !token.startsWith('asess_YWRtf')) {
-      try {
-        const { data: callerUser } = await supa.from('users').select('email, role, status').eq('session_token', token).maybeSingle();
-        if (callerUser && callerUser.status !== 'suspended') {
-          const emailLower = String(callerUser.email || '').trim().toLowerCase();
-          if (SYSTEM_ADMIN_EMAILS.has(emailLower) || callerUser.role === 'admin') {
+      const dbAdm = await verifyServerAdminSessionFromSupabase(supa, token);
+      if (dbAdm) {
+        isAdmin = true;
+      } else {
+        try {
+          const { data: callerUser } = await supa.from('users').select('email, role, status').eq('session_token', token).maybeSingle();
+          if (callerUser && callerUser.status !== 'suspended' && callerUser.role === 'admin') {
             isAdmin = true;
           }
-        }
-      } catch {}
+        } catch {}
+      }
     }
   }
   if (!isAdmin) {

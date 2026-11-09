@@ -190,7 +190,7 @@ export function getUserValidityTime(user: User | null | undefined): {
   }
 
   // Admin user has lifetime access (100% full line)
-  if (user.role === 'admin' || (user.email && (user.email.toLowerCase() === 'sachinxexplore@gmail.com' || user.email.toLowerCase() === 'sachinkumar629171@gmail.com'))) {
+  if (user.role === 'admin') {
     return { totalMs: Infinity, days: 999, hours: 0, minutes: 0, seconds: 0, profileDays: 999, isExpired: false, displayText: 'Lifetime', percentageRemaining: 100 };
   }
 
@@ -296,7 +296,7 @@ export function getUserCreditStats(user: User | null | undefined): {
  * If expired and not admin, automatically converts plan to 'basic' with 100 credits limit.
  */
 export function checkAndDowngradeExpiredUser(user: User): { user: User; changed: boolean } {
-  if (user.role === 'admin' || (user.email && (user.email.toLowerCase() === 'sachinxexplore@gmail.com' || user.email.toLowerCase() === 'sachinkumar629171@gmail.com'))) {
+  if (user.role === 'admin') {
     return { user, changed: false };
   }
 

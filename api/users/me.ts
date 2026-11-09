@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
@@ -11,18 +10,32 @@ function createAdminSessionToken(email: string, randomSuffix?: string): string {
   return `asess_${sig}_${rand}`;
 }
 
-function resolveSignedAdminEmail(token: string): string | null {
+async function resolveAdminFromDatabase(supabase: any, token: string): Promise<any | null> {
   if (!token || typeof token !== 'string') return null;
   const cleanToken = token.trim();
-  if (!cleanToken.startsWith('asess_')) return null;
-  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return null;
-  const parts = cleanToken.split('_');
-  if (parts.length < 3) return null;
-  const suffix = parts.slice(2).join('_');
-  for (const adminEmail of ADMIN_EMAILS) {
-    if (cleanToken === createAdminSessionToken(adminEmail, suffix)) {
-      return adminEmail;
-    }
+  if (!cleanToken || cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return null;
+
+  for (const tableName of ['admin_data', 'admin data']) {
+    try {
+      const { data: rows, error } = await supabase.from(tableName).select('*');
+      if (!error && Array.isArray(rows) && rows.length > 0) {
+        for (const r of rows) {
+          if (r.role && String(r.role).toLowerCase() !== 'admin') continue;
+          if (r.session_token && String(r.session_token).trim() === cleanToken) {
+            return r;
+          }
+          if (cleanToken.startsWith('asess_') && r.email) {
+            const parts = cleanToken.split('_');
+            if (parts.length >= 3) {
+              const rand = parts.slice(2).join('_');
+              if (cleanToken === createAdminSessionToken(r.email, rand)) {
+                return r;
+              }
+            }
+          }
+        }
+      }
+    } catch {}
   }
   return null;
 }
@@ -97,18 +110,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // If token is a valid signed Admin sessionId, fallback to matching admin email in Supabase or default admin profile
-    const signedAdminEmail = resolveSignedAdminEmail(token);
-    if ((!supaUser || error) && signedAdminEmail) {
-      const { data: adminRows } = await supabase
-        .from('users')
-        .select('*')
-        .ilike('email', signedAdminEmail);
-      const adminByEmail = Array.isArray(adminRows) && adminRows.length > 0 ? adminRows[0] : null;
-      supaUser = adminByEmail || {
-        id: 'usr-admin-1',
-        name: 'Sachin Kumar',
-        email: signedAdminEmail,
+    // If token matches an admin in admin_data table, resolve that admin profile
+    const dbAdminRow = await resolveAdminFromDatabase(supabase, token);
+    if ((!supaUser || error) && dbAdminRow) {
+      const admEmail = String(dbAdminRow.email || '').trim().toLowerCase();
+      supaUser = {
+        id: dbAdminRow.id || 'usr-admin-1',
+        name: dbAdminRow.name || admEmail.split('@')[0] || 'Admin',
+        email: admEmail,
         plan: 'ultra',
         credits: 45000,
         max_credits: 45000,
@@ -117,6 +126,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         status: 'active',
       };
       error = null;
+    } else if (supaUser && dbAdminRow) {
+      supaUser.role = 'admin';
     }
 
     if (error || !supaUser || supaUser.id?.startsWith('admin_config_')) {
@@ -134,12 +145,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const userEmail = (supaUser.email || '').toLowerCase().trim();
-    const isSystemAdmin = ADMIN_EMAILS.has(userEmail) || supaUser.role === 'admin';
-
-    if (isSystemAdmin && supaUser.role !== 'admin') {
-      supabase.from('users').update({ role: 'admin' }).eq('id', supaUser.id).then(() => {});
-    }
+    const isSystemAdmin = Boolean(dbAdminRow) || String(supaUser.role || '').toLowerCase() === 'admin';
 
     // Check active dashboard notification/announcement configured by Admin (cached 10s for zero extra egress)
     let activeAnnouncement: { enabled: boolean; text: string; type: 'info' | 'warning' | 'success' } | null = null;

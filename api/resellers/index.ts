@@ -1,7 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
 const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function getResellerApiKey(reseller: any): string {
@@ -32,19 +31,30 @@ async function verifyAdminSession(supabase: any, token: string): Promise<boolean
   if (!cleanToken || cleanToken.startsWith('rsess_')) return false;
   if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return false;
 
-  if (cleanToken.startsWith('asess_')) {
-    const parts = cleanToken.split('_');
-    if (parts.length >= 3) {
-      const rand = parts.slice(2).join('_');
-      for (const adminEmail of ADMIN_EMAILS) {
-        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
-          return true;
-        }
-      }
-    }
-  }
-
   if (supabase) {
+    for (const tableName of ['admin_data', 'admin data']) {
+      try {
+        const { data: rows, error } = await supabase.from(tableName).select('*');
+        if (!error && Array.isArray(rows) && rows.length > 0) {
+          for (const r of rows) {
+            if (r.role && String(r.role).toLowerCase() !== 'admin') continue;
+            if (r.session_token && String(r.session_token).trim() === cleanToken) {
+              return true;
+            }
+            if (cleanToken.startsWith('asess_') && r.email) {
+              const parts = cleanToken.split('_');
+              if (parts.length >= 3) {
+                const rand = parts.slice(2).join('_');
+                if (cleanToken === createAdminSessionToken(r.email, rand)) {
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
     try {
       const { data: callerData } = await supabase
         .from('users')
@@ -52,8 +62,7 @@ async function verifyAdminSession(supabase: any, token: string): Promise<boolean
         .eq('session_token', cleanToken)
         .maybeSingle();
       if (callerData && !callerData.id?.startsWith('admin_config_') && callerData.status !== 'suspended') {
-        const callerEmail = String(callerData.email || '').trim().toLowerCase();
-        if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
+        if (String(callerData.role || '').toLowerCase() === 'admin') {
           return true;
         }
       }

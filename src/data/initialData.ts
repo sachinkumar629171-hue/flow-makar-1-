@@ -1,30 +1,11 @@
 import { User, ShowcaseVideo, Generation, DeviceSession, Reseller } from '../types';
 
-export const ADMIN_EMAIL = 'sachinkumar629171@gmail.com';
+export const ADMIN_EMAIL = '';
 export const ADMIN_PASSWORD = '';
 
 export const INITIAL_RESELLERS: Reseller[] = [];
 
-export const INITIAL_USERS: User[] = [
-  {
-    id: 'usr-admin-1',
-    name: 'Sachin Kumar',
-    email: ADMIN_EMAIL,
-    whatsapp: '+91 9876543210',
-    telegram: '@sachinkumar_admin',
-    referralCode: 'FLOWADMIN',
-    plan: 'ultra',
-    credits: 45000,
-    maxCredits: 45000,
-    planDaysLeft: 30,
-    role: 'admin',
-    createdAt: '2025-01-10T10:00:00Z',
-    avatarColor: 'from-purple-600 to-indigo-600',
-    status: 'active',
-    isOnline: false,
-    lastActive: '',
-  },
-];
+export const INITIAL_USERS: User[] = [];
 
 export const INITIAL_SHOWCASE: ShowcaseVideo[] = [
   {

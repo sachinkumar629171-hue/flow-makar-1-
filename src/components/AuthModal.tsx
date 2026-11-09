@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Eye, EyeOff, ArrowLeft, ShieldCheck, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../context/AuthContext';
-import { ADMIN_EMAIL, ADMIN_PASSWORD } from '../data/initialData';
 
 interface AuthModalProps {
   initialMode?: 'login' | 'signup';

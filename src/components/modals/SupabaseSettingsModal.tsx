@@ -74,12 +74,24 @@ create table if not exists public.resellers (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+create table if not exists public.admin_data (
+  id text primary key default 'admin-1',
+  name text default 'Admin',
+  email text unique not null,
+  password text not null,
+  role text default 'admin' not null,
+  session_token text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
 -- Enable Read & Write permissions (RLS)
 alter table public.users enable row level security;
 alter table public.resellers enable row level security;
+alter table public.admin_data enable row level security;
 
 create policy "Allow all operations on users" on public.users for all using (true) with check (true);
-create policy "Allow all operations on resellers" on public.resellers for all using (true) with check (true);`;
+create policy "Allow all operations on resellers" on public.resellers for all using (true) with check (true);
+create policy "Allow all operations on admin_data" on public.admin_data for all using (true) with check (true);`;
 
   const handleCopySql = () => {
     navigator.clipboard.writeText(sqlSchema);

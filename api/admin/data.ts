@@ -1,8 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
-
 const DEFAULT_PLAN_EXTENSIONS = {
   basic: {
     name: 'Flow Basic Chrome Extension',
@@ -64,21 +62,59 @@ function createAdminSessionToken(email: string, randomSuffix?: string): string {
   return `asess_${sig}_${rand}`;
 }
 
-function verifySignedAdminSessionToken(token: string): boolean {
-  if (!token || typeof token !== 'string') return false;
+async function verifyAdminSessionFromDb(supabase: any, token: string): Promise<{ authorized: boolean; adminRows: any[] }> {
+  const adminRows: any[] = [];
+  if (!token || typeof token !== 'string') return { authorized: false, adminRows };
   const cleanToken = token.trim();
-  if (!cleanToken.startsWith('asess_')) return false;
-  // Strictly reject old leaked signatures
-  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return false;
-  const parts = cleanToken.split('_');
-  if (parts.length < 3) return false;
-  const suffix = parts.slice(2).join('_');
-  for (const adminEmail of ADMIN_EMAILS) {
-    if (cleanToken === createAdminSessionToken(adminEmail, suffix)) {
-      return true;
-    }
+  if (!cleanToken || cleanToken.startsWith('rsess_')) return { authorized: false, adminRows };
+  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) {
+    return { authorized: false, adminRows };
   }
-  return false;
+
+  let authorized = false;
+
+  // 1. Check dedicated admin_data table (and "admin data") in Supabase
+  for (const tableName of ['admin_data', 'admin data']) {
+    try {
+      const { data: rows, error } = await supabase.from(tableName).select('*');
+      if (!error && Array.isArray(rows) && rows.length > 0) {
+        for (const r of rows) {
+          if (r.role && String(r.role).toLowerCase() !== 'admin') continue;
+          adminRows.push(r);
+          if (r.session_token && String(r.session_token).trim() === cleanToken) {
+            authorized = true;
+          } else if (cleanToken.startsWith('asess_') && r.email) {
+            const parts = cleanToken.split('_');
+            if (parts.length >= 3) {
+              const rand = parts.slice(2).join('_');
+              if (cleanToken === createAdminSessionToken(r.email, rand)) {
+                authorized = true;
+              }
+            }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 2. Also check users table where role = 'admin'
+  if (!authorized) {
+    try {
+      const { data: callerUser } = await supabase
+        .from('users')
+        .select('*')
+        .eq('session_token', cleanToken)
+        .maybeSingle();
+
+      if (callerUser && !callerUser.id?.startsWith('admin_config_') && callerUser.status !== 'suspended') {
+        if (String(callerUser.role || '').toLowerCase() === 'admin') {
+          authorized = true;
+        }
+      }
+    } catch {}
+  }
+
+  return { authorized, adminRows };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -115,22 +151,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    let isAuthorizedAdmin = verifySignedAdminSessionToken(sessionId);
-
-    if (!isAuthorizedAdmin) {
-      const { data: callerUser } = await supabase
-        .from('users')
-        .select('*')
-        .eq('session_token', sessionId)
-        .maybeSingle();
-
-      if (callerUser && !callerUser.id?.startsWith('admin_config_') && callerUser.status !== 'suspended') {
-        const callerEmail = String(callerUser.email || '').trim().toLowerCase();
-        if (ADMIN_EMAILS.has(callerEmail) || callerUser.role === 'admin') {
-          isAuthorizedAdmin = true;
-        }
-      }
-    }
+    const { authorized: isAuthorizedAdmin, adminRows } = await verifyAdminSessionFromDb(supabase, sessionId);
 
     if (!isAuthorizedAdmin) {
       return res.status(401).json({
@@ -182,9 +203,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         const uniqueUsers = Array.from(byEmail.values());
 
+        const dbAdminEmailSet = new Set(adminRows.map((a: any) => String(a.email || '').trim().toLowerCase()).filter(Boolean));
+
         usersList = uniqueUsers.map((u: any) => {
           const userEmail = (u.email || '').toLowerCase().trim();
-          const isSysAdmin = ADMIN_EMAILS.has(userEmail) || u.role === 'admin';
+          const isSysAdmin = dbAdminEmailSet.has(userEmail) || u.role === 'admin';
           const lastActiveTime = u.last_active ? new Date(u.last_active).getTime() : NaN;
           // Strict 2-minute (120,000 ms) heartbeat window
           const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
@@ -263,17 +286,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Error fetching users in /api/admin/data:', e);
     }
 
-    // Ensure system admins are present
-    const ensureAdmins = [
-      { email: 'sachinxexplore@gmail.com', name: 'Sachin Kumar', ref: 'FLOWADMIN' },
-      { email: 'sachinkumar629171@gmail.com', name: 'Sachin Kumar (Alt)', ref: 'FLOWADMIN2' },
-    ];
-    for (const adm of ensureAdmins) {
-      if (!usersList.some(u => u.email.toLowerCase() === adm.email.toLowerCase())) {
+    // Include any admin accounts from admin_data table in usersList if not already in users table
+    for (const adm of adminRows) {
+      const admEmail = String(adm.email || '').trim().toLowerCase();
+      if (!admEmail) continue;
+      if (!usersList.some(u => String(u.email || '').toLowerCase() === admEmail)) {
         usersList.unshift({
-          id: `usr-admin-${adm.ref}`,
-          name: adm.name,
-          email: adm.email,
+          id: adm.id || `usr-admin-${admEmail}`,
+          name: adm.name || admEmail.split('@')[0] || 'Admin',
+          email: admEmail,
           plan: 'ultra',
           credits: 45000,
           maxCredits: 45000,
@@ -285,9 +306,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           status: 'active',
           extensionAccess: true,
           canEditPrompts: true,
-          isOnline: false,
-          lastActive: '',
-          createdAt: '2025-01-10T10:00:00Z',
+          isOnline: true,
+          lastActive: new Date().toISOString(),
+          createdAt: adm.created_at || new Date().toISOString(),
           avatarColor: 'from-purple-600 to-indigo-600',
         });
       }
