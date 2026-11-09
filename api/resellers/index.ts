@@ -180,6 +180,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
           notes: sr.notes || '',
           sessionId: sr.sessionId || sr.session_token || sr.session_id || '',
+          perUserRate: Number(sr.per_user_rate ?? sr.perUserRate ?? 0) || 0,
+          rateCurrency: (sr.rate_currency || sr.rateCurrency || 'INR') as 'INR' | 'USD',
+          pendingPayment: Number(sr.pending_payment ?? sr.pendingPayment ?? 0) || 0,
+          paidPayment: Number(sr.paid_payment ?? sr.paidPayment ?? 0) || 0,
         };
       });
     };
@@ -194,6 +198,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       expiresAt: r.expiresAt || r.expires_at,
       status: r.status || 'active',
       createdAt: r.createdAt || r.created_at || new Date().toISOString(),
+      perUserRate: Number(r.perUserRate ?? r.per_user_rate ?? 0) || 0,
+      rateCurrency: r.rateCurrency || r.rate_currency || 'INR',
+      pendingPayment: Number(r.pendingPayment ?? r.pending_payment ?? 0) || 0,
+      paidPayment: Number(r.paidPayment ?? r.paid_payment ?? 0) || 0,
     });
 
     if (req.method === 'GET') {
@@ -312,6 +320,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         created_at: reseller.createdAt || reseller.created_at || new Date().toISOString(),
         notes: reseller.notes || '',
         api_key: internalApiKey,
+        per_user_rate: Number(reseller.perUserRate ?? reseller.per_user_rate ?? 0) || 0,
+        rate_currency: String(reseller.rateCurrency || reseller.rate_currency || 'INR'),
+        pending_payment: Number(reseller.pendingPayment ?? reseller.pending_payment ?? 0) || 0,
+        paid_payment: Number(reseller.paidPayment ?? reseller.paid_payment ?? 0) || 0,
       };
 
       for (let attempt = 0; attempt < 8; attempt++) {

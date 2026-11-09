@@ -2,23 +2,20 @@ import React, { useState } from 'react';
 import { 
   Store, 
   Plus, 
-  Users, 
-  Clock, 
-  Lock, 
-  ExternalLink, 
+  ExternalLink,
   Trash2, 
   Edit3, 
   Check, 
   AlertCircle, 
   Search, 
-  ShieldCheck, 
   PlusCircle, 
   MinusCircle,
   Copy,
-  Calendar,
   Key,
   RefreshCw,
-  ShieldAlert
+  DollarSign,
+  Database,
+  Wallet
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { Reseller } from '../../types';
@@ -29,11 +26,58 @@ interface AdminResellersTabProps {
   onOpenResellerPortal: (reseller: Reseller) => void;
 }
 
+const SUPABASE_RESELLER_PAYMENT_AND_30D_SQL = `-- 1) Add Reseller Payment Tracking Columns to public.resellers
+ALTER TABLE public.resellers
+  ADD COLUMN IF NOT EXISTS per_user_rate numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS rate_currency text DEFAULT 'INR',
+  ADD COLUMN IF NOT EXISTS pending_payment numeric DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS paid_payment numeric DEFAULT 0;
+
+-- 2) Enforce Strict 30-Day Max Expiry from created_at on public.users
+CREATE OR REPLACE FUNCTION public.enforce_user_max_30d_expiry()
+RETURNS trigger AS $$
+DECLARE
+  base_created timestamptz;
+  max_expiry timestamptz;
+  max_days integer;
+BEGIN
+  base_created := COALESCE(OLD.created_at, NEW.created_at, now());
+  NEW.created_at := base_created;
+  max_expiry := base_created + interval '30 days';
+
+  IF NEW.plan_expires_at IS NULL OR NEW.plan_expires_at > max_expiry THEN
+    NEW.plan_expires_at := max_expiry;
+  END IF;
+
+  max_days := GREATEST(0, LEAST(30, CEIL(EXTRACT(EPOCH FROM (NEW.plan_expires_at - now())) / 86400.0)::integer));
+  IF NEW.plan_days_left IS NULL OR NEW.plan_days_left > max_days THEN
+    NEW.plan_days_left := max_days;
+  END IF;
+
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_enforce_user_max_30d_expiry ON public.users;
+CREATE TRIGGER trg_enforce_user_max_30d_expiry
+BEFORE INSERT OR UPDATE ON public.users
+FOR EACH ROW
+EXECUTE FUNCTION public.enforce_user_max_30d_expiry();
+
+-- 3) Clamp any existing users whose expiry exceeded 30 days from created_at
+UPDATE public.users
+SET
+  plan_expires_at = LEAST(COALESCE(plan_expires_at, created_at + interval '30 days'), created_at + interval '30 days'),
+  plan_days_left = GREATEST(0, LEAST(30, CEIL(EXTRACT(EPOCH FROM (LEAST(COALESCE(plan_expires_at, created_at + interval '30 days'), created_at + interval '30 days') - now())) / 86400.0)::integer))
+WHERE plan_expires_at > (created_at + interval '30 days') OR plan_days_left > 30;`;
+
 export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenResellerPortal }) => {
   const { resellers, createReseller, updateReseller, deleteReseller, users } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingReseller, setEditingReseller] = useState<Reseller | null>(null);
+  const [paymentModalReseller, setPaymentModalReseller] = useState<Reseller | null>(null);
+  const [showSqlModal, setShowSqlModal] = useState(false);
   const [resellerToDelete, setResellerToDelete] = useState<Reseller | null>(null);
   const [apiKeyModalReseller, setApiKeyModalReseller] = useState<Reseller | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -42,6 +86,30 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  const getResellerUsers = (reseller: Reseller) => {
+    const cleanResellerId = reseller.id.replace(/[^a-zA-Z0-9]/g, '');
+    const portalLower = (reseller.portalName || '').trim().toLowerCase();
+    return users.filter(u => {
+      if (!u.resellerId && !u.resellerName) return false;
+      if (u.resellerId === reseller.id) return true;
+      if (u.resellerId && cleanResellerId && u.resellerId.replace(/[^a-zA-Z0-9]/g, '') === cleanResellerId) return true;
+      if (u.resellerName && portalLower && u.resellerName.trim().toLowerCase() === portalLower) return true;
+      return false;
+    });
+  };
+
+  const getResellerBilling = (reseller: Reseller, assignedCount: number) => {
+    const rate = Number(reseller.perUserRate ?? 0);
+    const currency: 'INR' | 'USD' = reseller.rateCurrency === 'USD' ? 'USD' : 'INR';
+    const symbol = currency === 'USD' ? '$' : '₹';
+    const paid = Number(reseller.paidPayment ?? 0);
+    const autoPending = Math.max(0, assignedCount * rate - paid);
+    const pending = reseller.pendingPayment !== undefined && reseller.pendingPayment !== null && rate === 0
+      ? Number(reseller.pendingPayment)
+      : autoPending;
+    return { rate, currency, symbol, paid, pending, totalBill: assignedCount * rate };
   };
 
   const handleGenerateApiKey = (reseller: Reseller) => {
@@ -67,6 +135,9 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
   const [password, setPassword] = useState(`flow${Math.floor(100000 + Math.random() * 900000)}`);
   const [userLimit, setUserLimit] = useState(20);
   const [daysLeft, setDaysLeft] = useState(30);
+  const [perUserRate, setPerUserRate] = useState(0);
+  const [rateCurrency, setRateCurrency] = useState<'INR' | 'USD'>('INR');
+  const [paidPayment, setPaidPayment] = useState(0);
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -87,6 +158,10 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
         userLimit,
         daysLeft,
         notes,
+        perUserRate,
+        rateCurrency,
+        paidPayment,
+        pendingPayment: 0,
       });
 
       if (!res.success) {
@@ -98,6 +173,9 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
         setPassword(`flow${Math.floor(100000 + Math.random() * 900000)}`);
         setUserLimit(20);
         setDaysLeft(30);
+        setPerUserRate(0);
+        setRateCurrency('INR');
+        setPaidPayment(0);
         setNotes('');
       }
     } catch {
@@ -137,23 +215,34 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
         <div>
           <div className="flex items-center gap-2">
             <Store className="w-5 h-5 text-purple-400" />
-            <h2 className="text-lg font-bold text-white">Reseller Management</h2>
+            <h2 className="text-lg font-bold text-white">Reseller Management & Payment Tracker</h2>
           </div>
           <p className="text-xs text-neutral-400 mt-1">
-            Create reseller partner accounts with user limits and 30-day access controls.
+            Manage reseller limits, enforce strict 30-day max user expiry from creation, and track per-user rates ($/INR), pending &amp; paid payments in Supabase.
           </p>
         </div>
 
-        <button
-          onClick={() => {
-            setPassword(`flow${Math.floor(100000 + Math.random() * 900000)}`);
-            setShowAddModal(true);
-          }}
-          className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-purple-600/20 transition-all cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Add New Reseller</span>
-        </button>
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <button
+            onClick={() => setShowSqlModal(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-[#181a24] hover:bg-[#202330] border border-purple-500/30 text-purple-300 rounded-xl text-xs font-semibold transition-all cursor-pointer"
+            title="Copy Supabase SQL for Reseller Payment Columns & 30-Day Cap"
+          >
+            <Database className="w-3.5 h-3.5 text-purple-400" />
+            <span>Supabase SQL Setup</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setPassword(`flow${Math.floor(100000 + Math.random() * 900000)}`);
+              setShowAddModal(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-purple-600/20 transition-all cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Add New Reseller</span>
+          </button>
+        </div>
       </div>
 
       {/* Filter and Search */}
@@ -182,6 +271,7 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
               <tr className="border-b border-neutral-800/80 bg-[#151620] text-neutral-400 uppercase text-[11px] font-semibold tracking-wider">
                 <th className="py-3.5 px-5">Reseller Portal</th>
                 <th className="py-3.5 px-4">Allocated Users</th>
+                <th className="py-3.5 px-4">Payment (Rate / Pending / Paid)</th>
                 <th className="py-3.5 px-4">Validity / Expiry</th>
                 <th className="py-3.5 px-4">Portal Password</th>
                 <th className="py-3.5 px-4">Status</th>
@@ -191,17 +281,18 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
             <tbody className="divide-y divide-neutral-800/60">
               {filteredResellers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-neutral-500">
+                  <td colSpan={7} className="py-12 text-center text-neutral-500">
                     No resellers created yet. Click "+ Add New Reseller" to create one.
                   </td>
                 </tr>
               ) : (
                 filteredResellers.map(reseller => {
-                  const assignedUsers = users.filter(u => u.resellerId === reseller.id);
+                  const assignedUsers = getResellerUsers(reseller);
                   const assignedCount = assignedUsers.length;
                   const liveInReseller = assignedUsers.filter(u => isUserLive(u)).length;
                   const expiryInfo = calculateResellerExpiry(reseller);
                   const isExpired = expiryInfo.isExpired || reseller.status === 'expired';
+                  const billing = getResellerBilling(reseller, assignedCount);
 
                   return (
                     <tr key={reseller.id} className="hover:bg-[#161824]/60 transition-colors">
@@ -255,6 +346,43 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                             className="h-full bg-purple-500 rounded-full"
                             style={{ width: `${Math.min(100, (assignedCount / reseller.userLimit) * 100)}%` }}
                           />
+                        </div>
+                      </td>
+
+                      {/* Payment Tracking: Per User Rate, Pending Payment, Paid Payment */}
+                      <td className="py-3.5 px-4">
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-neutral-400">Rate:</span>
+                            <span className="font-mono text-xs font-semibold text-purple-300">
+                              {billing.symbol}{billing.rate.toLocaleString()} / user
+                            </span>
+                            <button
+                              onClick={() => setPaymentModalReseller({
+                                ...reseller,
+                                perUserRate: billing.rate,
+                                rateCurrency: billing.currency,
+                                paidPayment: billing.paid,
+                                pendingPayment: billing.pending,
+                              })}
+                              className="px-1.5 py-0.5 bg-purple-500/15 hover:bg-purple-500/30 border border-purple-500/30 rounded text-[10px] text-purple-300 font-medium cursor-pointer transition-colors"
+                              title="Set Rate, Pending & Paid Payment"
+                            >
+                              Set / Pay
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+                            <span className={`px-1.5 py-0.5 rounded border ${
+                              billing.pending > 0
+                                ? 'bg-amber-500/10 border-amber-500/30 text-amber-300 font-semibold'
+                                : 'bg-neutral-800/60 border-neutral-700/50 text-neutral-400'
+                            }`}>
+                              Pending: {billing.symbol}{billing.pending.toLocaleString()}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 font-semibold">
+                              Paid: {billing.symbol}{billing.paid.toLocaleString()}
+                            </span>
+                          </div>
                         </div>
                       </td>
 
@@ -326,6 +454,21 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                             <span>Open Portal</span>
                           </button>
 
+                          {/* Payment Tracker Modal */}
+                          <button
+                            onClick={() => setPaymentModalReseller({
+                              ...reseller,
+                              perUserRate: billing.rate,
+                              rateCurrency: billing.currency,
+                              paidPayment: billing.paid,
+                              pendingPayment: billing.pending,
+                            })}
+                            className="p-1.5 bg-emerald-950/30 hover:bg-emerald-900/50 border border-emerald-500/30 rounded-lg text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
+                            title="Track Reseller Payment (Rate / Pending / Paid)"
+                          >
+                            <Wallet className="w-3.5 h-3.5" />
+                          </button>
+
                           {/* Copy Access */}
                           <button
                             onClick={() => handleCopyCredentials(reseller)}
@@ -350,7 +493,13 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
 
                           {/* Edit */}
                           <button
-                            onClick={() => setEditingReseller(reseller)}
+                            onClick={() => setEditingReseller({
+                              ...reseller,
+                              perUserRate: billing.rate,
+                              rateCurrency: billing.currency,
+                              paidPayment: billing.paid,
+                              pendingPayment: billing.pending,
+                            })}
                             className="p-1.5 bg-[#1a1b26] hover:bg-[#232535] border border-neutral-700/60 rounded-lg text-neutral-300 hover:text-white transition-colors cursor-pointer"
                             title="Edit reseller"
                           >
@@ -393,7 +542,7 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
               </button>
             </div>
 
-            <form onSubmit={handleCreate} className="p-6 space-y-4">
+            <form onSubmit={handleCreate} className="p-6 space-y-4 max-h-[85vh] overflow-y-auto">
               {error && (
                 <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex items-center gap-2 text-red-400 text-xs">
                   <AlertCircle className="w-4 h-4 shrink-0" />
@@ -460,6 +609,43 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                 </div>
               </div>
 
+              {/* Per User Rate & Currency */}
+              <div className="grid grid-cols-3 gap-3 p-3 bg-[#0d0e14] border border-neutral-800/90 rounded-xl">
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-400 mb-1">Currency</label>
+                  <select
+                    value={rateCurrency}
+                    onChange={e => setRateCurrency(e.target.value === 'USD' ? 'USD' : 'INR')}
+                    className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-white text-xs focus:outline-none focus:border-purple-500"
+                  >
+                    <option value="INR">₹ INR</option>
+                    <option value="USD">$ USD</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-400 mb-1">Per User Rate</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={perUserRate}
+                    onChange={e => setPerUserRate(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-white text-xs font-mono focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-medium text-neutral-400 mb-1">Advance Paid</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    value={paidPayment}
+                    onChange={e => setPaidPayment(Number(e.target.value))}
+                    className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-emerald-400 text-xs font-mono focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-medium text-neutral-300 mb-1">Internal Note (Optional)</label>
                 <input
@@ -491,6 +677,250 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
         </div>
       )}
 
+      {/* Reseller Payment Tracking Modal */}
+      {paymentModalReseller && (() => {
+        const assignedCount = getResellerUsers(paymentModalReseller).length;
+        const rate = Number(paymentModalReseller.perUserRate ?? 0);
+        const currency: 'INR' | 'USD' = paymentModalReseller.rateCurrency === 'USD' ? 'USD' : 'INR';
+        const symbol = currency === 'USD' ? '$' : '₹';
+        const paid = Number(paymentModalReseller.paidPayment ?? 0);
+        const totalBill = assignedCount * rate;
+        const calculatedPending = Math.max(0, totalBill - paid);
+        const pendingVal = Number(paymentModalReseller.pendingPayment ?? calculatedPending);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <div className="bg-[#12131a] border border-neutral-800 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800/80 bg-[#161722]">
+                <div className="flex items-center gap-2">
+                  <DollarSign className="w-5 h-5 text-emerald-400" />
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Reseller Payment Tracker</h3>
+                    <p className="text-[11px] text-neutral-400">{paymentModalReseller.portalName} • {assignedCount} Active Users</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setPaymentModalReseller(null)}
+                  className="p-1 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <form
+                onSubmit={e => {
+                  e.preventDefault();
+                  updateReseller(paymentModalReseller.id, {
+                    perUserRate: rate,
+                    rateCurrency: currency,
+                    paidPayment: paid,
+                    pendingPayment: pendingVal,
+                  });
+                  setPaymentModalReseller(null);
+                  showToast(`Saved payment details for ${paymentModalReseller.portalName} to Supabase!`);
+                }}
+                className="p-6 space-y-4"
+              >
+                {/* Summary Cards */}
+                <div className="grid grid-cols-3 gap-2.5 bg-[#0b0c10] p-3 rounded-xl border border-neutral-800 text-center">
+                  <div>
+                    <div className="text-[10px] text-neutral-400 uppercase">Total Users Bill</div>
+                    <div className="text-sm font-mono font-bold text-white mt-0.5">
+                      {symbol}{totalBill.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] text-neutral-500">{assignedCount} × {symbol}{rate}</div>
+                  </div>
+                  <div className="border-x border-neutral-800/80 px-2">
+                    <div className="text-[10px] text-amber-400 uppercase font-semibold">Pending Payment</div>
+                    <div className="text-sm font-mono font-bold text-amber-300 mt-0.5">
+                      {symbol}{pendingVal.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] text-neutral-500">Due from Reseller</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] text-emerald-400 uppercase font-semibold">Paid Payment</div>
+                    <div className="text-sm font-mono font-bold text-emerald-300 mt-0.5">
+                      {symbol}{paid.toLocaleString()}
+                    </div>
+                    <div className="text-[10px] text-neutral-500">Received</div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-300 mb-1">Currency ($ / INR)</label>
+                    <select
+                      value={currency}
+                      onChange={e => {
+                        const nextCurr = e.target.value === 'USD' ? 'USD' : 'INR';
+                        setPaymentModalReseller({ ...paymentModalReseller, rateCurrency: nextCurr });
+                      }}
+                      className="w-full px-3 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white text-xs font-semibold focus:outline-none focus:border-purple-500"
+                    >
+                      <option value="INR">₹ INR (Indian Rupee)</option>
+                      <option value="USD">$ USD (US Dollar)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-neutral-300 mb-1">Per User Rate ({symbol})</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={rate}
+                      onChange={e => {
+                        const newRate = Number(e.target.value);
+                        const nextPending = Math.max(0, assignedCount * newRate - paid);
+                        setPaymentModalReseller({
+                          ...paymentModalReseller,
+                          perUserRate: newRate,
+                          pendingPayment: nextPending,
+                        });
+                      }}
+                      className="w-full px-3.5 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white font-mono text-sm focus:outline-none focus:border-purple-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-emerald-300 mb-1">Paid Payment of Total Users ({symbol})</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={paid}
+                      onChange={e => {
+                        const newPaid = Number(e.target.value);
+                        const nextPending = Math.max(0, assignedCount * rate - newPaid);
+                        setPaymentModalReseller({
+                          ...paymentModalReseller,
+                          paidPayment: newPaid,
+                          pendingPayment: nextPending,
+                        });
+                      }}
+                      className="w-full px-3.5 py-2.5 bg-[#0b0c0f] border border-emerald-500/40 rounded-xl text-emerald-300 font-mono text-sm focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-amber-300 mb-1">Total Pending Payment ({symbol})</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={pendingVal}
+                      onChange={e => {
+                        setPaymentModalReseller({
+                          ...paymentModalReseller,
+                          pendingPayment: Number(e.target.value),
+                        });
+                      }}
+                      className="w-full px-3.5 py-2.5 bg-[#0b0c0f] border border-amber-500/40 rounded-xl text-amber-300 font-mono text-sm focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const fullAmount = assignedCount * rate;
+                      setPaymentModalReseller({
+                        ...paymentModalReseller,
+                        paidPayment: fullAmount,
+                        pendingPayment: 0,
+                      });
+                    }}
+                    className="text-[11px] px-2.5 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold cursor-pointer transition-colors"
+                  >
+                    ✓ Mark All {assignedCount} Users Paid ({symbol}{totalBill.toLocaleString()})
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentModalReseller({
+                        ...paymentModalReseller,
+                        pendingPayment: Math.max(0, assignedCount * rate - paid),
+                      });
+                    }}
+                    className="text-[11px] text-purple-400 hover:text-purple-300 underline cursor-pointer"
+                  >
+                    Auto-Recalculate Pending
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-3 border-t border-neutral-800/80">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentModalReseller(null)}
+                    className="px-4 py-2 text-xs font-medium text-neutral-400 hover:text-white rounded-xl hover:bg-neutral-800 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    Save Payment to Supabase
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Supabase SQL Setup Modal */}
+      {showSqlModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-[#12131a] border border-neutral-800 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-neutral-800/80 bg-[#161722]">
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-purple-400" />
+                <div>
+                  <h3 className="text-sm font-bold text-white">Supabase SQL — Reseller Payment Columns &amp; 30-Day Max Expiry</h3>
+                  <p className="text-[11px] text-neutral-400">Run this once in your Supabase SQL Editor</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSqlModal(false)}
+                className="p-1 text-neutral-400 hover:text-white rounded-lg hover:bg-neutral-800 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <pre className="p-4 bg-[#090a0f] border border-neutral-800 rounded-xl text-[11px] font-mono text-emerald-300 overflow-x-auto max-h-80 leading-relaxed select-all">
+                {SUPABASE_RESELLER_PAYMENT_AND_30D_SQL}
+              </pre>
+
+              <div className="flex items-center justify-end gap-3">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(SUPABASE_RESELLER_PAYMENT_AND_30D_SQL);
+                    showToast('Copied SQL to clipboard! Paste & Run in Supabase SQL Editor.');
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy SQL Query</span>
+                </button>
+                <button
+                  onClick={() => setShowSqlModal(false)}
+                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl text-xs font-semibold cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Edit Reseller Modal */}
       {editingReseller && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
@@ -517,10 +947,14 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                   userLimit: editingReseller.userLimit,
                   daysLeft: editingReseller.daysLeft,
                   notes: editingReseller.notes,
+                  perUserRate: Number(editingReseller.perUserRate ?? 0),
+                  rateCurrency: editingReseller.rateCurrency === 'USD' ? 'USD' : 'INR',
+                  paidPayment: Number(editingReseller.paidPayment ?? 0),
+                  pendingPayment: Number(editingReseller.pendingPayment ?? 0),
                 });
                 setEditingReseller(null);
               }}
-              className="p-6 space-y-4"
+              className="p-6 space-y-4 max-h-[85vh] overflow-y-auto"
             >
               <div>
                 <label className="block text-xs font-medium text-neutral-300 mb-1">Portal Name</label>
@@ -565,6 +999,75 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                     onChange={e => setEditingReseller({ ...editingReseller, daysLeft: Number(e.target.value) })}
                     className="w-full px-3.5 py-2.5 bg-[#0b0c0f] border border-neutral-800 rounded-xl text-white text-sm focus:outline-none focus:border-purple-500"
                   />
+                </div>
+              </div>
+
+              {/* Payment Fields inside Edit Modal */}
+              <div className="p-3 bg-[#0c0d13] border border-neutral-800 rounded-xl space-y-3">
+                <div className="text-[11px] font-semibold text-emerald-400">Payment Tracking (Supabase Synced)</div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] text-neutral-400 mb-1">Currency</label>
+                    <select
+                      value={editingReseller.rateCurrency === 'USD' ? 'USD' : 'INR'}
+                      onChange={e => setEditingReseller({ ...editingReseller, rateCurrency: e.target.value === 'USD' ? 'USD' : 'INR' })}
+                      className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-white text-xs"
+                    >
+                      <option value="INR">₹ INR</option>
+                      <option value="USD">$ USD</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-neutral-400 mb-1">Per User Rate</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editingReseller.perUserRate ?? 0}
+                      onChange={e => {
+                        const r = Number(e.target.value);
+                        const count = getResellerUsers(editingReseller).length;
+                        const paid = Number(editingReseller.paidPayment ?? 0);
+                        setEditingReseller({
+                          ...editingReseller,
+                          perUserRate: r,
+                          pendingPayment: Math.max(0, count * r - paid),
+                        });
+                      }}
+                      className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-white font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-emerald-400 mb-1">Paid Payment</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editingReseller.paidPayment ?? 0}
+                      onChange={e => {
+                        const paid = Number(e.target.value);
+                        const count = getResellerUsers(editingReseller).length;
+                        const r = Number(editingReseller.perUserRate ?? 0);
+                        setEditingReseller({
+                          ...editingReseller,
+                          paidPayment: paid,
+                          pendingPayment: Math.max(0, count * r - paid),
+                        });
+                      }}
+                      className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-emerald-300 font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-amber-400 mb-1">Pending Payment</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editingReseller.pendingPayment ?? 0}
+                      onChange={e => setEditingReseller({ ...editingReseller, pendingPayment: Number(e.target.value) })}
+                      className="w-full px-2.5 py-2 bg-[#0b0c0f] border border-neutral-800 rounded-lg text-amber-300 font-mono text-xs"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -761,3 +1264,4 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
     </div>
   );
 };
+

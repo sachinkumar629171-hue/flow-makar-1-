@@ -47,20 +47,56 @@ export function formatUserLastActive(
 const userExpiryCache = new Map<string, { daysLeft: number; expiryMs: number; setAt: number }>();
 
 /**
+ * Returns the strict maximum allowed expiration timestamp for a user:
+ * NEVER more than 30 days from their creation / start date (created_at + 30 days).
+ */
+export function getUserMaxExpiryMs(user: User | null | undefined): number {
+  const now = Date.now();
+  if (!user) return now + 30 * 86400000;
+  const rawStart = user.createdAt || user.planStartedAt;
+  if (rawStart) {
+    const startMs = new Date(rawStart).getTime();
+    if (!isNaN(startMs) && startMs > 0) {
+      return startMs + 30 * 86400000;
+    }
+  }
+  return now + 30 * 86400000;
+}
+
+/**
+ * Returns the maximum remaining days a user can have from right now up to (created_at + 30 days).
+ * Even if a reseller tries to extend a user after several days of usage, it cannot exceed this limit.
+ */
+export function getUserMaxRemainingDays(user: User | null | undefined): number {
+  if (!user) return 30;
+  const now = Date.now();
+  const maxExpiryMs = getUserMaxExpiryMs(user);
+  const diffMs = maxExpiryMs - now;
+  if (diffMs <= 0) return 0;
+  return Math.min(30, Math.max(0, Math.ceil(diffMs / 86400000)));
+}
+
+/**
  * Gets or initializes a persistent expiry timestamp for a user so countdowns continuously tick down.
+ * Strictly clamped to (created_at + 30 days) maximum.
  */
 export function getOrInitUserExpiryMs(user: User): number {
   const now = Date.now();
-  const daysLeft = typeof user.planDaysLeft === 'number' ? Math.max(0, user.planDaysLeft) : 30;
-  if (daysLeft <= 0 || user.status === 'suspended') {
+  const maxAllowedExpiryMs = getUserMaxExpiryMs(user);
+  const maxRemainingDays = getUserMaxRemainingDays(user);
+  const rawDaysLeft = typeof user.planDaysLeft === 'number' ? Math.max(0, user.planDaysLeft) : 30;
+  const daysLeft = Math.min(rawDaysLeft, maxRemainingDays);
+
+  if (daysLeft <= 0 || user.status === 'suspended' || maxAllowedExpiryMs <= now) {
     return now;
   }
 
-  // 1. If explicit planExpiresAt is provided on user object, respect it as single source of truth
+  // 1. If explicit planExpiresAt is provided on user object, respect it but strictly clamp to maxAllowedExpiryMs (created_at + 30 days)
   if (user.planExpiresAt) {
     const parsedExp = new Date(user.planExpiresAt).getTime();
     if (!isNaN(parsedExp)) {
-      const effectiveExp = (parsedExp <= now && daysLeft > 2) ? (now + daysLeft * 86400000) : parsedExp;
+      const rawEffective = (parsedExp <= now && daysLeft > 2) ? (now + daysLeft * 86400000) : parsedExp;
+      const effectiveExp = Math.min(rawEffective, maxAllowedExpiryMs);
       userExpiryCache.set(user.id, { daysLeft, expiryMs: effectiveExp, setAt: now });
       return effectiveExp;
     }
@@ -69,7 +105,7 @@ export function getOrInitUserExpiryMs(user: User): number {
   // 2. Check memory cache
   const cached = userExpiryCache.get(user.id);
   if (cached && cached.daysLeft === daysLeft && cached.expiryMs > now) {
-    return cached.expiryMs;
+    return Math.min(cached.expiryMs, maxAllowedExpiryMs);
   }
 
   // 3. Check localStorage persistent cache
@@ -79,20 +115,21 @@ export function getOrInitUserExpiryMs(user: User): number {
     if (stored) {
       const parsed = JSON.parse(stored);
       if (parsed && parsed.daysLeft === daysLeft && typeof parsed.expiryMs === 'number' && parsed.expiryMs > now) {
-        userExpiryCache.set(user.id, { daysLeft, expiryMs: parsed.expiryMs, setAt: parsed.setAt || now });
-        return parsed.expiryMs;
+        const clampedStored = Math.min(parsed.expiryMs, maxAllowedExpiryMs);
+        userExpiryCache.set(user.id, { daysLeft, expiryMs: clampedStored, setAt: parsed.setAt || now });
+        return clampedStored;
       }
     }
   } catch {
     // Ignore storage parse errors
   }
 
-  // 4. Derive from createdAt timestamp if present and in the future window, otherwise from now
-  let calculatedExpiryMs = now + (daysLeft * 86400000);
-  if (user.createdAt) {
-    const createdMs = new Date(user.createdAt).getTime();
+  // 4. Derive from createdAt timestamp if present, clamped to maxAllowedExpiryMs
+  let calculatedExpiryMs = Math.min(now + (daysLeft * 86400000), maxAllowedExpiryMs);
+  if (user.createdAt || user.planStartedAt) {
+    const createdMs = new Date(user.createdAt || user.planStartedAt || '').getTime();
     if (!isNaN(createdMs)) {
-      const candidate = createdMs + (daysLeft * 86400000);
+      const candidate = Math.min(createdMs + (daysLeft * 86400000), maxAllowedExpiryMs);
       if (candidate > now) {
         calculatedExpiryMs = candidate;
       }
@@ -119,7 +156,7 @@ export function getOrInitUserExpiryMs(user: User): number {
  */
 export function setUserExpiryMs(userId: string, newDays: number, exactExpiryMs?: number) {
   const now = Date.now();
-  const safeDays = Math.max(0, newDays);
+  const safeDays = Math.min(30, Math.max(0, newDays));
   const expiryMs = exactExpiryMs || (now + safeDays * 86400000);
   userExpiryCache.set(userId, { daysLeft: safeDays, expiryMs, setAt: now });
   try {

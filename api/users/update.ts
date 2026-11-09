@@ -205,30 +205,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (data && typeof data === 'object') {
-      const supaData: Record<string, any> = {};
-      if (data.name !== undefined) supaData.name = data.name;
-      if (data.email !== undefined) supaData.email = data.email.trim().toLowerCase();
-      if (data.password !== undefined) supaData.password = data.password;
-      if (data.plan !== undefined) supaData.plan = data.plan;
-      if (data.credits !== undefined) supaData.credits = data.credits;
-      if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
-      if (data.planDaysLeft !== undefined) {
-        const cappedDays = Math.min(30, Math.max(0, Number(data.planDaysLeft)));
-        supaData.plan_days_left = cappedDays;
-        supaData.plan_total_days = Math.ceil(cappedDays);
-        supaData.plan_started_at = new Date().toISOString();
-        supaData.plan_expires_at = data.planExpiresAt || new Date(Date.now() + cappedDays * 86400000).toISOString();
-      } else if (data.planExpiresAt !== undefined) {
-        supaData.plan_expires_at = data.planExpiresAt;
-      }
-      if (data.status !== undefined) supaData.status = data.status;
-      if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
-      if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
-      if (data.whatsapp !== undefined) supaData.whatsapp = data.whatsapp;
-      if (data.telegram !== undefined) supaData.telegram = data.telegram;
-      if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
-      if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
-
       const targetEmail = (
         email ||
         (typeof userId === 'string' && userId.startsWith('usr-') && userId.includes('@') ? userId.slice(4) : '')
@@ -238,6 +214,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .toLowerCase();
 
       const hasRealId = typeof userId === 'string' && userId.trim().length > 0 && !(userId.startsWith('usr-') && userId.includes('@'));
+
+      // Look up user's original created_at so plan_expires_at can NEVER exceed created_at + 30 days
+      let maxAllowedExpiryMs = Date.now() + 30 * 86400000;
+      let originalCreatedAt: string | null = null;
+      if (data.planDaysLeft !== undefined || data.planExpiresAt !== undefined) {
+        try {
+          let existingQ = supabase.from('users').select('*');
+          if (hasRealId) existingQ = existingQ.eq('id', userId);
+          else if (targetEmail) existingQ = existingQ.ilike('email', targetEmail);
+          const { data: existingUser } = await existingQ.maybeSingle();
+          if (existingUser) {
+            const rawCreated = existingUser['created_at TIMESTAMPTZ'] || existingUser.created_at || existingUser.plan_started_at;
+            if (rawCreated) {
+              const cMs = new Date(rawCreated).getTime();
+              if (!isNaN(cMs) && cMs > 0) {
+                originalCreatedAt = rawCreated;
+                maxAllowedExpiryMs = cMs + 30 * 86400000;
+              }
+            }
+          }
+        } catch {}
+      }
+
+      const maxRemainingDays = Math.min(30, Math.max(0, Math.ceil((maxAllowedExpiryMs - Date.now()) / 86400000)));
+
+      const supaData: Record<string, any> = {};
+      if (data.name !== undefined) supaData.name = data.name;
+      if (data.email !== undefined) supaData.email = data.email.trim().toLowerCase();
+      if (data.password !== undefined) supaData.password = data.password;
+      if (data.plan !== undefined) supaData.plan = data.plan;
+      if (data.credits !== undefined) supaData.credits = data.credits;
+      if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
+      if (data.planDaysLeft !== undefined) {
+        const cappedDays = Math.min(maxRemainingDays, Math.max(0, Number(data.planDaysLeft)));
+        supaData.plan_days_left = cappedDays;
+        supaData.plan_total_days = Math.ceil(cappedDays);
+        if (originalCreatedAt) {
+          supaData.plan_started_at = originalCreatedAt;
+        }
+        const reqExpMs = data.planExpiresAt ? new Date(data.planExpiresAt).getTime() : NaN;
+        const candidateExpMs = !isNaN(reqExpMs) ? reqExpMs : (Date.now() + cappedDays * 86400000);
+        const clampedExpMs = Math.min(candidateExpMs, maxAllowedExpiryMs);
+        supaData.plan_expires_at = new Date(clampedExpMs).toISOString();
+      } else if (data.planExpiresAt !== undefined) {
+        const reqExpMs = new Date(data.planExpiresAt).getTime();
+        const clampedExpMs = !isNaN(reqExpMs) ? Math.min(reqExpMs, maxAllowedExpiryMs) : maxAllowedExpiryMs;
+        supaData.plan_expires_at = new Date(clampedExpMs).toISOString();
+      }
+      if (data.status !== undefined) supaData.status = data.status;
+      if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
+      if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
+      if (data.whatsapp !== undefined) supaData.whatsapp = data.whatsapp;
+      if (data.telegram !== undefined) supaData.telegram = data.telegram;
+      if (data.isOnline !== undefined) supaData.is_online = data.isOnline;
+      if (data.sessionToken !== undefined) supaData.session_token = data.sessionToken;
 
       const payload = { ...supaData };
       for (let attempt = 0; attempt < 8; attempt++) {

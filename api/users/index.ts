@@ -262,43 +262,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           let planExpiresAt = u.plan_expires_at;
           let needsUpdate = false;
 
-          const rawCreatedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at;
+          const rawCreatedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at;
           if (!isSysAdmin) {
+            const createdMs = rawCreatedAt ? new Date(rawCreatedAt).getTime() : NaN;
+            const maxAllowedExpiryMs = !isNaN(createdMs) && createdMs > 0
+              ? (createdMs + 30 * 86400000)
+              : (now + 30 * 86400000);
+
             let expiryMs = 0;
             if (planExpiresAt) {
               const parsed = new Date(planExpiresAt).getTime();
               if (!isNaN(parsed)) expiryMs = parsed;
             }
-            if (!expiryMs && rawCreatedAt) {
-              const createdMs = new Date(rawCreatedAt).getTime();
+            if (!expiryMs) {
               const totalAllocated = Math.min(30, Math.max(1, Number(u.plan_total_days ?? calculatedDaysLeft)));
-              if (!isNaN(createdMs)) {
-                expiryMs = createdMs + totalAllocated * 86400000;
-                if (expiryMs <= now && calculatedDaysLeft > 0) {
-                  expiryMs = now + calculatedDaysLeft * 86400000;
-                }
-                planExpiresAt = new Date(expiryMs).toISOString();
-                needsUpdate = true;
+              expiryMs = (!isNaN(createdMs) && createdMs > 0 ? createdMs : now) + totalAllocated * 86400000;
+              if (expiryMs <= now && calculatedDaysLeft > 0) {
+                expiryMs = Math.min(now + calculatedDaysLeft * 86400000, maxAllowedExpiryMs);
               }
+              expiryMs = Math.min(expiryMs, maxAllowedExpiryMs);
+              planExpiresAt = new Date(expiryMs).toISOString();
+              needsUpdate = true;
+            } else if (expiryMs > maxAllowedExpiryMs) {
+              // Strictly clamp any extended expiry back to created_at + 30 days!
+              expiryMs = maxAllowedExpiryMs;
+              planExpiresAt = new Date(expiryMs).toISOString();
+              needsUpdate = true;
             }
+
             if (expiryMs > 0) {
               const diffMs = expiryMs - now;
               const remainingDays = Math.min(30, Math.max(0, Math.ceil(diffMs / 86400000)));
-              if (remainingDays <= 0 && calculatedDaysLeft > 2) {
-                planExpiresAt = new Date(now + calculatedDaysLeft * 86400000).toISOString();
+              calculatedDaysLeft = remainingDays;
+              if (Number(u.plan_days_left) !== calculatedDaysLeft) {
                 needsUpdate = true;
-              } else {
-                calculatedDaysLeft = remainingDays;
-                if (Number(u.plan_days_left) !== calculatedDaysLeft) {
-                  needsUpdate = true;
-                }
-                if (diffMs <= 0 && (calculatedPlan === 'ultra' || calculatedPlan === 'unlimited')) {
-                  calculatedPlan = 'basic';
-                  calculatedCredits = Math.min(calculatedCredits, 100);
-                  calculatedMaxCredits = 100;
-                  calculatedDaysLeft = 0;
-                  needsUpdate = true;
-                }
+              }
+              if (diffMs <= 0 && (calculatedPlan === 'ultra' || calculatedPlan === 'unlimited')) {
+                calculatedPlan = 'basic';
+                calculatedCredits = Math.min(calculatedCredits, 100);
+                calculatedMaxCredits = 100;
+                calculatedDaysLeft = 0;
+                needsUpdate = true;
               }
             }
 
@@ -306,6 +310,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               supabase.from('users').update({
                 plan_days_left: calculatedDaysLeft,
                 plan_expires_at: planExpiresAt,
+                ...(rawCreatedAt && u.plan_started_at !== rawCreatedAt ? { plan_started_at: rawCreatedAt } : {}),
                 plan: calculatedPlan,
                 credits: calculatedCredits,
                 max_credits: calculatedMaxCredits,

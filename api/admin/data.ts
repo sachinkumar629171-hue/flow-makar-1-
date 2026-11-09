@@ -197,38 +197,39 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           // Strict 2-minute (120,000 ms) heartbeat window
           const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
-          const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
+          const planStartedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at || new Date().toISOString();
+          const startMs = new Date(planStartedAt).getTime();
+          const maxAllowedExpiryMs = (!isNaN(startMs) && startMs > 0 ? startMs : now) + 30 * 86400000;
           let planDaysLeft = Math.min(30, Math.max(0, Number(u.plan_days_left ?? 30)));
           let planExpiresAt = u.plan_expires_at;
 
           if (!planExpiresAt) {
-            const startMs = new Date(planStartedAt).getTime();
-            const safeDays = Math.max(1, planDaysLeft || 30);
+            const safeDays = Math.min(30, Math.max(1, planDaysLeft || 30));
             let computedExpMs = (isNaN(startMs) ? now : startMs) + safeDays * 86400000;
             if (computedExpMs <= now && planDaysLeft > 0) {
               computedExpMs = now + safeDays * 86400000;
             }
+            computedExpMs = Math.min(computedExpMs, maxAllowedExpiryMs);
             planExpiresAt = new Date(computedExpMs).toISOString();
             supabase.from('users').update({
               plan_started_at: planStartedAt,
               plan_expires_at: planExpiresAt,
             }).eq('id', u.id).then(() => {}, () => {});
           } else if (!isSysAdmin) {
-            const expMs = new Date(planExpiresAt).getTime();
+            let expMs = new Date(planExpiresAt).getTime();
             if (!isNaN(expMs)) {
-              const remainingDays = Math.min(30, Math.max(0, Math.ceil((expMs - now) / 86400000)));
-              // If plan_days_left was freshly set in DB (e.g. > 2 days) while plan_expires_at had an old expired timestamp, sync plan_expires_at forward instead of falsely downgrading to basic!
-              if (remainingDays <= 0 && planDaysLeft > 2) {
-                planExpiresAt = new Date(now + planDaysLeft * 86400000).toISOString();
+              if (expMs > maxAllowedExpiryMs) {
+                expMs = maxAllowedExpiryMs;
+                planExpiresAt = new Date(expMs).toISOString();
                 supabase.from('users').update({
-                  plan_started_at: new Date().toISOString(),
+                  plan_started_at: planStartedAt,
                   plan_expires_at: planExpiresAt,
                 }).eq('id', u.id).then(() => {}, () => {});
-              } else {
-                planDaysLeft = remainingDays;
-                if (Number(u.plan_days_left) !== planDaysLeft) {
-                  supabase.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
-                }
+              }
+              const remainingDays = Math.min(30, Math.max(0, Math.ceil((expMs - now) / 86400000)));
+              planDaysLeft = remainingDays;
+              if (Number(u.plan_days_left) !== planDaysLeft) {
+                supabase.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
               }
             }
           }
@@ -368,6 +369,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
           notes: sr.notes || '',
           apiKey: getResellerApiKey(sr),
+          perUserRate: Number(sr.per_user_rate ?? sr.perUserRate ?? 0) || 0,
+          rateCurrency: (sr.rate_currency || sr.rateCurrency || 'INR') as 'INR' | 'USD',
+          pendingPayment: Number(sr.pending_payment ?? sr.pendingPayment ?? 0) || 0,
+          paidPayment: Number(sr.paid_payment ?? sr.paidPayment ?? 0) || 0,
         };
       });
     } catch (e) {

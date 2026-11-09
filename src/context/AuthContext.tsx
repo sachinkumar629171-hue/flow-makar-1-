@@ -4,7 +4,7 @@ import { INITIAL_USERS, ADMIN_EMAIL, ADMIN_PASSWORD, INITIAL_GENERATIONS, INITIA
 import { apiUrl } from '../config/api';
 import { getSupabase, getSupabaseConfig, saveSupabaseConfig, safeSupabaseUserUpdate, safeSupabaseUserUpsert, safeSupabaseResellerUpsert } from '../lib/supabase';
 import { sendTelegramNotification, generate20MinReminderMessage, generate5MinMissedAlertMessage } from '../lib/telegramNotifier';
-import { setUserExpiryMs, checkAndDowngradeExpiredUser } from '../lib/userStats';
+import { setUserExpiryMs, checkAndDowngradeExpiredUser, getUserMaxExpiryMs, getUserMaxRemainingDays } from '../lib/userStats';
 import { calculateResellerExpiry, getOrCreateResellerApiKey } from '../lib/resellerUtils';
 
 interface AuthContextType {
@@ -30,6 +30,10 @@ interface AuthContextType {
     userLimit: number;
     daysLeft: number;
     notes?: string;
+    perUserRate?: number;
+    rateCurrency?: 'INR' | 'USD';
+    pendingPayment?: number;
+    paidPayment?: number;
   }) => Promise<{ success: boolean; error?: string }>;
   updateReseller: (resellerId: string, data: Partial<Reseller>) => void;
   deleteReseller: (resellerId: string) => void;
@@ -82,6 +86,7 @@ interface AuthContextType {
       credits?: number;
       maxCredits?: number;
       planDaysLeft?: number;
+      planExpiresAt?: string;
       status?: 'active' | 'suspended';
       email?: string;
       extensionAccess?: boolean;
@@ -1588,6 +1593,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
       notes: sr.notes || '',
       apiKey: getOrCreateResellerApiKey(sr),
+      perUserRate: Number(sr.per_user_rate ?? sr.perUserRate ?? 0) || 0,
+      rateCurrency: (sr.rate_currency || sr.rateCurrency || 'INR') as 'INR' | 'USD',
+      pendingPayment: Number(sr.pending_payment ?? sr.pendingPayment ?? 0) || 0,
+      paidPayment: Number(sr.paid_payment ?? sr.paidPayment ?? 0) || 0,
     };
     const expiryInfo = calculateResellerExpiry(baseReseller);
     return {
@@ -1820,6 +1829,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     userLimit: number;
     daysLeft: number;
     notes?: string;
+    perUserRate?: number;
+    rateCurrency?: 'INR' | 'USD';
+    pendingPayment?: number;
+    paidPayment?: number;
   }): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = data.email.trim().toLowerCase();
     if (!data.portalName.trim()) {
@@ -1859,6 +1872,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       createdAt: new Date().toISOString(),
       notes: data.notes?.trim() || '',
       apiKey,
+      perUserRate: Number(data.perUserRate) || 0,
+      rateCurrency: data.rateCurrency || 'INR',
+      pendingPayment: Number(data.pendingPayment) || 0,
+      paidPayment: Number(data.paidPayment) || 0,
     };
 
     const updatedList = [newReseller, ...resellers];
@@ -2205,9 +2222,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const renewResellerUser = (userId: string, days = 30) => {
     const user = users.find(u => u.id === userId);
     const userEmail = user?.email;
-    const newDays = (user?.planDaysLeft || 0) + days;
-    const calculatedExpiresAt = new Date(Date.now() + newDays * 24 * 60 * 60 * 1000).toISOString();
-    setUserExpiryMs(userId, newDays, new Date(calculatedExpiresAt).getTime());
+    const maxRemaining = getUserMaxRemainingDays(user);
+    const maxExpiryMs = getUserMaxExpiryMs(user);
+    const newDays = Math.min(maxRemaining, Math.max(0, (user?.planDaysLeft || 0) + days));
+    const computedExpMs = Math.min(Date.now() + newDays * 86400000, maxExpiryMs);
+    const calculatedExpiresAt = new Date(computedExpMs).toISOString();
+    setUserExpiryMs(userId, newDays, computedExpMs);
 
     lastUpdatedUsersRef.current.set(userId, {
       timestamp: Date.now(),
@@ -2867,6 +2887,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       credits?: number;
       maxCredits?: number;
       planDaysLeft?: number;
+      planExpiresAt?: string;
       status?: 'active' | 'suspended';
       email?: string;
       extensionAccess?: boolean;
@@ -2878,15 +2899,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const userToUpdate = users.find(u => u.id === userId);
     const userEmail = data.email || userToUpdate?.email;
     const existingPending = lastUpdatedUsersRef.current.get(userId)?.data || {};
-    const calculatedExpiresAt = data.planDaysLeft !== undefined ? new Date(Date.now() + Math.max(0, data.planDaysLeft) * 24 * 60 * 60 * 1000).toISOString() : undefined;
-    if (data.planDaysLeft !== undefined) {
-      setUserExpiryMs(userId, data.planDaysLeft, calculatedExpiresAt ? new Date(calculatedExpiresAt).getTime() : undefined);
+    const maxRemaining = getUserMaxRemainingDays(userToUpdate);
+    const maxExpiryMs = getUserMaxExpiryMs(userToUpdate);
+    const clampedDays = data.planDaysLeft !== undefined
+      ? Math.min(maxRemaining, Math.max(0, data.planDaysLeft))
+      : undefined;
+
+    let calculatedExpiresAt: string | undefined = data.planExpiresAt;
+    if (clampedDays !== undefined) {
+      const reqExpMs = data.planExpiresAt ? new Date(data.planExpiresAt).getTime() : NaN;
+      const candExpMs = !isNaN(reqExpMs) ? reqExpMs : (Date.now() + clampedDays * 86400000);
+      const finalExpMs = Math.min(candExpMs, maxExpiryMs);
+      calculatedExpiresAt = new Date(finalExpMs).toISOString();
+      setUserExpiryMs(userId, clampedDays, finalExpMs);
+    } else if (data.planExpiresAt) {
+      const reqExpMs = new Date(data.planExpiresAt).getTime();
+      if (!isNaN(reqExpMs)) {
+        calculatedExpiresAt = new Date(Math.min(reqExpMs, maxExpiryMs)).toISOString();
+      }
     }
+
+    const normalizedData = {
+      ...data,
+      ...(clampedDays !== undefined ? { planDaysLeft: clampedDays } : {}),
+      ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
+    };
 
     const mergedData = {
       ...existingPending,
-      ...data,
-      ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
+      ...normalizedData,
     };
 
     lastUpdatedUsersRef.current.set(userId, {
@@ -2905,21 +2946,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (u.id === userId) {
           const updated: User = {
             ...u,
-            ...data,
-            name: data.name !== undefined ? data.name : u.name,
-            email: data.email !== undefined ? data.email : u.email,
-            password: data.password !== undefined ? data.password : u.password,
-            plan: data.plan !== undefined ? data.plan : u.plan,
-            credits: data.credits !== undefined ? data.credits : u.credits,
-            maxCredits: data.maxCredits !== undefined ? data.maxCredits : u.maxCredits,
-            planDaysLeft: data.planDaysLeft !== undefined ? Math.max(0, data.planDaysLeft) : u.planDaysLeft,
+            ...normalizedData,
+            name: normalizedData.name !== undefined ? normalizedData.name : u.name,
+            email: normalizedData.email !== undefined ? normalizedData.email : u.email,
+            password: normalizedData.password !== undefined ? normalizedData.password : u.password,
+            plan: normalizedData.plan !== undefined ? normalizedData.plan : u.plan,
+            credits: normalizedData.credits !== undefined ? normalizedData.credits : u.credits,
+            maxCredits: normalizedData.maxCredits !== undefined ? normalizedData.maxCredits : u.maxCredits,
+            planDaysLeft: clampedDays !== undefined ? clampedDays : u.planDaysLeft,
             planExpiresAt: calculatedExpiresAt || u.planExpiresAt,
-            status: data.status !== undefined ? data.status : (data.planDaysLeft !== undefined && data.planDaysLeft <= 0 ? 'suspended' : u.status),
-            extensionAccess: data.extensionAccess !== undefined ? data.extensionAccess : (u.extensionAccess !== undefined ? u.extensionAccess : true),
-            canEditPrompts: data.canEditPrompts !== undefined ? data.canEditPrompts : (u.canEditPrompts !== undefined ? u.canEditPrompts : false),
-            isOnline: data.isOnline !== undefined ? data.isOnline : u.isOnline,
-            sessionToken: data.sessionToken !== undefined ? data.sessionToken : u.sessionToken,
-            upgradeRequested: data.plan === 'ultra' ? false : u.upgradeRequested,
+            status: normalizedData.status !== undefined ? normalizedData.status : (clampedDays !== undefined && clampedDays <= 0 ? 'suspended' : u.status),
+            extensionAccess: normalizedData.extensionAccess !== undefined ? normalizedData.extensionAccess : (u.extensionAccess !== undefined ? u.extensionAccess : true),
+            canEditPrompts: normalizedData.canEditPrompts !== undefined ? normalizedData.canEditPrompts : (u.canEditPrompts !== undefined ? u.canEditPrompts : false),
+            isOnline: normalizedData.isOnline !== undefined ? normalizedData.isOnline : u.isOnline,
+            sessionToken: normalizedData.sessionToken !== undefined ? normalizedData.sessionToken : u.sessionToken,
+            upgradeRequested: normalizedData.plan === 'ultra' ? false : u.upgradeRequested,
           };
           return updated;
         }
@@ -2932,21 +2973,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         prev
           ? {
               ...prev,
-              ...data,
-              name: data.name !== undefined ? data.name : prev.name,
-              email: data.email !== undefined ? data.email : prev.email,
-              password: data.password !== undefined ? data.password : prev.password,
-              plan: data.plan !== undefined ? data.plan : prev.plan,
-              credits: data.credits !== undefined ? data.credits : prev.credits,
-              maxCredits: data.maxCredits !== undefined ? data.maxCredits : prev.maxCredits,
-              planDaysLeft: data.planDaysLeft !== undefined ? Math.max(0, data.planDaysLeft) : prev.planDaysLeft,
+              ...normalizedData,
+              name: normalizedData.name !== undefined ? normalizedData.name : prev.name,
+              email: normalizedData.email !== undefined ? normalizedData.email : prev.email,
+              password: normalizedData.password !== undefined ? normalizedData.password : prev.password,
+              plan: normalizedData.plan !== undefined ? normalizedData.plan : prev.plan,
+              credits: normalizedData.credits !== undefined ? normalizedData.credits : prev.credits,
+              maxCredits: normalizedData.maxCredits !== undefined ? normalizedData.maxCredits : prev.maxCredits,
+              planDaysLeft: clampedDays !== undefined ? clampedDays : prev.planDaysLeft,
               planExpiresAt: calculatedExpiresAt || prev.planExpiresAt,
-              status: data.status !== undefined ? data.status : (data.planDaysLeft !== undefined && data.planDaysLeft <= 0 ? 'suspended' : prev.status),
-              extensionAccess: data.extensionAccess !== undefined ? data.extensionAccess : (prev.extensionAccess !== undefined ? prev.extensionAccess : true),
-              canEditPrompts: data.canEditPrompts !== undefined ? data.canEditPrompts : (prev.canEditPrompts !== undefined ? prev.canEditPrompts : false),
-              isOnline: data.isOnline !== undefined ? data.isOnline : prev.isOnline,
-              sessionToken: data.sessionToken !== undefined ? data.sessionToken : prev.sessionToken,
-              upgradeRequested: data.plan === 'ultra' ? false : prev.upgradeRequested,
+              status: normalizedData.status !== undefined ? normalizedData.status : (clampedDays !== undefined && clampedDays <= 0 ? 'suspended' : prev.status),
+              extensionAccess: normalizedData.extensionAccess !== undefined ? normalizedData.extensionAccess : (prev.extensionAccess !== undefined ? prev.extensionAccess : true),
+              canEditPrompts: normalizedData.canEditPrompts !== undefined ? normalizedData.canEditPrompts : (prev.canEditPrompts !== undefined ? prev.canEditPrompts : false),
+              isOnline: normalizedData.isOnline !== undefined ? normalizedData.isOnline : prev.isOnline,
+              sessionToken: normalizedData.sessionToken !== undefined ? normalizedData.sessionToken : prev.sessionToken,
+              upgradeRequested: normalizedData.plan === 'ultra' ? false : prev.upgradeRequested,
             }
           : null
       );
@@ -2960,10 +3001,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       userId,
       email: userToUpdate?.email,
       ...(resellerId ? { resellerId, sessionId } : (adminToken ? { sessionId: adminToken } : {})),
-      data: {
-        ...data,
-        ...(calculatedExpiresAt ? { planExpiresAt: calculatedExpiresAt } : {}),
-      }
+      data: normalizedData,
     };
 
     fetch(apiUrl('/api/users/update'), {

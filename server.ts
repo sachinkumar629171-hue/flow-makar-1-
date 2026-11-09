@@ -112,6 +112,8 @@ const SERVER_ALLOWED_USER_COLUMNS = new Set([
   'referral_code',
   'referred_by',
   'reseller_id',
+  'plan_expires_at',
+  'plan_started_at',
   'created_at'
 ]);
 
@@ -562,22 +564,33 @@ function checkAndConvertToBasic(u: any): boolean {
   let changed = false;
   const now = Date.now();
 
-  // Continuously recalculate remaining days from plan expiration timestamp or created date
+  // Continuously recalculate remaining days from plan expiration timestamp or created date (strictly capped to created_at + 30 days)
+  const rawCreated = u.createdAt || u.planStartedAt;
+  const createdMs = rawCreated ? new Date(rawCreated).getTime() : NaN;
+  const maxAllowedExpiryMs = !isNaN(createdMs) && createdMs > 0
+    ? (createdMs + 30 * 86400000)
+    : (now + 30 * 86400000);
+
   let expMs: number | null = null;
   if (u.planExpiresAt) {
     const t = new Date(u.planExpiresAt).getTime();
-    if (!isNaN(t)) expMs = t;
-  } else if (u.createdAt && u.planDaysLeft !== undefined) {
-    const createdMs = new Date(u.createdAt).getTime();
-    if (!isNaN(createdMs)) {
-      expMs = createdMs + Number(u.planDaysLeft) * 86400000;
-      u.planExpiresAt = new Date(expMs).toISOString();
-      changed = true;
+    if (!isNaN(t)) {
+      if (t > maxAllowedExpiryMs) {
+        expMs = maxAllowedExpiryMs;
+        u.planExpiresAt = new Date(expMs).toISOString();
+        changed = true;
+      } else {
+        expMs = t;
+      }
     }
+  } else if (!isNaN(createdMs) && u.planDaysLeft !== undefined) {
+    expMs = Math.min(createdMs + Math.min(30, Number(u.planDaysLeft)) * 86400000, maxAllowedExpiryMs);
+    u.planExpiresAt = new Date(expMs).toISOString();
+    changed = true;
   }
 
   if (expMs !== null) {
-    const remainingDays = Math.max(0, Math.ceil((expMs - now) / 86400000));
+    const remainingDays = Math.min(30, Math.max(0, Math.ceil((expMs - now) / 86400000)));
     if (u.planDaysLeft !== remainingDays) {
       u.planDaysLeft = remainingDays;
       changed = true;
@@ -1064,23 +1077,32 @@ app.all('/api/admin/data', async (req, res) => {
             // Strict 2-minute (120,000 ms) window from heartbeat ping:
             const isLive = !isNaN(lastActiveTime) && (now - lastActiveTime <= 120000 && now - lastActiveTime >= -5000);
 
-            // Time-based continuous plan validity decrease - use actual creation time (jab access mila)
-            const planStartedAt = u.plan_started_at || u['created_at TIMESTAMPTZ'] || u.created_at || new Date().toISOString();
-            let planDaysLeft = Number(u.plan_days_left) ?? 30;
+            // Time-based continuous plan validity decrease - strictly capped to created_at + 30 days
+            const planStartedAt = u['created_at TIMESTAMPTZ'] || u.created_at || u.plan_started_at || new Date().toISOString();
+            const startMs = new Date(planStartedAt).getTime();
+            const maxAllowedExpiryMs = (!isNaN(startMs) && startMs > 0 ? startMs : now) + 30 * 86400000;
+            let planDaysLeft = Math.min(30, Math.max(0, Number(u.plan_days_left) ?? 30));
             let planExpiresAt = u.plan_expires_at;
 
             if (!planExpiresAt) {
-              const startMs = new Date(planStartedAt).getTime();
-              const computedExpMs = (isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000;
+              const computedExpMs = Math.min((isNaN(startMs) ? now : startMs) + Math.max(1, planDaysLeft) * 86400000, maxAllowedExpiryMs);
               planExpiresAt = new Date(computedExpMs).toISOString();
               supa.from('users').update({
                 plan_started_at: planStartedAt,
                 plan_expires_at: planExpiresAt
               }).eq('id', u.id).then(() => {}, () => {});
             } else if (!isSysAdmin) {
-              const expMs = new Date(planExpiresAt).getTime();
+              let expMs = new Date(planExpiresAt).getTime();
               if (!isNaN(expMs)) {
-                planDaysLeft = Math.max(0, Math.ceil((expMs - now) / 86400000));
+                if (expMs > maxAllowedExpiryMs) {
+                  expMs = maxAllowedExpiryMs;
+                  planExpiresAt = new Date(expMs).toISOString();
+                  supa.from('users').update({
+                    plan_started_at: planStartedAt,
+                    plan_expires_at: planExpiresAt,
+                  }).eq('id', u.id).then(() => {}, () => {});
+                }
+                planDaysLeft = Math.min(30, Math.max(0, Math.ceil((expMs - now) / 86400000)));
                 if (Number(u.plan_days_left) !== planDaysLeft) {
                   supa.from('users').update({ plan_days_left: planDaysLeft }).eq('id', u.id).then(() => {}, () => {});
                 }
@@ -1179,6 +1201,10 @@ app.all('/api/admin/data', async (req, res) => {
             createdAt,
             expiresAt,
             status: sr.status === 'suspended' ? 'suspended' : (isExpired ? 'expired' : 'active'),
+            perUserRate: Number(sr.per_user_rate ?? sr.perUserRate ?? 0) || 0,
+            rateCurrency: (sr.rate_currency || sr.rateCurrency || 'INR') as 'INR' | 'USD',
+            pendingPayment: Number(sr.pending_payment ?? sr.pendingPayment ?? 0) || 0,
+            paidPayment: Number(sr.paid_payment ?? sr.paidPayment ?? 0) || 0,
           };
         });
       }
@@ -1601,9 +1627,25 @@ app.post('/api/users/update', async (req, res) => {
   if (userIndex !== -1) {
     prevEmail = db.users[userIndex].email || fallbackEmail;
     targetId = db.users[userIndex].id;
+    const rawCreated = db.users[userIndex].createdAt || db.users[userIndex].planStartedAt;
+    const cMs = rawCreated ? new Date(rawCreated).getTime() : NaN;
+    const maxExpMs = (!isNaN(cMs) && cMs > 0 ? cMs : Date.now()) + 30 * 86400000;
+    const maxRemDays = Math.min(30, Math.max(0, Math.ceil((maxExpMs - Date.now()) / 86400000)));
+    const safeUpdate = { ...data };
+    if (safeUpdate.planDaysLeft !== undefined) {
+      safeUpdate.planDaysLeft = Math.min(maxRemDays, Math.max(0, Number(safeUpdate.planDaysLeft)));
+      const reqExp = safeUpdate.planExpiresAt ? new Date(safeUpdate.planExpiresAt).getTime() : NaN;
+      const candExp = !isNaN(reqExp) ? reqExp : (Date.now() + safeUpdate.planDaysLeft * 86400000);
+      safeUpdate.planExpiresAt = new Date(Math.min(candExp, maxExpMs)).toISOString();
+    } else if (safeUpdate.planExpiresAt !== undefined) {
+      const reqExp = new Date(safeUpdate.planExpiresAt).getTime();
+      if (!isNaN(reqExp)) {
+        safeUpdate.planExpiresAt = new Date(Math.min(reqExp, maxExpMs)).toISOString();
+      }
+    }
     db.users[userIndex] = {
       ...db.users[userIndex],
-      ...data,
+      ...safeUpdate,
     };
     checkAndConvertToBasic(db.users[userIndex]);
     saveStorage();
@@ -1611,6 +1653,29 @@ app.post('/api/users/update', async (req, res) => {
 
   const supa = getServerSupabase();
   if (supa && data) {
+    let maxAllowedExpiryMs = Date.now() + 30 * 86400000;
+    let origCreatedAt: string | null = null;
+    if (userIndex !== -1 && (db.users[userIndex].createdAt || db.users[userIndex].planStartedAt)) {
+      origCreatedAt = db.users[userIndex].createdAt || db.users[userIndex].planStartedAt;
+      const cMs = new Date(origCreatedAt!).getTime();
+      if (!isNaN(cMs) && cMs > 0) maxAllowedExpiryMs = cMs + 30 * 86400000;
+    } else if (data.planDaysLeft !== undefined || data.planExpiresAt !== undefined) {
+      try {
+        const { data: exU } = await supa.from('users').select('*').or(`id.eq.${targetId},email.ilike.${prevEmail}`).maybeSingle();
+        if (exU) {
+          const rc = exU['created_at TIMESTAMPTZ'] || exU.created_at || exU.plan_started_at;
+          if (rc) {
+            const cMs = new Date(rc).getTime();
+            if (!isNaN(cMs) && cMs > 0) {
+              origCreatedAt = rc;
+              maxAllowedExpiryMs = cMs + 30 * 86400000;
+            }
+          }
+        }
+      } catch {}
+    }
+    const maxRemDays = Math.min(30, Math.max(0, Math.ceil((maxAllowedExpiryMs - Date.now()) / 86400000)));
+
     const supaData: any = {};
     if (data.name !== undefined) supaData.name = data.name;
     if (data.email !== undefined) supaData.email = data.email;
@@ -1618,8 +1683,17 @@ app.post('/api/users/update', async (req, res) => {
     if (data.plan !== undefined) supaData.plan = data.plan;
     if (data.credits !== undefined) supaData.credits = data.credits;
     if (data.maxCredits !== undefined) supaData.max_credits = data.maxCredits;
-    if (data.planDaysLeft !== undefined) supaData.plan_days_left = data.planDaysLeft;
-    if (data.planExpiresAt !== undefined) supaData.plan_expires_at = data.planExpiresAt;
+    if (data.planDaysLeft !== undefined) {
+      const capped = Math.min(maxRemDays, Math.max(0, Number(data.planDaysLeft)));
+      supaData.plan_days_left = capped;
+      if (origCreatedAt) supaData.plan_started_at = origCreatedAt;
+      const reqExp = data.planExpiresAt ? new Date(data.planExpiresAt).getTime() : NaN;
+      const candExp = !isNaN(reqExp) ? reqExp : (Date.now() + capped * 86400000);
+      supaData.plan_expires_at = new Date(Math.min(candExp, maxAllowedExpiryMs)).toISOString();
+    } else if (data.planExpiresAt !== undefined) {
+      const reqExp = new Date(data.planExpiresAt).getTime();
+      supaData.plan_expires_at = new Date(!isNaN(reqExp) ? Math.min(reqExp, maxAllowedExpiryMs) : maxAllowedExpiryMs).toISOString();
+    }
     if (data.status !== undefined) supaData.status = data.status;
     if (data.extensionAccess !== undefined) supaData.extension_access = data.extensionAccess;
     if (data.canEditPrompts !== undefined) supaData.can_edit_prompts = data.canEditPrompts;
@@ -3483,6 +3557,10 @@ async function syncResellersFromSupabase() {
             createdAt: sr.created_at || sr.createdAt || new Date().toISOString(),
             notes: sr.notes || '',
             apiKey: sr.api_key || sr.apiKey || getResellerApiKey(sr),
+            perUserRate: Number(sr.per_user_rate ?? sr.perUserRate ?? 0) || 0,
+            rateCurrency: (sr.rate_currency || sr.rateCurrency || 'INR') as 'INR' | 'USD',
+            pendingPayment: Number(sr.pending_payment ?? sr.pendingPayment ?? 0) || 0,
+            paidPayment: Number(sr.paid_payment ?? sr.paidPayment ?? 0) || 0,
           };
           const idx = db.resellers.findIndex(r => r.id === mapped.id || (r.email && mapped.email && r.email.toLowerCase() === mapped.email.toLowerCase()));
           if (idx >= 0) {
@@ -3602,6 +3680,10 @@ function sanitizeSafeReseller(r: any) {
     expiresAt: r.expiresAt || r.expires_at,
     status: r.status || 'active',
     createdAt: r.createdAt || r.created_at || new Date().toISOString(),
+    perUserRate: Number(r.perUserRate ?? r.per_user_rate ?? 0) || 0,
+    rateCurrency: r.rateCurrency || r.rate_currency || 'INR',
+    pendingPayment: Number(r.pendingPayment ?? r.pending_payment ?? 0) || 0,
+    paidPayment: Number(r.paidPayment ?? r.paid_payment ?? 0) || 0,
   };
 }
 
@@ -3719,6 +3801,10 @@ app.post('/api/resellers', async (req, res) => {
       created_at: reseller.createdAt || new Date().toISOString(),
       notes: reseller.notes || '',
       api_key: internalApiKey,
+      per_user_rate: Number(reseller.perUserRate ?? reseller.per_user_rate ?? 0) || 0,
+      rate_currency: String(reseller.rateCurrency || reseller.rate_currency || 'INR'),
+      pending_payment: Number(reseller.pendingPayment ?? reseller.pending_payment ?? 0) || 0,
+      paid_payment: Number(reseller.paidPayment ?? reseller.paid_payment ?? 0) || 0,
     };
 
     (async () => {
@@ -3928,8 +4014,12 @@ const handleResellerGrantAccess = async (req: any, res: any) => {
     user.plan = defaultPlanName;
     user.credits = credits;
     user.maxCredits = maxCredits;
-    user.planDaysLeft = planDaysLeft;
-    user.planExpiresAt = durationInfo.planExpiresAt;
+    const createdMs = user.createdAt ? new Date(user.createdAt).getTime() : Date.now();
+    const maxAllowedExpiryMs = (!isNaN(createdMs) && createdMs > 0 ? createdMs : Date.now()) + 30 * 86400000;
+    const maxRemainingDays = Math.min(30, Math.max(0, Math.ceil((maxAllowedExpiryMs - Date.now()) / 86400000)));
+    user.planDaysLeft = Math.min(maxRemainingDays, Math.max(0, planDaysLeft));
+    const reqExpMs = durationInfo.planExpiresAt ? new Date(durationInfo.planExpiresAt).getTime() : (Date.now() + user.planDaysLeft * 86400000);
+    user.planExpiresAt = new Date(Math.min(!isNaN(reqExpMs) ? reqExpMs : maxAllowedExpiryMs, maxAllowedExpiryMs)).toISOString();
     user.status = 'active';
     user.extensionAccess = extensionAccess;
     user.resellerId = reseller.id;

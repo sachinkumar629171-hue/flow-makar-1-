@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { User, PlanType } from '../../types';
-import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime, setUserExpiryMs } from '../../lib/userStats';
+import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime, setUserExpiryMs, getOrInitUserExpiryMs, getUserMaxExpiryMs, getUserMaxRemainingDays } from '../../lib/userStats';
 import { calculateResellerExpiry } from '../../lib/resellerUtils';
 import { ResellerNewUserModal } from './ResellerNewUserModal';
 import { ResellerEditUserModal } from './ResellerEditUserModal';
@@ -539,8 +539,9 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
                                 return '';
                               }
                             };
-                            const startDisplay = formatShortDate(user.planStartedAt || user.createdAt);
-                            const expiryDisplay = formatShortDate(user.planExpiresAt);
+                            const startDisplay = formatShortDate(user.createdAt || user.planStartedAt);
+                            const clampedExpIso = new Date(getOrInitUserExpiryMs(user)).toISOString();
+                            const expiryDisplay = formatShortDate(clampedExpIso);
 
                             return (
                               <div className="flex flex-col gap-1 select-text">
@@ -710,13 +711,17 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
         isOpen={!!selectedUserForCustomTime}
         onClose={() => setSelectedUserForCustomTime(null)}
         user={selectedUserForCustomTime}
-        titlePrefix="Adjust Member Validity (Reseller)"
+        maxDays={selectedUserForCustomTime ? getUserMaxRemainingDays(selectedUserForCustomTime) : 30}
+        titlePrefix="Adjust Member Validity (Max 30d from Creation)"
         onSave={(userId, newDaysLeft) => {
-          const finalDays = Math.max(0, newDaysLeft);
-          const newExpiresAt = new Date(Date.now() + finalDays * 86400000).toISOString();
-          setUserExpiryMs(userId, finalDays, new Date(newExpiresAt).getTime());
+          const maxRemaining = selectedUserForCustomTime ? getUserMaxRemainingDays(selectedUserForCustomTime) : 30;
+          const maxExpiryMs = selectedUserForCustomTime ? getUserMaxExpiryMs(selectedUserForCustomTime) : (Date.now() + 30 * 86400000);
+          const finalDays = Math.min(maxRemaining, Math.max(0, newDaysLeft));
+          const computedExpiryMs = Math.min(Date.now() + finalDays * 86400000, maxExpiryMs);
+          const newExpiresAt = new Date(computedExpiryMs).toISOString();
+          setUserExpiryMs(userId, finalDays, computedExpiryMs);
           updateUserDetails(userId, { planDaysLeft: finalDays, planExpiresAt: newExpiresAt });
-          showToast(`Member validity updated to ${finalDays} days.`);
+          showToast(`Member validity updated to ${finalDays} days (Max 30d from created_at).`);
         }}
       />
 

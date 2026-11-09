@@ -207,22 +207,31 @@ export function formatSupabaseUserPayload(user: Record<string, any>): Record<str
 
   if (user.credits !== undefined) payload.credits = Number(user.credits) ?? 0;
   
-  const daysLeft = user.planDaysLeft !== undefined ? Number(user.planDaysLeft) : (user.plan_days_left !== undefined ? Number(user.plan_days_left) : 30);
-  payload.plan_days_left = daysLeft;
-
-  const startAt = user.createdAt || user.created_at || user['created_at TIMESTAMPTZ'] || user.planStartedAt || user.plan_started_at || new Date().toISOString();
+  const rawDaysLeft = user.planDaysLeft !== undefined ? Number(user.planDaysLeft) : (user.plan_days_left !== undefined ? Number(user.plan_days_left) : 30);
+  const startAt = user['created_at TIMESTAMPTZ'] || user.created_at || user.createdAt || user.planStartedAt || user.plan_started_at || new Date().toISOString();
   payload.plan_started_at = startAt;
 
+  const startMs = new Date(startAt).getTime();
+  const safeStartMs = isNaN(startMs) ? Date.now() : startMs;
+  const maxAllowedExpiryMs = safeStartMs + 30 * 86400000;
+  const maxRemainingDays = Math.min(30, Math.max(0, Math.ceil((maxAllowedExpiryMs - Date.now()) / 86400000)));
+  const daysLeft = Math.min(30, Math.min(maxRemainingDays, Math.max(0, rawDaysLeft)));
+  payload.plan_days_left = daysLeft;
+
+  let requestedExpMs = 0;
   if (user.planExpiresAt && user.planExpiresAt !== 'null') {
-    payload.plan_expires_at = String(user.planExpiresAt);
+    const t = new Date(String(user.planExpiresAt)).getTime();
+    if (!isNaN(t)) requestedExpMs = t;
   } else if (user.plan_expires_at && user.plan_expires_at !== 'null') {
-    payload.plan_expires_at = String(user.plan_expires_at);
-  } else {
-    // Automatically calculate from startAt + plan_days_left so plan_expires_at is NEVER NULL!
-    const startMs = new Date(startAt).getTime();
-    const expMs = (isNaN(startMs) ? Date.now() : startMs) + Math.max(1, daysLeft) * 86400000;
-    payload.plan_expires_at = new Date(expMs).toISOString();
+    const t = new Date(String(user.plan_expires_at)).getTime();
+    if (!isNaN(t)) requestedExpMs = t;
   }
+
+  if (!requestedExpMs) {
+    requestedExpMs = Date.now() + Math.max(0, daysLeft) * 86400000;
+  }
+  const clampedExpMs = Math.min(requestedExpMs, maxAllowedExpiryMs);
+  payload.plan_expires_at = new Date(clampedExpMs).toISOString();
 
   if (user.sessionToken !== undefined) payload.session_token = String(user.sessionToken);
   else if (user.session_token !== undefined) payload.session_token = String(user.session_token);
@@ -485,6 +494,10 @@ export async function safeSupabaseResellerUpsert(
     created_at: reseller.createdAt || reseller.created_at || new Date().toISOString(),
     notes: reseller.notes || '',
     api_key: reseller.apiKey || reseller.api_key || '',
+    per_user_rate: Number(reseller.perUserRate ?? reseller.per_user_rate ?? 0) || 0,
+    rate_currency: String(reseller.rateCurrency || reseller.rate_currency || 'INR'),
+    pending_payment: Number(reseller.pendingPayment ?? reseller.pending_payment ?? 0) || 0,
+    paid_payment: Number(reseller.paidPayment ?? reseller.paid_payment ?? 0) || 0,
   };
 
   for (const col of knownMissingResellerColumns) {

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Clock, Calendar, Plus, Minus, Check, Sparkles, PlusCircle, MinusCircle, Sliders, ArrowRight } from 'lucide-react';
 import { User } from '../../types';
+import { getUserMaxExpiryMs, getUserMaxRemainingDays } from '../../lib/userStats';
 
 interface CustomTimeModalProps {
   isOpen: boolean;
@@ -23,8 +24,25 @@ export const CustomTimeModal: React.FC<CustomTimeModalProps> = ({
 }) => {
   if (!isOpen || !user) return null;
 
-  const maxLimit = maxDays ?? 3650;
-  const currentDays = Math.max(0, user.planDaysLeft ?? 30);
+  const maxFromCreated = getUserMaxRemainingDays(user);
+  const maxExpiryMs = getUserMaxExpiryMs(user);
+  const maxLimit = maxDays !== undefined
+    ? Math.min(maxDays, maxFromCreated, 30)
+    : maxFromCreated;
+  const currentDays = Math.min(maxLimit, Math.max(0, user.planDaysLeft ?? 30));
+
+  const formatShortDate = (msOrIso?: number | string) => {
+    if (!msOrIso) return '';
+    try {
+      const d = new Date(msOrIso);
+      if (isNaN(d.getTime())) return '';
+      return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}/${d.getFullYear()}`;
+    } catch {
+      return '';
+    }
+  };
+  const createdDateStr = formatShortDate(user.createdAt || user.planStartedAt);
+  const maxExpiryDateStr = formatShortDate(maxExpiryMs);
 
   const [mode, setMode] = useState<ValidityMode>('add');
   const [addAmount, setAddAmount] = useState<number>(7);
@@ -70,41 +88,23 @@ export const CustomTimeModal: React.FC<CustomTimeModalProps> = ({
     onClose();
   };
 
-  const directPresets = maxDays && maxDays <= 30
-    ? [
-        { label: '1 Day', val: 1 },
-        { label: '3 Days', val: 3 },
-        { label: '7 Days', val: 7 },
-        { label: '15 Days', val: 15 },
-        { label: '20 Days', val: 20 },
-        { label: '30 Days (Max)', val: 30 },
-      ]
-    : [
-        { label: '1 Day', val: 1 },
-        { label: '7 Days', val: 7 },
-        { label: '15 Days', val: 15 },
-        { label: '30 Days', val: 30 },
-        { label: '60 Days', val: 60 },
-        { label: '90 Days', val: 90 },
-      ];
+  const directPresets = [
+    { label: '1 Day', val: 1 },
+    { label: '3 Days', val: 3 },
+    { label: '7 Days', val: 7 },
+    { label: '15 Days', val: 15 },
+    { label: '20 Days', val: 20 },
+    { label: `${maxLimit}d (Max)`, val: maxLimit },
+  ];
 
-  const quickAddPresets = maxDays && maxDays <= 30
-    ? [
-        { label: '+1 Day', val: 1 },
-        { label: '+3 Days', val: 3 },
-        { label: '+5 Days', val: 5 },
-        { label: '+7 Days', val: 7 },
-        { label: '+15 Days', val: 15 },
-        { label: '+30 Days', val: 30 },
-      ]
-    : [
-        { label: '+1 Day', val: 1 },
-        { label: '+3 Days', val: 3 },
-        { label: '+7 Days', val: 7 },
-        { label: '+15 Days', val: 15 },
-        { label: '+30 Days', val: 30 },
-        { label: '+60 Days', val: 60 },
-      ];
+  const quickAddPresets = [
+    { label: '+1 Day', val: 1 },
+    { label: '+3 Days', val: 3 },
+    { label: '+5 Days', val: 5 },
+    { label: '+7 Days', val: 7 },
+    { label: '+15 Days', val: 15 },
+    { label: '+30 Days', val: 30 },
+  ];
 
   const quickDecreasePresets = [
     { label: '-1 Day', val: 1 },
@@ -142,24 +142,28 @@ export const CustomTimeModal: React.FC<CustomTimeModalProps> = ({
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {/* Current Status banner */}
-          <div className="p-3 bg-[#0a0b0e] border border-neutral-800/80 rounded-2xl flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-purple-400" />
-              <span className="text-xs text-neutral-300 font-medium">Current Plan Time:</span>
+          <div className="p-3 bg-[#0a0b0e] border border-neutral-800/80 rounded-2xl space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-purple-400" />
+                <span className="text-xs text-neutral-300 font-medium">Current Plan Time:</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-amber-400 font-mono">Max {maxLimit}d left</span>
+                <span className={`px-2.5 py-0.5 rounded-full font-mono text-xs font-bold border ${
+                  currentDays <= 3
+                    ? 'bg-red-950/80 text-red-300 border-red-800'
+                    : currentDays <= 10
+                    ? 'bg-amber-950/80 text-amber-300 border-amber-800'
+                    : 'bg-emerald-950/80 text-emerald-300 border-emerald-800'
+                }`}>
+                  {currentDays} Days Left
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              {maxDays && (
-                <span className="text-[10px] text-amber-400 font-mono">Max {maxDays}d</span>
-              )}
-              <span className={`px-2.5 py-0.5 rounded-full font-mono text-xs font-bold border ${
-                currentDays <= 3
-                  ? 'bg-red-950/80 text-red-300 border-red-800'
-                  : currentDays <= 10
-                  ? 'bg-amber-950/80 text-amber-300 border-amber-800'
-                  : 'bg-emerald-950/80 text-emerald-300 border-emerald-800'
-              }`}>
-                {currentDays} Days Left
-              </span>
+            <div className="flex items-center justify-between text-[10.5px] font-mono text-neutral-400 pt-1.5 border-t border-neutral-800/60">
+              <span>Created: <strong className="text-neutral-200">{createdDateStr || 'Today'}</strong></span>
+              <span>30d Hard Cap: <strong className="text-amber-300">{maxExpiryDateStr}</strong></span>
             </div>
           </div>
 
