@@ -26,8 +26,9 @@ interface AdminResellersTabProps {
   onOpenResellerPortal: (reseller: Reseller) => void;
 }
 
-const SUPABASE_RESELLER_PAYMENT_AND_30D_SQL = `-- 1) Add Reseller Payment Tracking Columns to public.resellers
+const SUPABASE_RESELLER_PAYMENT_AND_30D_SQL = `-- 1) Add total_users_created & Payment Tracking Columns to public.resellers
 ALTER TABLE public.resellers
+  ADD COLUMN IF NOT EXISTS total_users_created integer DEFAULT 0,
   ADD COLUMN IF NOT EXISTS per_user_rate numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS rate_currency text DEFAULT 'INR',
   ADD COLUMN IF NOT EXISTS pending_payment numeric DEFAULT 0,
@@ -118,9 +119,54 @@ BEFORE INSERT OR UPDATE ON public.users
 FOR EACH ROW
 EXECUTE FUNCTION public.enforce_user_max_30d_expiry();
 
--- 5) Backfill & clamp all existing users to <= 30 days from creation
+-- 5) Auto-sync total_users_created & pending_payment on public.resellers
+CREATE OR REPLACE FUNCTION public.sync_reseller_users_and_payment()
+RETURNS trigger AS $$
+BEGIN
+  UPDATE public.resellers r
+  SET
+    total_users_created = sub.cnt,
+    pending_payment = CASE
+      WHEN COALESCE(r.per_user_rate, 0) > 0 THEN GREATEST(0, sub.cnt * COALESCE(r.per_user_rate, 0) - COALESCE(r.paid_payment, 0))
+      ELSE COALESCE(r.pending_payment, 0)
+    END
+  FROM (
+    SELECT r2.id AS res_id, COUNT(u.id)::integer AS cnt
+    FROM public.resellers r2
+    LEFT JOIN public.users u
+      ON (u.reseller_id = r2.id OR lower(trim(COALESCE(u.reseller_name, ''))) = lower(trim(COALESCE(r2.portal_name, ''))))
+    GROUP BY r2.id
+  ) sub
+  WHERE r.id = sub.res_id;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_sync_reseller_users_and_payment ON public.users;
+CREATE TRIGGER trg_sync_reseller_users_and_payment
+AFTER INSERT OR UPDATE OR DELETE ON public.users
+FOR EACH STATEMENT
+EXECUTE FUNCTION public.sync_reseller_users_and_payment();
+
+-- 6) Backfill existing users & resellers right now
 UPDATE public.users
-SET created_at = COALESCE(created_at, now());`;
+SET created_at = COALESCE(created_at, now());
+
+UPDATE public.resellers r
+SET
+  total_users_created = sub.cnt,
+  pending_payment = CASE
+    WHEN COALESCE(r.per_user_rate, 0) > 0 THEN GREATEST(0, sub.cnt * COALESCE(r.per_user_rate, 0) - COALESCE(r.paid_payment, 0))
+    ELSE COALESCE(r.pending_payment, 0)
+  END
+FROM (
+  SELECT r2.id AS res_id, COUNT(u.id)::integer AS cnt
+  FROM public.resellers r2
+  LEFT JOIN public.users u
+    ON (u.reseller_id = r2.id OR lower(trim(COALESCE(u.reseller_name, ''))) = lower(trim(COALESCE(r2.portal_name, ''))))
+  GROUP BY r2.id
+) sub
+WHERE r.id = sub.res_id;`;
 
 export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenResellerPortal }) => {
   const { resellers, createReseller, updateReseller, deleteReseller, users } = useAuth();
@@ -762,6 +808,7 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
                 onSubmit={e => {
                   e.preventDefault();
                   updateReseller(paymentModalReseller.id, {
+                    totalUsersCreated: assignedCount,
                     perUserRate: rate,
                     rateCurrency: currency,
                     paidPayment: paid,
@@ -992,10 +1039,12 @@ export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenRese
             <form
               onSubmit={e => {
                 e.preventDefault();
+                const assignedCount = getResellerUsers(editingReseller).length;
                 updateReseller(editingReseller.id, {
                   portalName: editingReseller.portalName,
                   password: editingReseller.password,
                   userLimit: editingReseller.userLimit,
+                  totalUsersCreated: assignedCount,
                   daysLeft: editingReseller.daysLeft,
                   notes: editingReseller.notes,
                   perUserRate: Number(editingReseller.perUserRate ?? 0),

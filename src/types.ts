@@ -45,6 +45,7 @@ export interface Reseller {
   apiKey?: string;
   expiresAt?: string; // ISO timestamp for real-time countdown
   sessionId?: string;
+  totalUsersCreated?: number;
   perUserRate?: number;
   rateCurrency?: 'INR' | 'USD';
   pendingPayment?: number;

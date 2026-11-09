@@ -1727,6 +1727,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (data?.users && Array.isArray(data.users)) {
           syncServerUsers(data.users, targetResId);
         }
+        if (data?.resellerStats) {
+          const rs = data.resellerStats;
+          setCurrentReseller(prev => {
+            if (!prev || prev.id !== targetResId) return prev;
+            return {
+              ...prev,
+              totalUsersCreated: rs.totalUsersCreated !== undefined ? Number(rs.totalUsersCreated) : prev.totalUsersCreated,
+              userLimit: rs.userLimit !== undefined ? Number(rs.userLimit) : prev.userLimit,
+              perUserRate: rs.perUserRate !== undefined ? Number(rs.perUserRate) : prev.perUserRate,
+              rateCurrency: rs.rateCurrency || prev.rateCurrency || 'INR',
+              pendingPayment: rs.pendingPayment !== undefined ? Number(rs.pendingPayment) : prev.pendingPayment,
+              paidPayment: rs.paidPayment !== undefined ? Number(rs.paidPayment) : prev.paidPayment,
+            };
+          });
+          setResellers(prev =>
+            prev.map(r =>
+              r.id === targetResId
+                ? {
+                    ...r,
+                    totalUsersCreated: rs.totalUsersCreated !== undefined ? Number(rs.totalUsersCreated) : r.totalUsersCreated,
+                    userLimit: rs.userLimit !== undefined ? Number(rs.userLimit) : r.userLimit,
+                    perUserRate: rs.perUserRate !== undefined ? Number(rs.perUserRate) : r.perUserRate,
+                    rateCurrency: rs.rateCurrency || r.rateCurrency || 'INR',
+                    pendingPayment: rs.pendingPayment !== undefined ? Number(rs.pendingPayment) : r.pendingPayment,
+                    paidPayment: rs.paidPayment !== undefined ? Number(rs.paidPayment) : r.paidPayment,
+                  }
+                : r
+            )
+          );
+        }
       }
     } catch (err) {
       console.warn('API reseller users fetch error:', err);
@@ -1779,6 +1809,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: (sr.email || cleanEmail).trim(),
         password: '',
         userLimit: Number(sr.userLimit ?? sr.user_limit) || 20,
+        totalUsersCreated: Number(sr.totalUsersCreated ?? sr.total_users_created ?? 0) || 0,
         daysLeft: sr.daysLeft !== undefined ? Number(sr.daysLeft) : 30,
         expiryDate: sr.expiryDate || '30/10/2026',
         expiresAt: sr.expiresAt,
@@ -1786,6 +1817,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         createdAt: sr.createdAt || new Date().toISOString(),
         notes: '',
         sessionId: assignedSessionId,
+        perUserRate: Number(sr.perUserRate ?? sr.per_user_rate ?? 0) || 0,
+        rateCurrency: (sr.rateCurrency || sr.rate_currency || 'INR') as 'INR' | 'USD',
+        pendingPayment: Number(sr.pendingPayment ?? sr.pending_payment ?? 0) || 0,
+        paidPayment: Number(sr.paidPayment ?? sr.paid_payment ?? 0) || 0,
       };
       const expiryInfo = calculateResellerExpiry(baseReseller);
       const safeReseller: Reseller = {

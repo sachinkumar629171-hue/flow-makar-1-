@@ -374,7 +374,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             isOnline: Boolean(u.isOnline),
             lastActive: u.lastActive || '',
           }));
-        return res.status(200).json({ users: matchingUsers });
+
+        let resellerStats: Record<string, any> | undefined;
+        try {
+          const totalUsersCreated = matchingUsers.length;
+          let matchedResRow: any = null;
+          if (resellerId) {
+            const { data: rRow } = await supabase.from('resellers').select('*').eq('id', resellerId).maybeSingle();
+            if (rRow) matchedResRow = rRow;
+          }
+          if (!matchedResRow && resellerNameParam) {
+            const { data: rRows } = await supabase.from('resellers').select('*').ilike('portal_name', resellerNameParam).limit(1);
+            if (rRows && rRows[0]) matchedResRow = rRows[0];
+          }
+          if (matchedResRow) {
+            const rate = Number(matchedResRow.per_user_rate ?? matchedResRow.perUserRate ?? 0) || 0;
+            const currency = (matchedResRow.rate_currency || matchedResRow.rateCurrency || 'INR') as 'INR' | 'USD';
+            const paid = Number(matchedResRow.paid_payment ?? matchedResRow.paidPayment ?? 0) || 0;
+            const pending = rate > 0
+              ? Math.max(0, totalUsersCreated * rate - paid)
+              : (Number(matchedResRow.pending_payment ?? matchedResRow.pendingPayment ?? 0) || 0);
+
+            resellerStats = {
+              totalUsersCreated,
+              userLimit: Number(matchedResRow.user_limit ?? matchedResRow.userLimit ?? 50) || 50,
+              perUserRate: rate,
+              rateCurrency: currency,
+              pendingPayment: pending,
+              paidPayment: paid,
+            };
+
+            if (
+              Number(matchedResRow.total_users_created) !== totalUsersCreated ||
+              (rate > 0 && Number(matchedResRow.pending_payment) !== pending)
+            ) {
+              supabase
+                .from('resellers')
+                .update({
+                  total_users_created: totalUsersCreated,
+                  ...(rate > 0 ? { pending_payment: pending } : {}),
+                })
+                .eq('id', matchedResRow.id)
+                .then(() => {}, () => {});
+            }
+          } else {
+            resellerStats = { totalUsersCreated };
+          }
+        } catch {}
+
+        return res.status(200).json({ users: matchingUsers, ...(resellerStats ? { resellerStats } : {}) });
       }
 
       // Ensure both default admins exist in the list for admin view

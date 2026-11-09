@@ -487,6 +487,7 @@ export async function safeSupabaseResellerUpsert(
     email: String(reseller.email || '').trim().toLowerCase(),
     password: String(reseller.password || ''),
     user_limit: Number(reseller.userLimit ?? reseller.user_limit) || 20,
+    total_users_created: Number(reseller.totalUsersCreated ?? reseller.total_users_created ?? 0) || 0,
     days_left: Number(reseller.daysLeft ?? reseller.days_left) ?? 30,
     expiry_date: reseller.expiryDate || reseller.expiry_date || '30/10/2026',
     expires_at: reseller.expiresAt || reseller.expires_at,

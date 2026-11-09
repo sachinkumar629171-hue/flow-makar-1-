@@ -3,16 +3,11 @@ import {
   Store, 
   LogOut, 
   Users, 
-  UserX, 
-  Zap, 
   Calendar, 
-  RotateCw, 
   Plus, 
   Edit3, 
   Key, 
   RefreshCw, 
-  CalendarPlus, 
-  Repeat, 
   Mail, 
   Lock,
   Trash2, 
@@ -20,12 +15,15 @@ import {
   AlertTriangle,
   Search,
   ArrowLeft,
-  Clock
+  Clock,
+  DollarSign,
+  Wallet
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { User, PlanType } from '../../types';
+import { User } from '../../types';
 import { isUserLive, formatUserLastActive, getUserCreditStats, getUserValidityTime, setUserExpiryMs, getOrInitUserExpiryMs, getUserMaxExpiryMs, getUserMaxRemainingDays } from '../../lib/userStats';
 import { calculateResellerExpiry } from '../../lib/resellerUtils';
+import { getSupabase } from '../../lib/supabase';
 import { ResellerNewUserModal } from './ResellerNewUserModal';
 import { ResellerEditUserModal } from './ResellerEditUserModal';
 import { ResellerPasswordModal } from './ResellerPasswordModal';
@@ -41,6 +39,8 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
   const { 
     currentUser,
     currentReseller, 
+    resellers,
+    updateReseller,
     logoutReseller, 
     resellerLogin,
     users, 
@@ -62,6 +62,12 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
   const [showApiDocs, setShowApiDocs] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [userToDelete, setUserToDelete] = useState<User | null>(null);
+  const [liveBilling, setLiveBilling] = useState<{
+    perUserRate?: number;
+    rateCurrency?: 'INR' | 'USD';
+    pendingPayment?: number;
+    paidPayment?: number;
+  }>({});
   const [, setTimeTick] = useState(0);
 
   // Auto-tick every 1 second for live dynamic countdown decreasing in real time!
@@ -90,6 +96,14 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
         if (data?.users && Array.isArray(data.users)) {
           syncServerUsers(data.users, currentReseller.id);
         }
+        if (data?.resellerStats) {
+          setLiveBilling({
+            perUserRate: data.resellerStats.perUserRate,
+            rateCurrency: data.resellerStats.rateCurrency,
+            pendingPayment: data.resellerStats.pendingPayment,
+            paidPayment: data.resellerStats.paidPayment,
+          });
+        }
         showToast('Reseller data refreshed successfully!');
       }
     } catch {}
@@ -117,6 +131,78 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
       setLoginLoading(false);
     }
   };
+
+  // Reseller's assigned users (Multi-tier flexible matching so no API user is missed)
+  const cleanCurrentId = (currentReseller?.id || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const currentPortalName = (currentReseller?.portalName || '').trim().toLowerCase();
+  const currentEmail = (currentReseller?.email || '').trim().toLowerCase();
+
+  const resellerUsers = React.useMemo(() => {
+    if (!currentReseller) return [];
+    return users.filter(u => {
+      if (!u) return false;
+      if (u.resellerId && u.resellerId === currentReseller.id) return true;
+      const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+      if (cleanCurrentId && cleanUserResId && cleanCurrentId === cleanUserResId) return true;
+      if (u.resellerName && currentPortalName && u.resellerName.trim().toLowerCase() === currentPortalName) return true;
+      if ((u as any).resellerEmail && currentEmail && (u as any).resellerEmail.trim().toLowerCase() === currentEmail) return true;
+      return false;
+    });
+  }, [users, currentReseller, cleanCurrentId, currentPortalName, currentEmail]);
+
+  const totalCreated = resellerUsers.length;
+
+  // Sync reseller payment fields and total_users_created directly with Supabase public.resellers
+  React.useEffect(() => {
+    if (!currentReseller?.id) return;
+    const supa = getSupabase();
+    if (!supa) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: rRow } = await supa
+          .from('resellers')
+          .select('*')
+          .eq('id', currentReseller.id)
+          .maybeSingle();
+
+        if (cancelled) return;
+        if (rRow) {
+          const rate = Number(rRow.per_user_rate ?? rRow.perUserRate ?? currentReseller.perUserRate ?? 0) || 0;
+          const currency = (rRow.rate_currency || rRow.rateCurrency || currentReseller.rateCurrency || 'INR') as 'INR' | 'USD';
+          const paid = Number(rRow.paid_payment ?? rRow.paidPayment ?? currentReseller.paidPayment ?? 0) || 0;
+          const pending = rate > 0
+            ? Math.max(0, totalCreated * rate - paid)
+            : (Number(rRow.pending_payment ?? rRow.pendingPayment ?? currentReseller.pendingPayment ?? 0) || 0);
+
+          setLiveBilling({
+            perUserRate: rate,
+            rateCurrency: currency,
+            pendingPayment: pending,
+            paidPayment: paid,
+          });
+
+          if (
+            Number(rRow.total_users_created) !== totalCreated ||
+            (rate > 0 && Number(rRow.pending_payment) !== pending)
+          ) {
+            await supa
+              .from('resellers')
+              .update({
+                total_users_created: totalCreated,
+                ...(rate > 0 ? { pending_payment: pending } : {}),
+              })
+              .eq('id', currentReseller.id);
+          }
+        }
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentReseller?.id, totalCreated]);
 
   if (!currentReseller) {
     return (
@@ -203,23 +289,48 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // Merge latest reseller info from AuthContext.resellers + currentReseller + liveBilling
+  const syncedResellerFromList = resellers.find(r => r.id === currentReseller.id);
+  const effectiveRate = Number(
+    liveBilling.perUserRate ??
+    syncedResellerFromList?.perUserRate ??
+    currentReseller.perUserRate ??
+    0
+  ) || 0;
+  const effectiveCurrency: 'INR' | 'USD' =
+    (liveBilling.rateCurrency ||
+      syncedResellerFromList?.rateCurrency ||
+      currentReseller.rateCurrency ||
+      'INR') === 'USD'
+      ? 'USD'
+      : 'INR';
+  const currencySymbol = effectiveCurrency === 'USD' ? '$' : '₹';
+  const effectivePaid = Number(
+    liveBilling.paidPayment ??
+    syncedResellerFromList?.paidPayment ??
+    currentReseller.paidPayment ??
+    0
+  ) || 0;
+  const totalBillAmount = totalCreated * effectiveRate;
+  const autoPendingAmount = Math.max(0, totalBillAmount - effectivePaid);
+  const effectivePending =
+    effectiveRate > 0
+      ? autoPendingAmount
+      : Number(
+          liveBilling.pendingPayment ??
+          syncedResellerFromList?.pendingPayment ??
+          currentReseller.pendingPayment ??
+          0
+        ) || 0;
+
+  const paidUsersEquivalent =
+    effectiveRate > 0 ? Math.min(totalCreated, Math.floor(effectivePaid / effectiveRate)) : 0;
+  const pendingUsersEquivalent =
+    effectiveRate > 0 ? Math.max(0, totalCreated - paidUsersEquivalent) : totalCreated;
+
   const expiryInfo = calculateResellerExpiry(currentReseller);
   const isPortalExpired = expiryInfo.isExpired || currentReseller.status === 'suspended' || currentReseller.status === 'expired';
 
-  // Reseller's assigned users (Multi-tier flexible matching so no API user is missed)
-  const cleanCurrentId = (currentReseller.id || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-  const currentPortalName = (currentReseller.portalName || '').trim().toLowerCase();
-  const currentEmail = (currentReseller.email || '').trim().toLowerCase();
-
-  const resellerUsers = users.filter(u => {
-    if (!u) return false;
-    if (u.resellerId && u.resellerId === currentReseller.id) return true;
-    const cleanUserResId = (u.resellerId || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    if (cleanCurrentId && cleanUserResId && cleanCurrentId === cleanUserResId) return true;
-    if (u.resellerName && currentPortalName && u.resellerName.trim().toLowerCase() === currentPortalName) return true;
-    if ((u as any).resellerEmail && currentEmail && (u as any).resellerEmail.trim().toLowerCase() === currentEmail) return true;
-    return false;
-  });
   const filteredUsers = resellerUsers
     .filter(u => 
       u.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -234,14 +345,9 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
       return bExp - aExp;
     });
 
-  // Metrics (Accurate Real-Time Online & Credit Calculations)
-  const totalCreated = resellerUsers.length;
+  // Metrics (Accurate Real-Time Online & Active User Calculations)
   const activeCount = resellerUsers.filter(u => (u.planDaysLeft ?? 30) > 0 && u.status === 'active').length;
-  const expiredCount = resellerUsers.filter(u => (u.planDaysLeft ?? 30) <= 0 || u.status === 'suspended').length;
   const liveCount = resellerUsers.filter(u => isUserLive(u, currentUser?.id, currentUser?.email)).length;
-  const totalCreditsGiven = resellerUsers.reduce((sum, u) => sum + getUserCreditStats(u).totalAllocated, 0);
-  const totalCreditsUsed = resellerUsers.reduce((sum, u) => sum + getUserCreditStats(u).totalUsed, 0);
-  const totalCreditsRemaining = resellerUsers.reduce((sum, u) => sum + getUserCreditStats(u).remaining, 0);
 
   const handleDeleteConfirm = () => {
     if (!userToDelete) return;
@@ -323,27 +429,19 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
           </div>
         )}
 
-        {/* 6 Top Metric Cards */}
+        {/* 6 Top Metric Cards (Users Created, Active/Live, Per User Rate, Pending Payment, Paid Payment, Validity) */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3.5">
-          {/* USERS */}
+          {/* USERS CREATED / LIMIT */}
           <div className="bg-[#12131a] border border-neutral-800/80 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
             <div className="flex items-center gap-1.5 text-neutral-400 text-[11px] font-semibold tracking-wider uppercase">
               <Users className="w-3.5 h-3.5 text-neutral-500" />
-              <span>Users</span>
+              <span>Users Created</span>
             </div>
             <div className="mt-2 text-xl font-bold text-white tracking-tight">
               {totalCreated} <span className="text-sm font-normal text-neutral-500">/ {currentReseller.userLimit}</span>
             </div>
-          </div>
-
-          {/* ACTIVE USERS */}
-          <div className="bg-[#12131a] border border-neutral-800/80 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
-            <div className="flex items-center gap-1.5 text-neutral-400 text-[11px] font-semibold tracking-wider uppercase">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
-              <span>Active Users</span>
-            </div>
-            <div className="mt-2 text-xl font-bold text-emerald-400 tracking-tight">
-              {activeCount}
+            <div className="text-[10px] text-neutral-500 font-mono mt-1">
+              Active: <span className="text-emerald-400 font-semibold">{activeCount}</span>
             </div>
           </div>
 
@@ -362,27 +460,51 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
               <span>{liveCount}</span>
               <span className="text-[11px] font-normal text-emerald-400/80">Online</span>
             </div>
+            <div className="text-[10px] text-neutral-500 font-mono mt-1">
+              Total Active: {activeCount}
+            </div>
           </div>
 
-          {/* TOTAL GIVEN (MILAA) */}
+          {/* PER USER RATE */}
           <div className="bg-[#12131a] border border-purple-900/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
             <div className="flex items-center gap-1.5 text-purple-300 text-[11px] font-semibold tracking-wider uppercase">
-              <Zap className="w-3.5 h-3.5 text-purple-400" />
-              <span>Total Mila</span>
+              <DollarSign className="w-3.5 h-3.5 text-purple-400" />
+              <span>Per User Rate</span>
             </div>
-            <div className="mt-2 text-xl font-bold text-purple-300 tracking-tight">
-              {totalCreditsGiven.toLocaleString()}
+            <div className="mt-2 text-xl font-bold text-purple-300 tracking-tight font-mono">
+              {currencySymbol}{effectiveRate.toLocaleString()}
+              <span className="text-xs font-normal text-neutral-400"> / user</span>
+            </div>
+            <div className="text-[10px] text-neutral-500 font-mono mt-1">
+              Total Bill: {currencySymbol}{totalBillAmount.toLocaleString()} ({effectiveCurrency})
             </div>
           </div>
 
-          {/* CREDITS USED (KITNA USE HUA) */}
-          <div className="bg-[#12131a] border border-rose-900/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
-            <div className="flex items-center gap-1.5 text-rose-300 text-[11px] font-semibold tracking-wider uppercase">
-              <Zap className="w-3.5 h-3.5 text-rose-400" />
-              <span>Total Used</span>
+          {/* PENDING PAYMENT */}
+          <div className="bg-[#12131a] border border-amber-900/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
+            <div className="flex items-center gap-1.5 text-amber-300 text-[11px] font-semibold tracking-wider uppercase">
+              <Wallet className="w-3.5 h-3.5 text-amber-400" />
+              <span>Pending Payment</span>
             </div>
-            <div className="mt-2 text-xl font-bold text-rose-400 tracking-tight">
-              {totalCreditsUsed.toLocaleString()}
+            <div className="mt-2 text-xl font-bold text-amber-400 tracking-tight font-mono">
+              {currencySymbol}{effectivePending.toLocaleString()}
+            </div>
+            <div className="text-[10px] text-amber-300/80 font-mono mt-1">
+              {pendingUsersEquivalent} Users Pending
+            </div>
+          </div>
+
+          {/* PAID PAYMENT */}
+          <div className="bg-[#12131a] border border-emerald-900/40 rounded-2xl p-4 flex flex-col justify-between shadow-lg">
+            <div className="flex items-center gap-1.5 text-emerald-300 text-[11px] font-semibold tracking-wider uppercase">
+              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Paid Payment</span>
+            </div>
+            <div className="mt-2 text-xl font-bold text-emerald-400 tracking-tight font-mono">
+              {currencySymbol}{effectivePaid.toLocaleString()}
+            </div>
+            <div className="text-[10px] text-emerald-300/80 font-mono mt-1">
+              {paidUsersEquivalent} Users Paid
             </div>
           </div>
 
@@ -394,6 +516,9 @@ export const ResellerPortal: React.FC<ResellerPortalProps> = ({ onBackToApp }) =
             </div>
             <div className={`mt-2 text-sm font-bold tracking-tight ${isPortalExpired ? 'text-red-400' : 'text-emerald-400 font-mono'}`}>
               {isPortalExpired ? 'Portal Expired' : `Expires: ${expiryInfo.expiryDate}`}
+            </div>
+            <div className="text-[10px] text-neutral-500 font-mono mt-1">
+              Max 30D per user
             </div>
           </div>
         </div>

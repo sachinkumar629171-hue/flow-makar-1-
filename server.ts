@@ -985,7 +985,40 @@ app.get('/api/users', async (req, res) => {
         isOnline: Boolean(u.isOnline),
         lastActive: u.lastActive || '',
       }));
-    return res.json({ users: resellerUsers });
+
+    let resellerStats: Record<string, any> | undefined;
+    const totalUsersCreated = resellerUsers.length;
+    if (matchingReseller) {
+      const rate = Number(matchingReseller.perUserRate ?? (matchingReseller as any).per_user_rate ?? 0) || 0;
+      const currency = (matchingReseller.rateCurrency || (matchingReseller as any).rate_currency || 'INR') as 'INR' | 'USD';
+      const paid = Number(matchingReseller.paidPayment ?? (matchingReseller as any).paid_payment ?? 0) || 0;
+      const pending = rate > 0
+        ? Math.max(0, totalUsersCreated * rate - paid)
+        : (Number(matchingReseller.pendingPayment ?? (matchingReseller as any).pending_payment ?? 0) || 0);
+
+      matchingReseller.totalUsersCreated = totalUsersCreated;
+      if (rate > 0) matchingReseller.pendingPayment = pending;
+
+      resellerStats = {
+        totalUsersCreated,
+        userLimit: Number(matchingReseller.userLimit) || 50,
+        perUserRate: rate,
+        rateCurrency: currency,
+        pendingPayment: pending,
+        paidPayment: paid,
+      };
+
+      if (supa) {
+        supa.from('resellers').update({
+          total_users_created: totalUsersCreated,
+          ...(rate > 0 ? { pending_payment: pending } : {}),
+        }).eq('id', matchingReseller.id).then(() => {}, () => {});
+      }
+    } else {
+      resellerStats = { totalUsersCreated };
+    }
+
+    return res.json({ users: resellerUsers, ...(resellerStats ? { resellerStats } : {}) });
   }
 
   // 2. Admin: full user list
@@ -1197,6 +1230,7 @@ app.all('/api/admin/data', async (req, res) => {
             portalName: sr.portal_name || sr.portalName,
             apiKey: sr.api_key || sr.apiKey,
             userLimit: Number(sr.user_limit || sr.userLimit) || 20,
+            totalUsersCreated: Number(sr.total_users_created ?? sr.totalUsersCreated ?? 0) || 0,
             daysLeft, // Dynamically computed against present timing!
             createdAt,
             expiresAt,
@@ -3550,6 +3584,7 @@ async function syncResellersFromSupabase() {
             email: sr.email || '',
             password: sr.password || '',
             userLimit: Number(sr.user_limit ?? sr.userLimit ?? sr.max_users) || 20,
+            totalUsersCreated: Number(sr.total_users_created ?? sr.totalUsersCreated ?? 0) || 0,
             daysLeft: Number(sr.days_left ?? sr.daysLeft) ?? 30,
             expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
             expiresAt: sr.expires_at || sr.expiresAt,
@@ -3675,6 +3710,7 @@ function sanitizeSafeReseller(r: any) {
     portalName: r.portalName || r.portal_name || 'Reseller Portal',
     email: r.email || '',
     userLimit: r.userLimit ?? r.user_limit ?? 20,
+    totalUsersCreated: Number(r.totalUsersCreated ?? r.total_users_created ?? 0) || 0,
     daysLeft: r.daysLeft ?? r.days_left ?? 30,
     expiryDate: r.expiryDate || r.expiry_date || '30/10/2026',
     expiresAt: r.expiresAt || r.expires_at,
@@ -3794,6 +3830,7 @@ app.post('/api/resellers', async (req, res) => {
       email: (reseller.email || '').trim().toLowerCase(),
       password: reseller.password || '',
       user_limit: reseller.userLimit ?? 20,
+      total_users_created: Number(reseller.totalUsersCreated ?? reseller.total_users_created ?? 0) || 0,
       days_left: reseller.daysLeft ?? 30,
       expiry_date: reseller.expiryDate,
       expires_at: reseller.expiresAt,

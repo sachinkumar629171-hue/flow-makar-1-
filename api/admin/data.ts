@@ -362,6 +362,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           email: sr.email || '',
           password: sr.password || '',
           userLimit: sr.user_limit || sr.userLimit || sr.max_users || 50,
+          totalUsersCreated: Number(sr.total_users_created ?? sr.totalUsersCreated ?? 0) || 0,
           daysLeft,
           expiryDate: sr.expiry_date || sr.expiryDate || '30/10/2026',
           expiresAt,
