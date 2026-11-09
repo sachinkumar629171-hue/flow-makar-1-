@@ -2,7 +2,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
-const ADMIN_PASSWORD = '147258';
+const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function getResellerApiKey(reseller: any): string {
   if (reseller.apiKey || reseller.api_key) return reseller.apiKey || reseller.api_key;
@@ -21,48 +21,37 @@ export function createResellerSessionToken(reseller: any, randomSuffix?: string)
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
-  return `asess_${sig}_${rand}`;
-}
-
-function createLegacyAdminSessionToken(email: string, randomSuffix?: string): string {
-  const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`adm|${cleanEmail}|${ADMIN_PASSWORD}|flw_adm_sec`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  const sig = Buffer.from(`admin_v2|${cleanEmail}|${ADMIN_SECRET}`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 10)}`;
   return `asess_${sig}_${rand}`;
 }
 
 async function verifyAdminSession(supabase: any, token: string): Promise<boolean> {
   if (!token || typeof token !== 'string') return false;
   const cleanToken = token.trim();
-  if (!cleanToken) return false;
+  if (!cleanToken || cleanToken.startsWith('rsess_')) return false;
+  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return false;
 
   if (cleanToken.startsWith('asess_')) {
     const parts = cleanToken.split('_');
     if (parts.length >= 3) {
       const rand = parts.slice(2).join('_');
       for (const adminEmail of ADMIN_EMAILS) {
-        if (
-          cleanToken === createAdminSessionToken(adminEmail, rand) ||
-          cleanToken === createLegacyAdminSessionToken(adminEmail, rand)
-        ) {
+        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
           return true;
         }
       }
     }
   }
 
-  if (supabase && !cleanToken.startsWith('rsess_')) {
+  if (supabase) {
     try {
-      let query = supabase.from('users').select('*');
-      if (cleanToken.startsWith('asess_') || cleanToken.startsWith('sess-')) {
-        query = query.eq('session_token', cleanToken);
-      } else {
-        query = query.or(`session_token.eq.${cleanToken},id.eq.${cleanToken}`);
-      }
-      const { data: callerData } = await query.maybeSingle();
-      if (callerData && !callerData.id?.startsWith('admin_config_')) {
+      const { data: callerData } = await supabase
+        .from('users')
+        .select('*')
+        .eq('session_token', cleanToken)
+        .maybeSingle();
+      if (callerData && !callerData.id?.startsWith('admin_config_') && callerData.status !== 'suspended') {
         const callerEmail = String(callerData.email || '').trim().toLowerCase();
         if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
           return true;
@@ -85,7 +74,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
   if (!supaUrl || !supaKey) {
     return res.status(500).json({ success: false, error: 'Database configuration missing' });

@@ -352,14 +352,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && parsed.email) {
-          const cleanEmail = String(parsed.email).trim().toLowerCase();
-          const isSysAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail) || parsed.role === 'admin';
           let token = parsed.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
-          if (isSysAdmin && !token) {
-            const sig = btoa(`admin|${cleanEmail}|flw_adm_sec_2026`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 16);
-            token = `asess_${sig}_${Date.now().toString(36)}`;
+          if (token.startsWith('asess_YWRtaW58') || token.startsWith('asess_YWRtf')) {
+            token = '';
             try {
-              localStorage.setItem('flowmaker_session_token', token);
+              localStorage.removeItem('flowmaker_session_token');
             } catch {}
           }
           if (token) {
@@ -1568,7 +1565,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let supa = getSupabase();
     if (supa) return supa;
     try {
-      const cfgRes = await fetch(apiUrl('/api/config'));
+      const token = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+      const cfgRes = await fetch(apiUrl('/api/config'), {
+        headers: token
+          ? {
+              'Authorization': `Bearer ${token}`,
+              'x-admin-session-id': token,
+              'x-session-token': token,
+            }
+          : undefined,
+      });
       if (cfgRes.ok) {
         const cfgData = await cfgRes.json();
         if (cfgData?.supabaseConfig?.url && cfgData?.supabaseConfig?.anonKey) {
@@ -2429,33 +2435,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (err) {
       console.warn('Central server login attempt error, checking fallback:', err);
-      // Offline fallback for admin
-      if (adminEmails.includes(cleanEmail) && cleanPass === ADMIN_PASSWORD) {
-        let adminUser = users.find(u => adminEmails.includes(u.email.toLowerCase())) || {
-          id: 'usr-admin-1',
-          name: 'Sachin Kumar',
-          email: cleanEmail,
-          password: ADMIN_PASSWORD,
-          whatsapp: '+91 9876543210',
-          telegram: '@sachinkumar_admin',
-          referralCode: 'FLOWADMIN',
-          plan: 'ultra' as PlanType,
-          credits: 45000,
-          maxCredits: 45000,
-          planDaysLeft: 30,
-          role: 'admin' as const,
-          createdAt: new Date().toISOString(),
-          status: 'active' as const,
-          isOnline: true,
-          lastActive: new Date().toISOString(),
-        };
-        const sig = btoa(`admin|${cleanEmail}|flw_adm_sec_2026`).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '').slice(0, 16);
-        const offlineToken = `asess_${sig}_${Date.now().toString(36)}`;
-        adminUser.sessionToken = offlineToken;
-        localStorage.setItem('flowmaker_session_token', offlineToken);
-        setCurrentUser(adminUser);
-        return { success: true };
-      }
     }
 
     // 2. Direct Supabase Database check if central server was unreachable
@@ -3294,10 +3273,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         syncConfigToSupabase('admin_config_prompts', { ...promptConfig, extensionVersion: newVer });
       }
 
+      const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
       fetch(apiUrl('/api/config'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'Authorization': `Bearer ${adminToken}`,
+            'x-admin-session-id': adminToken,
+            'x-session-token': adminToken,
+          } : {}),
+        },
         body: JSON.stringify({
+          sessionId: adminToken,
           planExtensions: updated,
           promptConfig: newVer ? { extensionVersion: newVer } : undefined,
         }),
@@ -3309,6 +3297,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateTutorialConfig = (newConfig: Partial<TutorialConfig>) => {
     lastConfigUpdateRef.current = Date.now() + 30000;
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     setTutorialConfig(prev => {
       const updated = {
         ...prev,
@@ -3319,8 +3308,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tutorialConfig: updated }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'Authorization': `Bearer ${adminToken}`,
+            'x-admin-session-id': adminToken,
+            'x-session-token': adminToken,
+          } : {}),
+        },
+        body: JSON.stringify({ sessionId: adminToken, tutorialConfig: updated }),
       }).catch(() => {});
 
       return updated;
@@ -3329,6 +3325,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const updateHeroConfig = (newConfig: Partial<HeroConfig>) => {
     lastConfigUpdateRef.current = Date.now() + 30000;
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     setHeroConfig(prev => {
       const updated = {
         ...prev,
@@ -3339,8 +3336,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ heroConfig: updated }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'Authorization': `Bearer ${adminToken}`,
+            'x-admin-session-id': adminToken,
+            'x-session-token': adminToken,
+          } : {}),
+        },
+        body: JSON.stringify({ sessionId: adminToken, heroConfig: updated }),
       }).catch(() => {});
 
       return updated;
@@ -3350,6 +3354,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updatePromptConfig = (newConfig: Partial<PromptConfig>) => {
     lastConfigUpdateRef.current = Date.now() + 30000;
     const nowTs = Date.now();
+    const adminToken = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     setPromptConfig(prev => {
       const updated: any = {
         ...prev,
@@ -3374,8 +3379,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       fetch(apiUrl('/api/config'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ promptConfig: updated }),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'Authorization': `Bearer ${adminToken}`,
+            'x-admin-session-id': adminToken,
+            'x-session-token': adminToken,
+          } : {}),
+        },
+        body: JSON.stringify({ sessionId: adminToken, promptConfig: updated }),
       }).catch(() => {});
 
       return updated;

@@ -2,11 +2,12 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  const sig = Buffer.from(`admin_v2|${cleanEmail}|${ADMIN_SECRET}`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 10)}`;
   return `asess_${sig}_${rand}`;
 }
 
@@ -14,6 +15,7 @@ function resolveSignedAdminEmail(token: string): string | null {
   if (!token || typeof token !== 'string') return null;
   const cleanToken = token.trim();
   if (!cleanToken.startsWith('asess_')) return null;
+  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return null;
   const parts = cleanToken.split('_');
   if (parts.length < 3) return null;
   const suffix = parts.slice(2).join('_');

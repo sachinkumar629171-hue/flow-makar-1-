@@ -47,6 +47,57 @@ const DEFAULT_PROMPT_CONFIG = {
   resellerContactUrl: 'https://t.me/google_ultra_veo3_bot',
 };
 
+const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
+
+function createAdminSessionToken(email: string, randomSuffix?: string): string {
+  const cleanEmail = String(email || '').trim().toLowerCase();
+  const sig = Buffer.from(`admin_v2|${cleanEmail}|${ADMIN_SECRET}`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 10)}`;
+  return `asess_${sig}_${rand}`;
+}
+
+async function verifyAdminSession(supabase: any, token: string): Promise<boolean> {
+  if (!token || typeof token !== 'string') return false;
+  const cleanToken = token.trim();
+  if (!cleanToken || cleanToken.startsWith('rsess_')) return false;
+
+  // Reject any token forged with old leaked static signatures
+  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) {
+    return false;
+  }
+
+  if (supabase) {
+    try {
+      const { data: callerData } = await supabase
+        .from('users')
+        .select('id, email, role, status, session_token')
+        .eq('session_token', cleanToken)
+        .maybeSingle();
+      if (callerData && !String(callerData.id || '').startsWith('admin_config_') && callerData.status !== 'suspended') {
+        const callerEmail = String(callerData.email || '').trim().toLowerCase();
+        if (ADMIN_EMAILS.has(callerEmail) || callerData.role === 'admin') {
+          return true;
+        }
+      }
+    } catch {}
+  }
+
+  if (cleanToken.startsWith('asess_')) {
+    const parts = cleanToken.split('_');
+    if (parts.length >= 3) {
+      const rand = parts.slice(2).join('_');
+      for (const adminEmail of ADMIN_EMAILS) {
+        if (cleanToken === createAdminSessionToken(adminEmail, rand)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -58,13 +109,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
   const supabase = supaUrl && supaKey ? createClient(supaUrl, supaKey) : null;
 
+  const authHeader = (req.headers.authorization || '').toString();
+  const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const adminToken = (
+    req.headers['x-admin-session-id'] ||
+    req.headers['x-session-token'] ||
+    req.body?.sessionId ||
+    req.body?.sessionToken ||
+    bearerToken ||
+    ''
+  ).toString().trim();
+
   try {
+    const isAdmin = adminToken ? await verifyAdminSession(supabase, adminToken) : false;
+
     if (req.method === 'GET') {
-      let promptConfig = DEFAULT_PROMPT_CONFIG;
+      let promptConfig: any = DEFAULT_PROMPT_CONFIG;
       let planExtensions = DEFAULT_PLAN_EXTENSIONS;
       let tutorialConfig = DEFAULT_TUTORIAL_CONFIG;
 
@@ -111,15 +175,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         } catch {}
       }
 
+      // Strip sensitive secrets (botToken, raw server prompts) for non-admin public GET requests
+      let safePromptConfig = promptConfig;
+      if (!isAdmin && promptConfig && typeof promptConfig === 'object') {
+        const { telegramAlerts, servers, ...restPrompt } = promptConfig;
+        safePromptConfig = {
+          ...restPrompt,
+          servers: Array.isArray(servers)
+            ? servers.map((s: any) => ({ id: s.id, label: s.label, prompt: '' }))
+            : [],
+        };
+      }
+
       return res.status(200).json({
         planExtensions,
         tutorialConfig,
-        promptConfig,
-        supabaseConfig: supaUrl && supaKey ? { url: supaUrl, anonKey: supaKey } : undefined,
+        promptConfig: safePromptConfig,
+        ...(isAdmin && supaUrl && supaKey ? { supabaseConfig: { url: supaUrl, anonKey: supaKey } } : {}),
       });
     }
 
     if (req.method === 'POST') {
+      // STRICT SECURITY: Only authenticated Admin can update website config / banner / tutorials!
+      if (!isAdmin) {
+        return res.status(401).json({
+          success: false,
+          error: 'Unauthorized: Valid Admin sessionId is required to update configuration.',
+        });
+      }
+
       const body = req.body || {};
       const { promptConfig, planExtensions, tutorialConfig } = body;
 

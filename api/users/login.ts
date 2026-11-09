@@ -2,7 +2,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 const ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
-const ADMIN_PASSWORD = '147258';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '147258';
+const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 const LOGIN_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_FAILED_ATTEMPTS = 5;
@@ -48,8 +49,8 @@ function clearFailedLogin(ip: string, email: string): void {
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  const sig = Buffer.from(`admin_v2|${cleanEmail}|${ADMIN_SECRET}`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 10)}`;
   return `asess_${sig}_${rand}`;
 }
 
@@ -95,10 +96,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  // STRICT SECURITY: Never allow empty password to bypass authentication!
+  if (!passwordRaw) {
+    recordFailedLogin(clientIp, cleanEmail);
+    return res.status(401).json({ success: false, error: 'Password is required.' });
+  }
+
   const isSystemAdmin = ADMIN_EMAILS.has(cleanEmail);
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
   try {
     const supabase = createClient(supaUrl, supaKey);
@@ -136,7 +143,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 2. Admin fallback if not in DB
     if (!supaUser && isSystemAdmin) {
-      if (passwordRaw && passwordRaw !== ADMIN_PASSWORD) {
+      if (passwordRaw !== ADMIN_PASSWORD) {
         recordFailedLogin(clientIp, cleanEmail);
         return res.status(401).json({ success: false, error: 'Incorrect password.' });
       }
@@ -189,8 +196,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // 3. Password Verification
-    if (passwordRaw && supaUser.password && supaUser.password !== passwordRaw) {
+    // 3. Strict Password Verification (never allow empty or mismatched password)
+    const expectedPassword = String(supaUser.password || (isSystemAdmin ? ADMIN_PASSWORD : '')).trim();
+    if (!expectedPassword || expectedPassword !== passwordRaw) {
       recordFailedLogin(clientIp, cleanEmail);
       return res.status(401).json({ success: false, error: 'Incorrect password.' });
     }

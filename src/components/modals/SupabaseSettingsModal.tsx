@@ -101,10 +101,18 @@ create policy "Allow all operations on resellers" on public.resellers for all us
       saveSupabaseConfig(url, anonKey);
       
       // Also sync Supabase config with backend server so server.ts can immediately connect
+      const adminToken = localStorage.getItem('flowmaker_session_token') || '';
       fetch('/api/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ supabaseConfig: { url: url.trim(), anonKey: anonKey.trim() } })
+        headers: {
+          'Content-Type': 'application/json',
+          ...(adminToken ? {
+            'Authorization': `Bearer ${adminToken}`,
+            'x-admin-session-id': adminToken,
+            'x-session-token': adminToken,
+          } : {}),
+        },
+        body: JSON.stringify({ sessionId: adminToken, supabaseConfig: { url: url.trim(), anonKey: anonKey.trim() } })
       }).catch(() => {});
 
       const supabase = getSupabase();
@@ -151,10 +159,18 @@ create policy "Allow all operations on resellers" on public.resellers for all us
 
   const handleDisconnect = () => {
     clearSupabaseConfig();
+    const adminToken = localStorage.getItem('flowmaker_session_token') || '';
     fetch('/api/config', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ supabaseConfig: { url: '', anonKey: '' } })
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminToken ? {
+          'Authorization': `Bearer ${adminToken}`,
+          'x-admin-session-id': adminToken,
+          'x-session-token': adminToken,
+        } : {}),
+      },
+      body: JSON.stringify({ sessionId: adminToken, supabaseConfig: { url: '', anonKey: '' } })
     }).catch(() => {});
     setUrl('');
     setAnonKey('');

@@ -750,11 +750,12 @@ function markUserOnline(emailOrId?: string, sessionToken?: string): void {
 // ======================== API ROUTES ========================
 
 const SYSTEM_ADMIN_EMAILS = new Set(['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com']);
+const SERVER_ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
 
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  const sig = Buffer.from(`admin_v2|${cleanEmail}|${SERVER_ADMIN_SECRET}`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 10)}`;
   return `asess_${sig}_${rand}`;
 }
 
@@ -762,6 +763,8 @@ function verifySignedAdminSessionToken(token: string): boolean {
   if (!token || typeof token !== 'string') return false;
   const cleanToken = token.trim();
   if (!cleanToken.startsWith('asess_')) return false;
+  // Reject old leaked signatures
+  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return false;
   const parts = cleanToken.split('_');
   if (parts.length < 3) return false;
   const suffix = parts.slice(2).join('_');
@@ -777,25 +780,24 @@ function isRequestAdminUser(req: any): boolean {
   const token = (
     req.headers['x-admin-session-id'] ||
     req.headers['x-session-token'] || 
+    req.body?.sessionId ||
+    req.body?.sessionToken ||
     req.query.sessionToken || 
     req.headers.authorization?.replace(/^Bearer\s+/i, '') || 
     ''
   ).toString().trim();
 
-  if (token && verifySignedAdminSessionToken(token)) {
+  if (!token || token.startsWith('asess_YWRtaW58') || token.startsWith('asess_YWRtf')) {
+    return false;
+  }
+
+  if (verifySignedAdminSessionToken(token)) {
     return true;
   }
 
-  const apiKey = (req.headers['x-admin-key'] || req.headers['x-api-key'] || req.query.apiKey || '').toString().trim();
-  if (apiKey === 'admin_master_key' || SYSTEM_ADMIN_EMAILS.has(apiKey.toLowerCase())) {
+  const user = db.users.find(u => u.sessionToken && u.sessionToken === token);
+  if (user && (user.role === 'admin' || (user.email && SYSTEM_ADMIN_EMAILS.has(user.email.toLowerCase())))) {
     return true;
-  }
-
-  if (token) {
-    const user = db.users.find(u => u.sessionToken === token || u.id === token);
-    if (user && (user.role === 'admin' || (user.email && SYSTEM_ADMIN_EMAILS.has(user.email.toLowerCase())))) {
-      return true;
-    }
   }
   return false;
 }
@@ -1500,6 +1502,11 @@ app.all('/api/users/login', async (req, res) => {
     });
   }
 
+  if (!password || !String(password).trim()) {
+    recordServerFailedLogin(clientIp, cleanEmail);
+    return res.status(401).json({ success: false, error: 'Password is required.' });
+  }
+
   const isSystemAdmin = ['sachinxexplore@gmail.com', 'sachinkumar629171@gmail.com'].includes(cleanEmail);
 
   // 1. Check live in Supabase first (if connected) to get the authoritative session & user state
@@ -1555,7 +1562,8 @@ app.all('/api/users/login', async (req, res) => {
     return res.status(404).json({ success: false, error: 'Account not found. Please sign up first.' });
   }
 
-  if (password && user.password && user.password !== password) {
+  const expectedPass = String(user.password || '').trim();
+  if (!expectedPass || expectedPass !== String(password).trim()) {
     recordServerFailedLogin(clientIp, cleanEmail);
     return res.status(401).json({ success: false, error: 'Incorrect password.' });
   }
@@ -3565,13 +3573,7 @@ async function resolveAuthorizedReseller(req: any): Promise<any | null> {
     } catch {}
   }
 
-  // Master key check
-  if (apiKey === 'admin_master_key' || apiKey === 'sachinxexplore@gmail.com' || apiKey === 'sachinkumar629171@gmail.com') {
-    if (resellerId) {
-      return allResellers.find(r => r.id === resellerId) || allResellers[0] || { id: 'admin', portalName: 'Admin Portal', email: 'admin' };
-    }
-    return allResellers[0] || { id: 'admin', portalName: 'Admin Portal', email: 'admin' };
-  }
+  // Do not allow static admin_master_key or email strings as API keys
 
   // Match by API Key
   if (apiKey) {
@@ -4346,14 +4348,26 @@ app.post('/api/access/revoke', handleResellerRevokeAccess);
 
 // GET config
 app.get('/api/config', (req, res) => {
+  const isAdmin = isRequestAdminUser(req);
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || db.supabaseConfig?.url || '';
   const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || db.supabaseConfig?.anonKey || '';
+
+  let safePromptConfig = db.promptConfig;
+  if (!isAdmin && db.promptConfig && typeof db.promptConfig === 'object') {
+    const { telegramAlerts, servers, ...restPrompt } = db.promptConfig;
+    safePromptConfig = {
+      ...restPrompt,
+      servers: Array.isArray(servers)
+        ? servers.map((s: any) => ({ id: s.id, label: s.label, prompt: '' }))
+        : [],
+    };
+  }
 
   res.json({
     planExtensions: db.planExtensions,
     tutorialConfig: db.tutorialConfig,
-    promptConfig: db.promptConfig,
-    supabaseConfig: supaUrl && supaKey ? { url: supaUrl, anonKey: supaKey } : undefined,
+    promptConfig: safePromptConfig,
+    ...(isAdmin && supaUrl && supaKey ? { supabaseConfig: { url: supaUrl, anonKey: supaKey } } : {}),
   });
 });
 
@@ -4662,8 +4676,37 @@ app.post('/api/telegram/test', async (req, res) => {
   }
 });
 
-// POST config
+// POST config (Strictly requires valid Admin session)
 app.post('/api/config', async (req, res) => {
+  let isAdmin = isRequestAdminUser(req);
+  if (!isAdmin) {
+    const token = (
+      req.headers['x-admin-session-id'] ||
+      req.headers['x-session-token'] ||
+      req.body?.sessionId ||
+      req.body?.sessionToken ||
+      req.headers.authorization?.replace(/^Bearer\s+/i, '') ||
+      ''
+    ).toString().trim();
+    const supa = getServerSupabase();
+    if (supa && token && !token.startsWith('asess_YWRtaW58') && !token.startsWith('asess_YWRtf')) {
+      try {
+        const { data: callerUser } = await supa.from('users').select('email, role, status').eq('session_token', token).maybeSingle();
+        if (callerUser && callerUser.status !== 'suspended') {
+          const emailLower = String(callerUser.email || '').trim().toLowerCase();
+          if (SYSTEM_ADMIN_EMAILS.has(emailLower) || callerUser.role === 'admin') {
+            isAdmin = true;
+          }
+        }
+      } catch {}
+    }
+  }
+  if (!isAdmin) {
+    return res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Valid Admin sessionId is required to update configuration.',
+    });
+  }
   const { planExtensions, tutorialConfig, promptConfig, supabaseConfig } = req.body;
   if (planExtensions) {
     db.planExtensions = planExtensions;

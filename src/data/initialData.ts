@@ -1,7 +1,7 @@
 import { User, ShowcaseVideo, Generation, DeviceSession, Reseller } from '../types';
 
 export const ADMIN_EMAIL = 'sachinkumar629171@gmail.com';
-export const ADMIN_PASSWORD = '147258';
+export const ADMIN_PASSWORD = '';
 
 export const INITIAL_RESELLERS: Reseller[] = [];
 
@@ -10,7 +10,6 @@ export const INITIAL_USERS: User[] = [
     id: 'usr-admin-1',
     name: 'Sachin Kumar',
     email: ADMIN_EMAIL,
-    password: ADMIN_PASSWORD,
     whatsapp: '+91 9876543210',
     telegram: '@sachinkumar_admin',
     referralCode: 'FLOWADMIN',

@@ -535,10 +535,19 @@ export const ExtensionAdminDataTab: React.FC<ExtensionAdminDataTabProps> = ({
         });
       }
       try {
+        const adminToken = localStorage.getItem('flowmaker_session_token') || '';
         await fetch(apiUrl('/api/config'), {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(adminToken ? {
+              'Authorization': `Bearer ${adminToken}`,
+              'x-admin-session-id': adminToken,
+              'x-session-token': adminToken,
+            } : {}),
+          },
           body: JSON.stringify({
+            sessionId: adminToken,
             promptConfig: {
               websiteFaviconUrl: websiteFaviconUrl.trim(),
               websiteTitle: websiteTitle.trim(),

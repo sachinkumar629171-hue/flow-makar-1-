@@ -205,4 +205,15 @@ export interface PromptConfig {
   };
 }
 
-
+export interface ServerRequestLog {
+  id: string;
+  email: string;
+  name?: string;
+  plan?: string;
+  serverRequested: string;
+  dataType?: string;
+  endpoint?: string;
+  status: 'granted' | 'denied';
+  reason?: string;
+  timestamp: string;
+}

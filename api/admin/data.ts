@@ -55,17 +55,12 @@ function getResellerApiKey(reseller: any): string {
   return `flw_res_${cleanId}`;
 }
 
+const ADMIN_SECRET = process.env.ADMIN_SESSION_SECRET || 'flw_srv_adm_v9_sec_key_9842';
+
 function createAdminSessionToken(email: string, randomSuffix?: string): string {
   const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`admin|${cleanEmail}|flw_adm_sec_2026`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
-  return `asess_${sig}_${rand}`;
-}
-
-function createLegacyAdminSessionToken(email: string, randomSuffix?: string): string {
-  const cleanEmail = String(email || '').trim().toLowerCase();
-  const sig = Buffer.from(`adm|${cleanEmail}|147258|flw_adm_sec`).toString('base64url').slice(0, 16);
-  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 7)}`;
+  const sig = Buffer.from(`admin_v2|${cleanEmail}|${ADMIN_SECRET}`).toString('base64url').slice(0, 16);
+  const rand = randomSuffix || `${Date.now().toString(36)}${Math.random().toString(36).substring(2, 10)}`;
   return `asess_${sig}_${rand}`;
 }
 
@@ -73,14 +68,13 @@ function verifySignedAdminSessionToken(token: string): boolean {
   if (!token || typeof token !== 'string') return false;
   const cleanToken = token.trim();
   if (!cleanToken.startsWith('asess_')) return false;
+  // Strictly reject old leaked signatures
+  if (cleanToken.startsWith('asess_YWRtaW58') || cleanToken.startsWith('asess_YWRtf')) return false;
   const parts = cleanToken.split('_');
   if (parts.length < 3) return false;
   const suffix = parts.slice(2).join('_');
   for (const adminEmail of ADMIN_EMAILS) {
-    if (
-      cleanToken === createAdminSessionToken(adminEmail, suffix) ||
-      cleanToken === createLegacyAdminSessionToken(adminEmail, suffix)
-    ) {
+    if (cleanToken === createAdminSessionToken(adminEmail, suffix)) {
       return true;
     }
   }
@@ -98,7 +92,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
   if (!supaUrl || !supaKey) {
     return res.status(500).json({ success: false, error: 'Database configuration missing' });
@@ -113,10 +107,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const bodySessionId = (req.body?.sessionId || req.body?.sessionToken || '').toString().trim();
   const sessionId = headerSessionId || bearerToken || bodySessionId;
 
-  if (!sessionId) {
+  if (!sessionId || sessionId.startsWith('asess_YWRtaW58') || sessionId.startsWith('asess_YWRtf')) {
     return res.status(401).json({
       success: false,
-      error: 'Unauthorized: Admin sessionId is required to access admin data.',
+      error: 'Unauthorized: Valid Admin sessionId is required to access admin data.',
     });
   }
 
@@ -124,15 +118,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let isAuthorizedAdmin = verifySignedAdminSessionToken(sessionId);
 
     if (!isAuthorizedAdmin) {
-      let query = supabase.from('users').select('*');
-      if (sessionId.startsWith('sess-') || sessionId.startsWith('asess_')) {
-        query = query.eq('session_token', sessionId);
-      } else {
-        query = query.or(`session_token.eq.${sessionId},id.eq.${sessionId}`);
-      }
-      const { data: callerUser } = await query.maybeSingle();
+      const { data: callerUser } = await supabase
+        .from('users')
+        .select('*')
+        .eq('session_token', sessionId)
+        .maybeSingle();
 
-      if (callerUser && !callerUser.id?.startsWith('admin_config_')) {
+      if (callerUser && !callerUser.id?.startsWith('admin_config_') && callerUser.status !== 'suspended') {
         const callerEmail = String(callerUser.email || '').trim().toLowerCase();
         if (ADMIN_EMAILS.has(callerEmail) || callerUser.role === 'admin') {
           isAuthorizedAdmin = true;

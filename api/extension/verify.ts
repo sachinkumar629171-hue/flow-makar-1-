@@ -8,21 +8,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const email = (req.body?.email || '').trim().toLowerCase();
-  const password = req.body?.password || '';
+  const password = String(req.body?.password || '').trim();
 
-  if (!email) {
-    return res.status(400).json({ success: false, error: 'Gmail ID (email) is required in request body.' });
+  if (!email || !password) {
+    return res.status(400).json({ success: false, error: 'Gmail ID (email) and password are required in request body.' });
   }
 
   const supaUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://vtdwwhzcyuzmcdkoxmpo.supabase.co';
-  const supaKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZHd3aHpjeXV6bWNka294bXBvIiwicm9sZSI6ImFub24iLCJpYXQyMiwiZXhwIjoyMDQ5NTY3ODc5fQ.fake';
+  const supaKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 
   if (supaUrl && supaKey) {
     try {
       const supabase = createClient(supaUrl, supaKey);
       const { data: supaUser } = await supabase.from('users').select('*').ilike('email', email).maybeSingle();
       if (supaUser && !supaUser.id?.startsWith('admin_config_')) {
-        if (supaUser.password && password && supaUser.password !== password) {
+        if (!supaUser.password || String(supaUser.password).trim() !== password) {
           return res.status(401).json({ success: false, error: 'Incorrect password. Please check your Gmail ID and password.' });
         }
 
