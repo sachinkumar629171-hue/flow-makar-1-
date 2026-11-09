@@ -33,23 +33,77 @@ ALTER TABLE public.resellers
   ADD COLUMN IF NOT EXISTS pending_payment numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS paid_payment numeric DEFAULT 0;
 
--- 2) Enforce Strict 30-Day Max Expiry from created_at on public.users
+-- 2) Ensure created_at & validity columns exist on public.users
+ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS "created_at TIMESTAMPTZ" timestamptz DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS plan_started_at timestamptz DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS plan_expires_at timestamptz DEFAULT (now() + interval '30 days'),
+  ADD COLUMN IF NOT EXISTS plan_days_left integer DEFAULT 30;
+
+-- 3) Helper to safely parse timestamps from text or timestamptz columns
+CREATE OR REPLACE FUNCTION public.safe_to_timestamptz(val text, fallback timestamptz DEFAULT now())
+RETURNS timestamptz AS $$
+DECLARE
+  s text;
+BEGIN
+  IF val IS NULL THEN
+    RETURN fallback;
+  END IF;
+  s := trim(val);
+  IF s = '' OR lower(s) = 'null' OR lower(s) = 'undefined' THEN
+    RETURN fallback;
+  END IF;
+  RETURN s::timestamptz;
+EXCEPTION WHEN OTHERS THEN
+  RETURN fallback;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- 4) Enforce Strict 30-Day Max Expiry from created_at on public.users
 CREATE OR REPLACE FUNCTION public.enforce_user_max_30d_expiry()
 RETURNS trigger AS $$
 DECLARE
   base_created timestamptz;
+  curr_expiry timestamptz;
   max_expiry timestamptz;
   max_days integer;
 BEGIN
-  base_created := COALESCE(OLD.created_at, NEW.created_at, now());
-  NEW.created_at := base_created;
-  max_expiry := base_created + interval '30 days';
-
-  IF NEW.plan_expires_at IS NULL OR NEW.plan_expires_at > max_expiry THEN
-    NEW.plan_expires_at := max_expiry;
+  IF TG_OP = 'UPDATE' THEN
+    base_created := public.safe_to_timestamptz(
+      COALESCE(
+        OLD."created_at TIMESTAMPTZ"::text,
+        OLD.created_at::text,
+        OLD.plan_started_at::text,
+        NEW."created_at TIMESTAMPTZ"::text,
+        NEW.created_at::text,
+        NEW.plan_started_at::text
+      ),
+      now()
+    );
+  ELSE
+    base_created := public.safe_to_timestamptz(
+      COALESCE(
+        NEW."created_at TIMESTAMPTZ"::text,
+        NEW.created_at::text,
+        NEW.plan_started_at::text
+      ),
+      now()
+    );
   END IF;
 
-  max_days := GREATEST(0, LEAST(30, CEIL(EXTRACT(EPOCH FROM (NEW.plan_expires_at - now())) / 86400.0)::integer));
+  NEW.created_at := base_created;
+  NEW."created_at TIMESTAMPTZ" := base_created;
+  max_expiry := base_created + interval '30 days';
+
+  curr_expiry := public.safe_to_timestamptz(NEW.plan_expires_at::text, max_expiry);
+  IF curr_expiry > max_expiry THEN
+    curr_expiry := max_expiry;
+  END IF;
+
+  NEW.plan_expires_at := curr_expiry;
+
+  max_days := GREATEST(0, LEAST(30, CEIL(EXTRACT(EPOCH FROM (curr_expiry - now())) / 86400.0)::integer));
   IF NEW.plan_days_left IS NULL OR NEW.plan_days_left > max_days THEN
     NEW.plan_days_left := max_days;
   END IF;
@@ -64,12 +118,9 @@ BEFORE INSERT OR UPDATE ON public.users
 FOR EACH ROW
 EXECUTE FUNCTION public.enforce_user_max_30d_expiry();
 
--- 3) Clamp any existing users whose expiry exceeded 30 days from created_at
+-- 5) Backfill & clamp all existing users to <= 30 days from creation
 UPDATE public.users
-SET
-  plan_expires_at = LEAST(COALESCE(plan_expires_at, created_at + interval '30 days'), created_at + interval '30 days'),
-  plan_days_left = GREATEST(0, LEAST(30, CEIL(EXTRACT(EPOCH FROM (LEAST(COALESCE(plan_expires_at, created_at + interval '30 days'), created_at + interval '30 days') - now())) / 86400.0)::integer))
-WHERE plan_expires_at > (created_at + interval '30 days') OR plan_days_left > 30;`;
+SET created_at = COALESCE(created_at, now());`;
 
 export const AdminResellersTab: React.FC<AdminResellersTabProps> = ({ onOpenResellerPortal }) => {
   const { resellers, createReseller, updateReseller, deleteReseller, users } = useAuth();
