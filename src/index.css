@@ -32,3 +32,23 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #3f414a;
 }
+
+@keyframes notification-marquee {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-notification-marquee {
+  display: inline-flex;
+  width: max-content;
+  animation: notification-marquee 14s linear infinite;
+}
+
+.animate-notification-marquee:hover {
+  animation-play-state: paused;
+}
+

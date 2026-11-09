@@ -147,11 +147,11 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
           )}
         </div>
 
-        {/* Center: Rectangular Notification Box (Centered in header with high-focus background color) */}
+        {/* Center: Rectangular Notification Box (Centered in header with high-focus background color & scrolling marquee text) */}
         {promptConfig?.dashboardAnnouncement?.enabled && promptConfig?.dashboardAnnouncement?.text && (
           <div className="flex-1 md:flex-none md:absolute md:left-1/2 md:-translate-x-1/2 flex items-center justify-center min-w-0 px-1 sm:px-3 z-20 pointer-events-auto">
             <div
-              className={`inline-flex items-center justify-center gap-2.5 px-4 sm:px-6 py-1.5 sm:py-2 rounded-xl border text-xs sm:text-sm font-bold tracking-wide min-w-[200px] sm:min-w-[320px] md:min-w-[380px] max-w-full sm:max-w-md md:max-w-lg transition-all ${
+              className={`inline-flex items-center gap-2.5 px-3.5 sm:px-5 py-1.5 sm:py-2 rounded-xl border text-xs sm:text-sm font-bold tracking-wide w-[210px] sm:w-[360px] md:w-[440px] max-w-full overflow-hidden transition-all ${
                 promptConfig.dashboardAnnouncement.type === 'success'
                   ? 'bg-gradient-to-r from-emerald-600 via-green-600 to-emerald-600 border-emerald-300/70 text-white shadow-[0_0_22px_rgba(16,185,129,0.5)]'
                   : promptConfig.dashboardAnnouncement.type === 'warning'
@@ -166,9 +166,12 @@ export const MainApp: React.FC<MainAppProps> = ({ onOpenAdminPanel, onOpenSettin
                     : 'bg-yellow-300 shadow-[0_0_8px_#fde047]'
                 }`}
               />
-              <span className="truncate sm:whitespace-normal sm:line-clamp-1 leading-snug text-center drop-shadow-sm">
-                {promptConfig.dashboardAnnouncement.text}
-              </span>
+              <div className="flex-1 min-w-0 overflow-hidden relative">
+                <div className="animate-notification-marquee whitespace-nowrap leading-snug drop-shadow-sm">
+                  <span className="inline-block pr-10">{promptConfig.dashboardAnnouncement.text}</span>
+                  <span className="inline-block pr-10" aria-hidden="true">{promptConfig.dashboardAnnouncement.text}</span>
+                </div>
+              </div>
             </div>
           </div>
         )}
