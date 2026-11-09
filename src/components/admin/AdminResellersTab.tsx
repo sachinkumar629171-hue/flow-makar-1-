@@ -34,8 +34,10 @@ ALTER TABLE public.resellers
   ADD COLUMN IF NOT EXISTS pending_payment numeric DEFAULT 0,
   ADD COLUMN IF NOT EXISTS paid_payment numeric DEFAULT 0;
 
--- 2) Ensure created_at & validity columns exist on public.users
+-- 2) Ensure created_at, reseller_id, reseller_name & validity columns exist on public.users
 ALTER TABLE public.users
+  ADD COLUMN IF NOT EXISTS reseller_id text,
+  ADD COLUMN IF NOT EXISTS reseller_name text,
   ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT now(),
   ADD COLUMN IF NOT EXISTS "created_at TIMESTAMPTZ" timestamptz DEFAULT now(),
   ADD COLUMN IF NOT EXISTS plan_started_at timestamptz DEFAULT now(),
