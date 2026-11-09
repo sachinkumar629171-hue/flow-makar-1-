@@ -147,29 +147,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    if (req.method === 'POST' && req.body?.action === 'clear_server_logs') {
-      await Promise.allSettled([
-        supabase.from('app_config').upsert({
-          key: 'admin_config_server_logs',
-          value: [],
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'key' }),
-        supabase.from('users').upsert({
-          id: 'admin_config_server_logs',
-          name: '[]',
-          email: 'admin_config_server_logs@system.local',
-          password: 'config_no_login_123',
-          plan: 'basic',
-          credits: 0,
-          max_credits: 0,
-          plan_days_left: 0,
-          session_token: 'sys_logs',
-          is_online: false,
-        }, { onConflict: 'id' }),
-      ]);
-      return res.status(200).json({ success: true, serverRequestLogs: [] });
-    }
-
     const now = Date.now();
 
     // 1. Fetch Users (excluding heavy admin_config_% backup rows to save Egress)
@@ -403,11 +380,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error('Error fetching resellers in /api/admin/data:', e);
     }
 
-    // 3. Fetch Configs & Server Request Logs (Latest 200)
+    // 3. Fetch Configs
     let promptConfig: any = DEFAULT_PROMPT_CONFIG;
     let planExtensions: any = DEFAULT_PLAN_EXTENSIONS;
     let tutorialConfig: any = DEFAULT_TUTORIAL_CONFIG;
-    let serverRequestLogs: any[] = [];
 
     try {
       const { data: configs } = await supabase.from('app_config').select('*');
@@ -416,7 +392,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (cfg.key === 'admin_config_prompts' && cfg.value) promptConfig = cfg.value;
           else if (cfg.key === 'admin_config_extensions' && cfg.value) planExtensions = cfg.value;
           else if (cfg.key === 'admin_config_tutorial' && cfg.value) tutorialConfig = cfg.value;
-          else if (cfg.key === 'admin_config_server_logs' && Array.isArray(cfg.value)) serverRequestLogs = cfg.value;
         }
       }
     } catch {}
@@ -445,16 +420,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     } catch {}
 
-    if (serverRequestLogs.length === 0) {
-      try {
-        const { data: logsRow } = await supabase.from('users').select('name').eq('id', 'admin_config_server_logs').maybeSingle();
-        if (logsRow?.name) {
-          const parsed = JSON.parse(logsRow.name);
-          if (Array.isArray(parsed)) serverRequestLogs = parsed;
-        }
-      } catch {}
-    }
-
     // Return ALL Supabase data in ONE single response!
     return res.status(200).json({
       success: true,
@@ -463,7 +428,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       promptConfig,
       planExtensions,
       tutorialConfig,
-      serverRequestLogs: serverRequestLogs.slice(0, 200),
       serverTimestamp: new Date().toISOString(),
     });
   } catch (err: any) {

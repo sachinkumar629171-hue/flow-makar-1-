@@ -48,7 +48,6 @@ import { ResellerSettingsModal } from './modals/ResellerSettingsModal';
 import { PricingSettingsModal } from './modals/PricingSettingsModal';
 import { HeaderEmailSettingsModal } from './modals/HeaderEmailSettingsModal';
 import { ExtensionAdminDataTab } from './admin/ExtensionAdminDataTab';
-import { AdminServerLogsTab } from './admin/AdminServerLogsTab';
 import { ResellerPasswordModal } from './reseller/ResellerPasswordModal';
 import { ResellerEmailModal } from './reseller/ResellerEmailModal';
 import { SupabaseSettingsModal } from './modals/SupabaseSettingsModal';
@@ -81,7 +80,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
     refreshAdminData
   } = useAuth();
   
-  const [activeAdminSection, setActiveAdminSection] = useState<'users' | 'resellers' | 'extension-admin' | 'server-logs'>('users');
+  const [activeAdminSection, setActiveAdminSection] = useState<'users' | 'resellers' | 'extension-admin'>('users');
   const [searchTerm, setSearchTerm] = useState('');
   const [planFilter, setPlanFilter] = useState<'all' | 'live' | 'basic' | 'ultra' | 'requests'>('all');
   const [selectedUserForEdit, setSelectedUserForEdit] = useState<User | null>(null);
@@ -456,26 +455,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
                 </span>
               </button>
 
-              <button
-                onClick={() => {
-                  setActiveAdminSection('server-logs');
-                  setMobileSidebarOpen(false);
-                }}
-                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                  activeAdminSection === 'server-logs'
-                    ? 'bg-purple-600/20 text-purple-200 border border-purple-500/40 font-semibold'
-                    : 'text-neutral-400 hover:text-white hover:bg-neutral-900'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Activity className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>User Server Logs</span>
-                </div>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800/60">
-                  200
-                </span>
-              </button>
-
               {onOpenPromptServer && (
                 <button
                   onClick={() => {
@@ -754,18 +733,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
             <Chrome className="w-4 h-4 text-cyan-400" />
             <span>Extension Admin Data</span>
           </button>
-
-          <button
-            onClick={() => setActiveAdminSection('server-logs')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeAdminSection === 'server-logs'
-                ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/20'
-                : 'bg-neutral-900/80 text-neutral-400 hover:text-white hover:bg-neutral-800'
-            }`}
-          >
-            <Activity className="w-4 h-4 text-emerald-400" />
-            <span>User Server Logs (200)</span>
-          </button>
         </div>
 
         {activeAdminSection === 'resellers' ? (
@@ -784,8 +751,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
             showToast={showToast}
             onOpenPromptServer={onOpenPromptServer}
           />
-        ) : activeAdminSection === 'server-logs' ? (
-          <AdminServerLogsTab showToast={showToast} />
         ) : (
           <>
             {/* Metric Cards Grid */}
