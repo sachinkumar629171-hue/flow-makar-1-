@@ -45,7 +45,7 @@
 .animate-notification-marquee {
   display: inline-flex;
   width: max-content;
-  animation: notification-marquee 14s linear infinite;
+  animation: notification-marquee 26s linear infinite;
 }
 
 .animate-notification-marquee:hover {
