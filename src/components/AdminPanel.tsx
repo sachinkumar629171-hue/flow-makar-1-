@@ -110,18 +110,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch all Supabase admin data on mount from single unified root /api/admin/data
+  // Fetch all Supabase admin data on mount if not already fetched on login/load
   useEffect(() => {
     if (refreshAdminData) {
-      refreshAdminData();
+      refreshAdminData(false);
     }
+  }, [refreshAdminData]);
+
+  const showToast = React.useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
   }, []);
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
     try {
       if (refreshAdminData) {
-        await refreshAdminData();
+        await refreshAdminData(true);
       }
       showToast('Live database refreshed! Latest members synced from Supabase.');
     } catch {
@@ -129,13 +136,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onBackToApp, onOpenResel
     } finally {
       setTimeout(() => setIsRefreshing(false), 600);
     }
-  };
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 3000);
   };
 
   // Quick adjust days

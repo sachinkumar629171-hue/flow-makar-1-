@@ -190,6 +190,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Return ONLY essential fields requested by user (plus planExpiresAt so validity never falsely resets)
     const safeUser: Record<string, any> = {
+      id: supaUser.id || 'usr-admin-1',
       name: supaUser.name || 'User',
       email: supaUser.email || '',
       plan: isSystemAdmin ? 'ultra' : (supaUser.plan || 'basic'),

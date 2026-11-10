@@ -84,7 +84,11 @@ export const AdminServerLogsTab: React.FC<AdminServerLogsTabProps> = ({ showToas
     [getAdminToken, showToast]
   );
 
+  const hasFetchedInitialLogsRef = React.useRef(false);
+
   useEffect(() => {
+    if (hasFetchedInitialLogsRef.current) return;
+    hasFetchedInitialLogsRef.current = true;
     fetchServerLogs(false);
   }, [fetchServerLogs]);
 

@@ -1278,7 +1278,7 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
     return res.status(401).json({ success: false, error: 'Unauthorized: Session token required or invalid' });
   }
   const callingEmail = (callingUser.email || '').toLowerCase().trim();
-  const isSysAdmin = SYSTEM_ADMIN_EMAILS.has(callingEmail);
+  const isSysAdmin = callingUser.role === 'admin' || SYSTEM_ADMIN_EMAILS.has(callingEmail);
 
   const rawAnn = db.promptConfig?.dashboardAnnouncement;
   const activeAnnouncement =
@@ -1291,6 +1291,7 @@ app.get(['/api/users/me', '/api/user/me'], async (req, res) => {
       : null;
 
   const minimalProfile: Record<string, any> = {
+    id: callingUser.id || 'usr-admin-1',
     name: callingUser.name || 'User',
     email: callingUser.email || '',
     plan: isSysAdmin ? 'ultra' : (callingUser.plan || 'basic'),

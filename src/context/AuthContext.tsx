@@ -106,7 +106,7 @@ interface AuthContextType {
   promptConfig: PromptConfig;
   sessionTerminatedNotice: boolean;
   dismissSessionTerminatedNotice: () => void;
-  refreshAdminData: () => Promise<boolean>;
+  refreshAdminData: (force?: boolean) => Promise<boolean>;
   syncServerUsers: (serverUsers: User[], forResellerId?: string) => void;
 }
 
@@ -291,6 +291,11 @@ function dedupeUsersByEmail(list: User[]): User[] {
   return Array.from(byEmail.values());
 }
 
+// Strict single-execution session guards: ensures me, heartbeat, and data fire ONLY ONCE on login and page refresh
+let globalFetchedMeToken = '';
+let globalSentHeartbeatToken = '';
+let globalFetchedAdminDataToken = '';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [users, setUsers] = useState<User[]>(() => {
     try {
@@ -464,11 +469,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const lastAdminDataFetchRef = useRef<number>(0);
   const adminDataInFlightRef = useRef<Promise<boolean> | null>(null);
 
-  // Industry-Standard Authenticated Profile Sync: On load/refresh, fetch authoritative plan, credits, validity with Bearer token
+  // Industry-Standard Authenticated Profile Sync: On load/refresh or login, fetch once with Bearer token
   useEffect(() => {
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reseller')) return;
-    const token = localStorage.getItem('flowmaker_session_token') || currentUser?.sessionToken;
+    const token = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     if (!token) return;
+    if (globalFetchedMeToken === token) return;
+    globalFetchedMeToken = token;
 
     fetch(apiUrl('/api/users/me'), {
       headers: {
@@ -482,9 +489,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const data = await res.json();
           if (data && data.user) {
             setCurrentUser(prev => {
-              const fresh = {
+              const preservedId = prev?.id || data.user.id || 'usr-admin-1';
+              const fresh: User = {
                 ...(prev || {}),
                 ...data.user,
+                id: preservedId,
                 sessionToken: prev?.sessionToken || token,
                 role: data.user.role === 'admin' ? 'admin' : (data.user.role || 'user'),
               };
@@ -525,7 +534,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       })
       .catch(() => {});
-  }, [currentUser?.id]);
+  }, [currentUser?.id, currentUser?.sessionToken]);
 
   // Current user's plan extension (fallback to basic)
   const activePlan = currentUser?.plan || 'basic';
@@ -1260,26 +1269,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     const isUserAdmin = currentUser?.role === 'admin';
-
-    let pollInterval: any = null;
     if (isUserAdmin) {
       pollCentralServer();
-      pollInterval = setInterval(() => {
-        if (typeof document !== 'undefined' && document.hidden) return;
-        pollCentralServer();
-      }, 60000);
     }
-
-    // Immediate refresh on tab focus for admin only
-    const handleTabFocus = () => {
-      if (isUserAdmin) pollCentralServer();
-    };
-    window.addEventListener('focus', handleTabFocus);
 
     return () => {
       isMounted = false;
-      if (pollInterval) clearInterval(pollInterval);
-      window.removeEventListener('focus', handleTabFocus);
     };
   }, [currentUser?.id, currentUser?.sessionToken]);
 
@@ -1371,10 +1366,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.email]);
 
-  // Heartbeat to keep currentUser active/online & enforce single-session exclusivity
+  // Heartbeat: fires strictly ONCE on login or page refresh (no automatic background polling loop)
   useEffect(() => {
     if (!currentUser) return;
     if (typeof window !== 'undefined' && window.location.pathname.startsWith('/reseller')) return;
+
+    const activeToken = currentUser.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
+    if (!activeToken) return;
 
     let bc: BroadcastChannel | null = null;
     try {
@@ -1383,9 +1381,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch {}
 
-    const heartbeat = () => {
+    if (globalSentHeartbeatToken !== activeToken) {
+      globalSentHeartbeatToken = activeToken;
       const now = new Date().toISOString();
-      const localToken = localStorage.getItem('flowmaker_session_token');
 
       setUsers(prev =>
         prev.map(u => (u.id === currentUser.id || (u.email && u.email.toLowerCase() === currentUser.email.toLowerCase())
@@ -1407,7 +1405,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } catch {}
       }
 
-      // Central server sync with session token verification (throttled smart quota saver)
+      // Central server sync once on login / page load
       fetch(apiUrl('/api/users/heartbeat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1415,7 +1413,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           userId: currentUser.id,
           email: currentUser.email,
           isOnline: true,
-          sessionToken: localToken || currentUser.sessionToken
+          sessionToken: activeToken
         }),
       })
       .then(res => res.json())
@@ -1427,14 +1425,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       })
       .catch(() => {});
-    };
-
-    heartbeat();
-    // Throttled Heartbeat: every 2 minutes (120,000 ms) to keep network tab clean
-    const interval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.hidden) return;
-      heartbeat();
-    }, 120000);
+    }
 
     const handleUnload = () => {
       if (currentUser) {
@@ -1465,11 +1456,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     window.addEventListener('beforeunload', handleUnload);
     return () => {
-      clearInterval(interval);
       window.removeEventListener('beforeunload', handleUnload);
       if (bc) bc.close();
     };
-  }, [currentUser?.id, currentUser?.email]);
+  }, [currentUser?.id, currentUser?.email, currentUser?.sessionToken]);
 
   // Active Telegram Alert Monitor (Runs continuously in browser so reminders & overdue alerts work 100% on live portal / Vercel / Netlify)
   useEffect(() => {
@@ -2401,6 +2391,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else if (serverData.success && serverData.user) {
         const sUser: User = serverData.user;
         const assignedSession = serverData.sessionId || serverData.session_token || serverData.sessionToken || sUser.sessionToken;
+        globalFetchedMeToken = '';
+        globalSentHeartbeatToken = '';
+        globalFetchedAdminDataToken = '';
         if (assignedSession) {
           sUser.sessionToken = assignedSession;
           localStorage.setItem('flowmaker_session_token', assignedSession);
@@ -2616,13 +2609,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       supa.from('users').update({ session_token: sessionToken, is_online: true, last_active: new Date().toISOString() }).eq('id', user.id).then(() => {});
     }
 
-    // Send heartbeat to server with session token
-    fetch(apiUrl('/api/users/heartbeat'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.id, isOnline: true, sessionToken }),
-    }).catch(() => {});
-
     return { success: true };
   };
 
@@ -2798,6 +2784,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = () => {
+    globalFetchedMeToken = '';
+    globalSentHeartbeatToken = '';
+    globalFetchedAdminDataToken = '';
     if (currentUser) {
       const now = new Date().toISOString();
       const supa = getSupabase();
@@ -3381,13 +3370,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   };
 
-  const refreshAdminData = async () => {
+  const refreshAdminData = React.useCallback(async (force = false) => {
     const token = currentUser?.sessionToken || localStorage.getItem('flowmaker_session_token') || '';
     if (!token) return false;
     if (adminDataInFlightRef.current) {
       return adminDataInFlightRef.current;
     }
-    if (Date.now() - lastAdminDataFetchRef.current < 1500) return true;
+    // Automatic calls only execute ONCE per session token (on login or page reload)
+    if (!force && globalFetchedAdminDataToken === token) {
+      return true;
+    }
+    if (!force && Date.now() - lastAdminDataFetchRef.current < 1500) return true;
+    globalFetchedAdminDataToken = token;
     lastAdminDataFetchRef.current = Date.now();
 
     const promise = (async () => {
@@ -3444,7 +3438,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       adminDataInFlightRef.current = null;
     }
-  };
+  }, [currentUser?.sessionToken]);
 
   return (
     <AuthContext.Provider
